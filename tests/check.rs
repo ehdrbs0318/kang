@@ -888,6 +888,19 @@ fn 직접_순환을_검출한다() {
         진단[0].fixes[0].doc.as_ref(),
         Some(&문서경로(&["docs", "b"]))
     );
+    // Edit 수정은 문서 문법이므로 대상 경로를 백틱으로 적는다 (스펙 5.1.1) —
+    // 에이전트가 파일에서 찾을 텍스트가 `` import `docs`/`a`.`결제` `` 이기 때문이다.
+    assert!(
+        진단[0].fixes[0].action.contains("`docs`/`a`"),
+        "{}",
+        진단[0].fixes[0].action
+    );
+    // 스펙 5.1 표가 요구하는 "공통 개념 추출 안내".
+    assert!(
+        진단[0].fixes[0].action.contains("상위 문서"),
+        "{}",
+        진단[0].fixes[0].action
+    );
     정리(&root);
 }
 
@@ -974,6 +987,17 @@ fn 자기_파일_import_는_순환이다() {
     assert_eq!(위치들(&진단[0]), vec![("docs/a".to_string(), 5)]);
     assert!(
         진단[0].message.contains("docs/a → docs/a"),
+        "{}",
+        진단[0].message
+    );
+    // 문서가 하나뿐이므로 '서로가 서로의 전제' 는 가리킬 상대가 없는 거짓이다.
+    assert!(
+        진단[0].message.contains("자기 자신을 전제로"),
+        "{}",
+        진단[0].message
+    );
+    assert!(
+        !진단[0].message.contains("서로가 서로의"),
         "{}",
         진단[0].message
     );
@@ -1087,15 +1111,23 @@ fn 같은_대상을_두_번_import_해도_한_번만_보고한다() {
     쓰기(
         &root,
         "docs/a.kang",
-        "---\ndescription: A\n---\n\nimport `docs`/`b`.`청구서`\nimport `docs`/`b`.`영수증`\n\nkeyword `결제`: 대금을 지불하는 행위\n",
+        "---\ndescription: A\n---\n\nimport `docs`/`b`.`청구서`\nimport `docs`/`b`.`영수증`\n\nkeyword `결제`: 대금을 지불하는 행위\n\nkeyword `정산`: 주고받을 금액을 확정하는 일\n",
     );
     쓰기(
         &root,
         "docs/b.kang",
-        "---\ndescription: B\n---\n\nimport `docs`/`a`.`결제`\nimport `docs`/`a`.`결제`\n\nkeyword `청구서`: 청구 내역을 담은 문서\n\nkeyword `영수증`: 지불을 증명하는 문서\n",
+        "---\ndescription: B\n---\n\nimport `docs`/`a`.`결제`\nimport `docs`/`a`.`정산`\n\nkeyword `청구서`: 청구 내역을 담은 문서\n\nkeyword `영수증`: 지불을 증명하는 문서\n",
     );
 
-    let 진단 = 순환_검사(&root);
+    let (project, 로드_진단) = resolve::load(&root);
+    assert!(로드_진단.is_empty(), "{로드_진단:?}");
+    // 이 픽스처는 **합법 입력**이어야 한다. 같은 심볼을 두 번 import 하면 로컬 이름이
+    // 두 번 묶여 `K052` 로 거부되므로, 중복 제거가 진짜 필요한 경우는 한 문서의
+    // **서로 다른 심볼 둘**을 들여오는 이쪽이다.
+    let (_, 이름_진단) = resolve::SymbolTable::build(&project);
+    assert!(이름_진단.is_empty(), "{이름_진단:?}");
+
+    let 진단 = check::check_cycles(&project);
 
     assert_eq!(진단.len(), 1, "{진단:?}");
     assert_eq!(
@@ -1149,13 +1181,68 @@ fn 순환_보고는_결정적이다() {
     let 첫번째 = 순환_검사(&root);
     let 두번째 = 순환_검사(&root);
 
+    // **기대값을 적는다.** 두 실행의 자기 일치만 보면 시작점 정렬이 사라져도 우연히
+    // 같은 순서가 나올 때 통과한다. `docs/a` 에서 시작하면 진단이 둘이고, `docs/b` 나
+    // `docs/c` 에서 시작하면 셋이므로 정렬 삭제가 개수로 확정적으로 드러난다.
+    assert_eq!(첫번째.len(), 2, "{첫번째:?}");
+    assert_eq!(
+        위치들(&첫번째[0]),
+        vec![
+            ("docs/a".to_string(), 5),
+            ("docs/b".to_string(), 5),
+            ("docs/c".to_string(), 5)
+        ]
+    );
+    // 두 번째 순환은 docs/c 의 둘째 import 줄(6)이 docs/b 로 되돌아가며 닫힌다.
+    assert_eq!(
+        위치들(&첫번째[1]),
+        vec![("docs/b".to_string(), 5), ("docs/c".to_string(), 6)]
+    );
+
     let 요약 = |진단: &[Diagnostic]| -> Vec<(String, Vec<(String, usize)>)> {
         진단
             .iter()
             .map(|d| (d.message.clone(), 위치들(d)))
             .collect()
     };
-    assert!(!첫번째.is_empty(), "픽스처에 순환이 있어야 한다");
     assert_eq!(요약(&첫번째), 요약(&두번째));
+    정리(&root);
+}
+
+/// 사전순 첫 문서가 순환 밖일 수 있다. 시작점을 진입 차수 0 인 문서로 좁히는 최적화는
+/// `docs/b`↔`docs/c` 처럼 **순환만으로 이루어진 부분 그래프**를 통째로 놓친다.
+#[test]
+fn 시작점이_순환_밖이어도_검출한다() {
+    let root = 임시_루트("cycle-outside-first-doc");
+    git_저장소로(&root);
+    // docs/a 는 import 가 없어 사전순 첫 시작점이면서 순환과 무관하다.
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: A\n---\n\nkeyword `결제`: 대금을 지불하는 행위\n",
+    );
+    쓰기(
+        &root,
+        "docs/b.kang",
+        "---\ndescription: B\n---\n\nimport `docs`/`c`.`영수증`\n\nkeyword `청구서`: 청구 내역을 담은 문서\n",
+    );
+    쓰기(
+        &root,
+        "docs/c.kang",
+        "---\ndescription: C\n---\n\nimport `docs`/`b`.`청구서`\n\nkeyword `영수증`: 지불을 증명하는 문서\n",
+    );
+
+    let 진단 = 순환_검사(&root);
+
+    assert_eq!(진단.len(), 1, "{진단:?}");
+    assert_eq!(
+        위치들(&진단[0]),
+        vec![("docs/b".to_string(), 5), ("docs/c".to_string(), 5)]
+    );
+    assert!(
+        진단[0].message.contains("docs/b → docs/c → docs/b"),
+        "{}",
+        진단[0].message
+    );
     정리(&root);
 }
