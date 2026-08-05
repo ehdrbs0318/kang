@@ -452,17 +452,14 @@ fn parse_import_line(path: &DocPath, rest: &str, line_no: usize) -> Result<Impor
     let (target, alias) = match find_outside_backticks(rest, " as ") {
         Some(at) => {
             let alias = rest[at + " as ".len()..].trim();
-            let names = scan_symbols(alias).unwrap_or_default();
-            match names.as_slice() {
-                [name] if alias == format!("`{name}`") => (&rest[..at], Some(name.clone())),
-                _ => {
-                    return Err(import_문법_오류(
-                        path,
-                        line_no,
-                        format!("as 뒤의 별칭 \"{alias}\" 이 백틱으로 감싼 이름 하나가 아닙니다."),
-                    ));
-                }
-            }
+            let Some(name) = 백틱_이름_하나(alias) else {
+                return Err(import_문법_오류(
+                    path,
+                    line_no,
+                    format!("as 뒤의 별칭 \"{alias}\" 이 백틱으로 감싼 이름 하나가 아닙니다."),
+                ));
+            };
+            (&rest[..at], Some(name))
         }
         None => (rest, None),
     };
@@ -498,22 +495,23 @@ fn parse_exception_line(
 ) -> Result<Exception, Diagnostic> {
     // modifier 를 먼저 가른다. iknow 대상의 백틱이 선언 문법 검사에 섞이면 안 된다.
     let (declaration, modifier) = split_modifier(rest);
-    let names = 백틱_검사(path, declaration, line_no)?;
+    백틱_검사(path, declaration, line_no)?;
     let declaration = declaration.trim();
 
-    // `pending` 은 선택 토큰이다. 정규 표기와 대조해 그 밖의 텍스트가 조용히 사라지는 것을 막는다.
-    let (name, pending) = match names.as_slice() {
-        [name] if declaration == format!("`{name}`") => (name.clone(), false),
-        [name] if declaration == format!("`{name}` pending") => (name.clone(), true),
-        _ => {
-            return Err(선언_문법_오류(
-                path,
-                line_no,
-                format!(
-                    "exception 선언 \"{declaration}\" 이 `이름` 또는 `이름` pending 형식이 아닙니다."
-                ),
-            ));
-        }
+    // `pending` 은 선택 토큰이다. 떼고 나면 나머지는 백틱 이름 하나여야 한다 —
+    // 그 밖의 텍스트가 남으면 조용히 사라지므로 error 다.
+    let (이름_부분, pending) = match declaration.strip_suffix(" pending") {
+        Some(head) => (head, true),
+        None => (declaration, false),
+    };
+    let Some(name) = 백틱_이름_하나(이름_부분) else {
+        return Err(선언_문법_오류(
+            path,
+            line_no,
+            format!(
+                "exception 선언 \"{declaration}\" 이 `이름` 또는 `이름` pending 형식이 아닙니다."
+            ),
+        ));
     };
 
     // exception 선언도 `// iknow` 를 받는 세 자리 중 하나다 (스펙 4.4).
@@ -549,18 +547,17 @@ fn parse_exception_line(
 /// # 오류
 /// 백틱 짝이 맞지 않으면 `K104`, 빈 백틱 쌍이면 `K108`, 선언 문법이 맞지 않으면 `K111` 진단
 fn parse_cover_line(path: &DocPath, rest: &str, line_no: usize) -> Result<String, Diagnostic> {
-    let names = 백틱_검사(path, rest, line_no)?;
+    백틱_검사(path, rest, line_no)?;
     let declaration = rest.trim();
 
     // 대상은 백틱으로 감싼 이름 하나다. 뒤에 텍스트가 남으면 조용히 버리지 않는다.
-    match names.as_slice() {
-        [name] if declaration == format!("`{name}`") => Ok(name.clone()),
-        _ => Err(선언_문법_오류(
+    백틱_이름_하나(declaration).ok_or_else(|| {
+        선언_문법_오류(
             path,
             line_no,
             format!("cover 선언 \"{declaration}\" 이 `이름` 형식이 아닙니다. 대상은 하나입니다."),
-        )),
-    }
+        )
+    })
 }
 
 /// modifier 텍스트(`//` 뒤)를 해석한다.
@@ -821,6 +818,23 @@ fn modifier_낱말(candidate: &str) -> bool {
             .strip_prefix(word)
             .is_some_and(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace))
     })
+}
+
+/// 텍스트가 백틱으로 감싼 이름 **하나뿐**인지 보고 그 이름을 돌려준다.
+///
+/// import 별칭·exception·cover 가 같은 판정을 쓴다. 세 곳에 복제하면 서로 어긋난다.
+///
+/// # 매개변수
+/// - `text`: 검사할 텍스트 (앞뒤 공백이 제거되어 있어야 한다)
+///
+/// # 반환값
+/// 백틱 쌍 하나로 정확히 감싸여 있으면 그 안의 이름. 아니면 `None`
+fn 백틱_이름_하나(text: &str) -> Option<String> {
+    let names = scan_symbols(text)?;
+    match names.as_slice() {
+        [name] if text == format!("`{name}`") => Some(name.clone()),
+        _ => None,
+    }
 }
 
 /// 한 줄에서 백틱 쌍 안의 심볼 이름을 등장 순서대로 뽑는다.
