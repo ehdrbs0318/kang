@@ -2535,3 +2535,67 @@ fn k005_수정은_상위를_가진_문서를_지목한다() {
     );
     정리(&root);
 }
+
+/// `[edit]` 는 문서 문법이다. `K004`·`K012` 의 계층 이름도 조각마다 백틱을 둘러야
+/// 한다 — `` `결제.상태` `` 는 문서 어디에도 없는 문자열이다.
+#[test]
+fn 이름_충돌_진단도_조각마다_백틱을_두른다() {
+    let root = 임시_루트("collision-doc-syntax");
+    git_저장소로(&root);
+    // 상위 `결제` 는 상호 명시하고 하위 `결제`.`상태` 만 빠뜨린다.
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: A\n---\n\nkeyword `결제`: 대금 지불 // iknow `docs`/`b`.`결제`\nkeyword `결제`.`상태`: 결제가 놓인 단계\n",
+    );
+    쓰기(
+        &root,
+        "docs/b.kang",
+        "---\ndescription: B\n---\n\nkeyword `결제`: 대금 지불 // iknow `docs`/`a`.`결제`\nkeyword `결제`.`상태`: 결제가 놓인 단계\n",
+    );
+
+    let 진단 = 심볼_검사(&root);
+
+    assert_eq!(코드들(&진단), vec!["K012"], "{진단:?}");
+    assert!(
+        진단[0].message.contains("`결제`.`상태`"),
+        "{}",
+        진단[0].message
+    );
+    assert!(
+        !진단[0].message.contains("`결제.상태`"),
+        "{}",
+        진단[0].message
+    );
+    for fix in &진단[0].fixes {
+        assert!(!fix.action.contains("`결제.상태`"), "{}", fix.action);
+    }
+    정리(&root);
+}
+
+/// `K004` 도 마찬가지다. alias 없는 계층 import 의 로컬 이름은 조각마다 백틱이다.
+#[test]
+fn 이름_여럿_진단도_조각마다_백틱을_두른다() {
+    let root = 임시_루트("alias-doc-syntax");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/x.kang",
+        "---\ndescription: 결제\n---\n\nkeyword `결제`: 대금을 지불하는 행위\nkeyword `결제`.`상태`: 결제가 놓인 단계\n",
+    );
+    쓰기(
+        &root,
+        "docs/b.kang",
+        "---\ndescription: 청구\n---\n\nimport `docs`/`x`.`결제`.`상태`\nimport `docs`/`x`.`결제`.`상태` as `상태별칭`\n\n## 청구의 방법\n\n`결제`.`상태` 와 `상태별칭` 은 같다.\n",
+    );
+
+    let 진단 = 심볼_검사(&root);
+
+    assert_eq!(코드들(&진단), vec!["K004"], "{진단:?}");
+    let 자리 = &진단[0].locations;
+    assert_eq!(자리.len(), 2, "{진단:?}");
+    assert!(자리[0].note.contains("`결제`.`상태`"), "{}", 자리[0].note);
+    assert!(!자리[0].note.contains("`결제.상태`"), "{}", 자리[0].note);
+    assert!(자리[1].note.contains("`상태별칭`"), "{}", 자리[1].note);
+    정리(&root);
+}

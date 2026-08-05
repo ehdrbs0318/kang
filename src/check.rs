@@ -441,10 +441,11 @@ fn 선언_훑기(document: &Document) -> Vec<선언<'_>> {
 /// 소비하는 것 자체가 뒤의 조각을 깨뜨린다.
 ///
 /// ponytail: 원문의 `.` 을 보지 않고 스코프만 본다. 전부 해석되는 분할이 **여럿**이면
-/// 원문이 어느 쪽인지 알 수 없어 왼쪽 최장을 택하는데, `` `A` 와 `B` `` 처럼 `.` 없이 놓인
-/// 두 조각도 `A.B` 가 선언되어 있으면 하나로 합쳐진다. 그 자리에서 진단을 **놓칠** 수는
-/// 있으나(합법 문서를 거부하지는 않는다) 그것이 남은 천장이다. 파서가 조각의 원문 인접성을
-/// `refs` 에 실어 주면 그때 후보를 원문으로 걸러 없앤다.
+/// 원문이 어느 쪽인지 알 수 없어 왼쪽 최장을 택한다. 그래서 두 갈래가 남는다 —
+/// `` `A` 와 `B` `` 를 `A.B` 로 합쳐 그 자리의 진단을 **놓치고**, 그 조각을 단독으로
+/// import 한 줄을 **미사용으로 오인한다.** 뒤쪽은 놓침이 아니라 **거부**다.
+/// 둘 다 원문 인접성이 [`crate::ast::Topic::refs`] 에 없어서 생기며, 파서가 그것을 실어
+/// 주면 후보를 원문으로 걸러 함께 없앤다. `ast.rs`·`parse.rs` 변경이 필요해 v1 범위 밖이다.
 ///
 /// # 매개변수
 /// - `document`: 참조를 모을 문서
@@ -666,7 +667,7 @@ fn import_검사(
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     // 같은 대상에 묶인 로컬 이름들. 대상은 등장 순서를 지키려고 Vec 으로 든다.
-    let mut 대상별: Vec<(&SymbolRef, Vec<(String, usize)>)> = Vec::new();
+    let mut 대상별: Vec<(&SymbolRef, Vec<&Import>)> = Vec::new();
 
     // import 를 파일 순서대로 훑는다.
     for import in &document.imports {
@@ -693,16 +694,24 @@ fn import_검사(
                 && 대상.name == import.target.name
         });
         match 같은_대상 {
-            Some((_, 이름들)) => 이름들.push((이름, import.line)),
-            None => 대상별.push((&import.target, vec![(이름, import.line)])),
+            Some((_, 줄들)) => 줄들.push(import),
+            None => 대상별.push((&import.target, vec![import])),
         }
     }
 
     // 한 심볼에 서로 다른 이름이 둘 이상 붙었는지 본다 (스펙 4.7).
-    for (대상, 이름들) in 대상별 {
-        let 서로_다른: HashSet<&str> = 이름들.iter().map(|(이름, _)| 이름.as_str()).collect();
+    for (대상, 줄들) in 대상별 {
+        let 서로_다른: HashSet<String> = 줄들
+            .iter()
+            .map(|import| {
+                import
+                    .alias
+                    .clone()
+                    .unwrap_or_else(|| import.target.name.join("."))
+            })
+            .collect();
         if 서로_다른.len() >= 2 {
-            diagnostics.push(이름_여럿(document, 대상, &이름들));
+            diagnostics.push(이름_여럿(document, 대상, &줄들));
         }
     }
 }
@@ -954,6 +963,44 @@ fn 계층_상위_검사(
     }
 }
 
+/// import 가 이 문서에 묶은 이름을 문서 문법으로 적는다.
+///
+/// alias 는 백틱 **한 쌍**이고, alias 가 없으면 대상의 계층 이름이므로 조각마다 두른다.
+/// 둘을 뭉뚱그리면 한쪽이 문서에 없는 문자열을 가리키게 된다.
+///
+/// # 매개변수
+/// - `import`: 그 이름을 묶은 import
+///
+/// # 반환값
+/// 본문에서 그 심볼을 부를 때 실제로 쓰는 표기
+fn 로컬_표기(import: &Import) -> String {
+    match &import.alias {
+        Some(alias) => format!("`{alias}`"),
+        None => 백틱_이음(&import.target.name.join(".")),
+    }
+}
+
+/// 계층 이름을 문서 문법으로 적는다 — 조각마다 백틱을 두르고 `.` 로 잇는다 (스펙 4.1).
+///
+/// 계층 이름을 백틱 **한 쌍**으로 감싸면 `` `결제수단.카드` `` 라는, 문서 어디에도 없는
+/// 문자열을 찾으라고 시키게 된다. `[edit]` 는 문서 문법이므로(스펙 5.1.1) 에이전트가
+/// 파일에서 찾을 실제 텍스트와 같아야 한다.
+///
+/// **alias 에는 쓰지 마라.** alias 는 실제로 백틱 한 쌍이므로 쪼개면 그쪽이 거짓이 된다.
+///
+/// # 매개변수
+/// - `이름`: `.` 로 이어진 전체 이름
+///
+/// # 반환값
+/// 조각마다 백틱을 두르고 `.` 로 이은 문자열
+fn 백틱_이음(이름: &str) -> String {
+    이름
+        .split('.')
+        .map(|조각| format!("`{조각}`"))
+        .collect::<Vec<String>>()
+        .join(".")
+}
+
 /// 계층 이름의 **직접 상위**를 돌려준다.
 ///
 /// 스펙 4.3:91 의 의무는 직접 상위 하나에만 걸린다 — `A`.`B`.`C` 는 `A`.`B` 만 요구하고
@@ -1112,15 +1159,7 @@ fn 계층_상위_없음(
     다른_종류: Option<&'static str>,
     선언들: &BTreeMap<String, Vec<선언>>,
 ) -> Diagnostic {
-    // 문서 문법으로는 조각마다 백틱을 두른다 (스펙 4.1).
-    let 표기 = |조각들: &[String]| {
-        조각들
-            .iter()
-            .map(|조각| format!("`{조각}`"))
-            .collect::<Vec<String>>()
-            .join(".")
-    };
-    let 상위_표기 = 표기(상위);
+    let 상위_표기 = 백틱_이음(&상위.join("."));
 
     // 그 이름을 keyword 로 선언한 문서를 찾는다. topic·exception 은 상위가 될 수 없으므로
     // (스펙 4.3 은 "상위 **키워드**") import 를 권할 대상이 아니다.
@@ -1163,7 +1202,7 @@ fn 계층_상위_없음(
             line: keyword.line,
             note: format!(
                 "여기서 하위 keyword 를 선언했습니다 — {}",
-                표기(&keyword.name.0)
+                백틱_이음(&keyword.name.0.join("."))
             ),
         }],
         // 두 갈래는 **배타적**이다. 어느 쪽인지는 뜻이 정하므로 조건을 action 에 담는다.
@@ -1264,16 +1303,7 @@ fn 미사용_import(document: &Document, import: &Import) -> Diagnostic {
     // 이 문서에서 그 심볼을 부를 때 **실제로 쓰는 표기**다. alias 는 백틱 한 쌍이고,
     // alias 가 없으면 대상의 계층 이름이므로 조각마다 백틱을 두른다 (스펙 4.1).
     // 계층 이름을 한 쌍으로 감싸면 문서에 없는 문자열을 찾으라고 시키게 된다.
-    let 표기 = match &import.alias {
-        Some(alias) => format!("`{alias}`"),
-        None => import
-            .target
-            .name
-            .iter()
-            .map(|조각| format!("`{조각}`"))
-            .collect::<Vec<String>>()
-            .join("."),
-    };
+    let 표기 = 로컬_표기(import);
 
     Diagnostic {
         severity: Severity::Error,
@@ -1301,13 +1331,11 @@ fn 미사용_import(document: &Document, import: &Import) -> Diagnostic {
 /// # 매개변수
 /// - `document`: import 를 쓴 문서
 /// - `대상`: 여러 이름이 붙은 심볼
-/// - `이름들`: 그 심볼에 묶인 `(로컬 이름, import 줄)` 목록. 최소 2개
+/// - `줄들`: 그 심볼을 가리키는 import 줄들. 최소 2개
 ///
 /// # 반환값
 /// `K004` 진단
-fn 이름_여럿(
-    document: &Document, 대상: &SymbolRef, 이름들: &[(String, usize)]
-) -> Diagnostic {
+fn 이름_여럿(document: &Document, 대상: &SymbolRef, 줄들: &[&Import]) -> Diagnostic {
     let 문서_문법 = 심볼_주소(&대상.doc, &대상.kind, &대상.name.join("."), true);
 
     Diagnostic {
@@ -1317,12 +1345,13 @@ fn 이름_여럿(
             "한 심볼이 이 문서에서 서로 다른 이름 여럿으로 묶였습니다 — {문서_문법}. 하나의 개념이 여러 이름을 갖는 것을 막습니다 (스펙 4.7)."
         ),
         // import 줄 전부가 관련 위치다. 하나만 보여 주면 나머지를 찾아 헤맨다.
-        locations: 이름들
+        locations: 줄들
             .iter()
-            .map(|(이름, 줄)| Location {
+            .map(|import| Location {
                 doc: document.path.clone(),
-                line: *줄,
-                note: format!("여기서 묶은 이름: `{이름}`"),
+                line: import.line,
+                // 로컬 이름도 문서 문법으로 적는다. alias 면 한 쌍, 아니면 조각마다.
+                note: format!("여기서 묶은 이름: {}", 로컬_표기(import)),
             })
             .collect(),
         fixes: vec![Fix {
@@ -1385,11 +1414,13 @@ fn iknow_대상_없음(하나: &선언, 대상: &SymbolRef, project: &Project) -
 fn iknow_불완전(
     이름: &str, 선언목록: &[선언], 누락: &[(&선언, Vec<&선언>)]
 ) -> Diagnostic {
+    let 표기 = 백틱_이음(이름);
+
     Diagnostic {
         severity: Severity::Error,
         code: "K012",
         message: format!(
-            "같은 이름의 심볼이 여러 파일에서 선언됨 — `{이름}`. iknow 상호 명시가 완전하지 않습니다. 다른 뜻이라면 각 선언에 iknow 를 붙여 상호 명시하고, 같은 뜻이라면 한쪽을 지우고 다른 쪽을 import 하세요."
+            "같은 이름의 심볼이 여러 파일에서 선언됨 — {표기}. iknow 상호 명시가 완전하지 않습니다. 다른 뜻이라면 각 선언에 iknow 를 붙여 상호 명시하고, 같은 뜻이라면 한쪽을 지우고 다른 쪽을 import 하세요."
         ),
         // 선언한 자리 전부가 관련 위치다 (스펙 5.1.1).
         locations: 선언목록
@@ -1401,9 +1432,9 @@ fn iknow_불완전(
                 // 첫 자리에만 "여기서", 나머지는 "여기서도" 라고 말한다. 어느 쪽이 원인인지는
                 // 컴파일러가 알 수 없으므로 순서를 주장하지 않는다.
                 note: if 자리 == 0 {
-                    format!("여기서 선언했습니다 — {} `{이름}`", 종류_낱말(&하나.kind))
+                    format!("여기서 선언했습니다 — {} {표기}", 종류_낱말(&하나.kind))
                 } else {
-                    format!("여기서도 선언했습니다 — {} `{이름}`", 종류_낱말(&하나.kind))
+                    format!("여기서도 선언했습니다 — {} {표기}", 종류_낱말(&하나.kind))
                 },
             })
             .collect(),
@@ -1426,12 +1457,12 @@ fn iknow_불완전(
                     doc: Some(대표.doc.clone()),
                     action: if 이미_있음 {
                         format!(
-                            "{낱말} `{이름}` 선언의 iknow 목록에 다음을 덧붙이세요: {}",
+                            "{낱말} {표기} 선언의 iknow 목록에 다음을 덧붙이세요: {}",
                             목록.join(", ")
                         )
                     } else {
                         format!(
-                            "{낱말} `{이름}` 선언 줄 끝에 다음을 추가하세요: // iknow {}",
+                            "{낱말} {표기} 선언 줄 끝에 다음을 추가하세요: // iknow {}",
                             목록.join(", ")
                         )
                     },
