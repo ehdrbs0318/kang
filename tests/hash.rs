@@ -1,4 +1,5 @@
-// `hash::normalize` / `hash::rev` 동작을 검증하는 통합 테스트.
+// `hash::rev` 동작을 검증하는 통합 테스트. 정규화 규칙도 `rev` 의 출력으로만 본다 —
+// `hash::normalize` 를 직접 부르는 테스트는 이 파일에 없다.
 use kang::hash;
 
 /// 줄 끝 공백이 제거되어 해시가 동일해야 한다.
