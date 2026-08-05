@@ -106,14 +106,18 @@ pub struct Location {
     pub note: String,
 }
 
+/// 수정의 종류. 문법 규약이 갈리므로 판별자가 필요하다.
+/// Edit 은 문서 문법(백틱 사용, 스펙 4.2), Shell 은 CLI 문법(백틱 금지·인용, 스펙 6.0).
+pub enum FixKind { Edit, Shell }
+
 /// 진단이 제안하는 수정 하나. LLM 이 그대로 적용할 수 있어야 한다.
-/// **줄 번호를 좌표로 쓰지 않는다** (ADR-0003) — 첫 fix 를 적용하면
-/// 줄이 밀려 두 번째 fix 가 엉뚱한 곳을 가리킨다.
+/// **줄 번호를 좌표로 쓰지 않는다** (ADR-0003).
+/// `Diagnostic.fixes` 는 **순서 있는 목록**이며 앞에서부터 적용한다.
 pub struct Fix {
-    pub doc: DocPath,
+    pub kind: FixKind,
+    /// Edit 이면 대상 문서. Shell 이면 None.
+    pub doc: Option<DocPath>,
     /// 어디에 무엇을 적용할지 한 문장으로.
-    /// 예: "keyword `epoch` 선언 뒤에 `// iknow docs/core/draft.epoch` 추가".
-    /// 셸 명령이면 인용까지 포함한다.
     pub action: String,
 }
 
@@ -146,8 +150,6 @@ pub struct SymbolRef {
 
 pub struct Keyword {
     pub name: KeywordName,
-    /// `also` 로 선언한 동의어. 전역에서 정본 이름으로 해석된다.
-    pub synonyms: Vec<KeywordName>,
     pub definition: String,
     pub detail: Option<String>,   // #`상세 topic` 이름
     pub iknow: Vec<SymbolRef>,
@@ -199,8 +201,7 @@ pub fn parse_document(path: DocPath, source: &str) -> Result<Document, Vec<Diagn
 
 **구현 요점**
 - frontmatter는 `---` 로 감싼 블록. `description` 이 없으면 error.
-- `keyword` 줄: 이름(계층 `.` 구분) → 선택적 `also` 동의어 목록 → `:` → 한 줄 정의 → 선택적 `` #`상세 topic` ``.
-  - `` keyword `승격` also `promote`: 실행 산출물을 새 기준선으로 채택하는 행위 ``
+- `keyword` 줄: 이름(계층 `.` 구분) → `:` → 한 줄 정의 → 선택적 `` #`상세 topic` ``. 동의어 문법은 없다.
 - `##` 로 시작하면 새 topic. 다음 `##` 직전까지가 body.
 - 백틱 스캔: `` \` `` 는 리터럴, ` ``` ` 펜스 내부는 건너뛴다. 그 외 백틱 쌍은 심볼 참조로 `refs` 에 기록.
 - 줄 번호를 모든 노드에 기록한다. 진단 품질이 여기 달려 있다.
@@ -216,7 +217,6 @@ pub fn parse_document(path: DocPath, source: &str) -> Result<Document, Vec<Diagn
   - `frontmatter_블록_자체가_없으면_에러다`
   - `keyword_에_한줄정의가_없으면_에러다`
   - `짝이_맞지_않는_백틱은_에러다`
-  - `also_동의어_목록을_읽는다`
 - [ ] **Step 2: `cargo test` — 실패 확인**
 - [ ] **Step 3: `ast.rs` 타입 정의 (`Diagnostic` 포함)**
 - [ ] **Step 4: `parse.rs` 구현 — frontmatter, keyword, topic, 백틱 스캔**
@@ -311,7 +311,6 @@ impl SymbolTable {
     pub fn scope(&self, doc: &DocPath) -> HashMap<String, SymbolId>;
 
     /// 같은 이름으로 선언된 심볼들을 모아 반환한다. iknow 검사에 쓴다.
-    /// 동의어도 이 색인에 들어간다 — 동의어와 같은 이름의 새 선언을 잡기 위해서다.
     pub fn by_name(&self, name: &str) -> &[SymbolId];
 
     pub fn owner(&self, id: SymbolId) -> &DocPath;
@@ -322,7 +321,6 @@ impl SymbolTable {
 **구현 요점**
 - 디렉토리 순회는 `std::fs::read_dir` 재귀로 직접 쓴다. `.kang` 확장자만 읽는다.
 - `hash_source` 는 세 종류 모두에 값이 있다 — keyword 는 한 줄 정의, topic 은 body, **exception 은 그 예외를 선언한 topic 의 body** 다 (스펙 4.8). Task 8이 이걸 쓴다.
-- 동의어는 정본 심볼로 해석되도록 스코프에 함께 등록한다. 본문에서 동의어를 써도 같은 `SymbolId` 가 나와야 한다.
 - `by_name` 은 `HashMap<String, Vec<SymbolId>>` 로 미리 색인해 둔다. 매번 선형 스캔하면 iknow 검사가 O(n²)가 된다.
 - 읽기 실패와 잘못된 UTF-8 은 그 파일에 대한 진단으로 바꾸고 나머지 파일 처리를 계속한다. 한 파일 때문에 전체가 죽으면 안 된다.
 
@@ -334,7 +332,6 @@ impl SymbolTable {
   - `kang_이_아닌_파일은_무시한다`
   - `자기_파일의_심볼을_스코프에서_찾는다`
   - `import_한_alias_를_스코프에서_찾는다`
-  - `동의어가_정본_심볼로_해석된다`
   - `같은_이름_심볼을_by_name_으로_모은다`
 - [ ] **Step 2: `cargo test` — 실패 확인**
 - [ ] **Step 3: `find_root` 와 `load` 구현 (git 루트 탐색 + 재귀 순회 + 파싱)**
@@ -405,18 +402,17 @@ pub fn report(diags: &[Diagnostic]) -> String;
 | import 했으나 어떤 topic 에서도 미사용 | error |
 | 한 심볼에 두 개 이상 alias | error |
 | 서로 다른 파일이 같은 이름 심볼 선언, iknow 없음 | error |
-| **다른 파일이 어떤 keyword 의 동의어와 같은 이름으로 새 keyword 선언** | error |
-| **서로 다른 keyword 가 같은 동의어를 선언** | error — `iknow` 로 해소되지 않는다 |
 | iknow 가 관련 파일 전체를 상호 명시하지 않음 | error |
 | **iknow 대상 파일이나 심볼이 존재하지 않음** | error |
 
 - **이름 충돌 판정은 계층 전체 경로 기준이다.** `결제`.`상태` 와 `구독`.`상태` 는 다른 이름이므로 충돌이 아니다 (스펙 4.3).
 - iknow 검사는 상호성까지 본다. N개 파일이 같은 이름을 선언하면 각 파일이 나머지 N-1개를 전부 명시해야 한다. 누락된 파일 경로를 `fixes` 에 나열한다.
 - **iknow 는 import 가 아니므로 미사용 검사 대상이 아니다.** 경로 실재와 상호성만 본다 (스펙 4.4).
-- 동의어 충돌 진단은 동의어를 선언한 owner 경로를 `locations` 에 담는다.
 - 사용 여부는 topic 별로 추적한다. 파일 전체에서 한 번이라도 쓰였으면 통과.
 
-**진단 출력 포맷** — **스펙 5.1.1 에 완성된 예시 3건이 있다.** 그대로 따른다. 즉흥으로 정하지 않는다.
+**진단 출력 포맷** — **스펙 5.1.1 에 완성된 예시 3건이 있다.** 그 **형식**을 따른다. 즉흥으로 정하지 않는다.
+
+테스트는 문자 단위 일치가 아니라 **구조 일치**를 본다. 예시에 박힌 경로와 줄 번호까지 맞추려면 fixture 를 역설계해야 하고 스펙 오타 수정마다 테스트가 깨진다. 검사할 것은 `code` 값, `locations` 개수와 각 `note` 유무, `fixes` 의 종류·순서, 셸 명령의 인용 여부다.
 
 - 모든 진단은 `code`(`K001` 형식), `message`, `locations`(최소 1개), `fixes` 를 갖는다.
 - `locations` 각 항목은 문서 경로·줄 번호·`note`(그 위치가 왜 관련되는지)를 갖는다. 순환 체인과 iknow 누락이 다중 위치의 대표 사례다.
@@ -434,16 +430,15 @@ pub fn report(diags: &[Diagnostic]) -> String;
   - `3개_파일_충돌은_각자_나머지_2개를_명시해야_한다`
   - `iknow_대상이_없으면_에러다`
   - `계층이_다르면_같은_말단_이름도_충돌이_아니다`
-  - `동의어와_같은_이름의_새_선언은_에러다`
-  - `두_keyword_가_같은_동의어를_선언하면_에러다`
-  - `동의어_충돌은_iknow_로_해소되지_않는다`
   - `진단이_관련_위치를_전부_담는다`
   - `셸_명령_fix_는_인용되어_출력된다`
-  - `미해결_심볼_출력이_스펙_5_1_1_예시와_일치한다`
-  - `iknow_누락_출력이_스펙_5_1_1_예시와_일치한다`
-  - `rev_불일치_출력이_스펙_5_1_1_예시와_일치한다`
+  - `미해결_심볼_진단의_구조가_스펙_5_1_1_과_일치한다`
+  - `iknow_누락_진단의_구조가_스펙_5_1_1_과_일치한다`
+  - `rev_불일치_진단의_구조가_스펙_5_1_1_과_일치한다`
+  - `edit_fix_는_문서_문법으로_shell_fix_는_CLI_문법으로_출력된다`
+  - `fixes_는_적용_순서대로_나온다`
 - [ ] **Step 2: `cargo test` — 실패 확인**
-- [ ] **Step 3: `report` 구현** — 스펙 5.1.1 의 예시 3건과 문자 단위로 일치해야 한다
+- [ ] **Step 3: `report` 구현** — 스펙 5.1.1 의 예시 3건과 구조가 일치해야 한다
 - [ ] **Step 4: `check_symbols` 의 8개 규칙 구현**
 - [ ] **Step 5: `cargo test` 통과 확인**
 - [ ] **Step 6: 커밋** — `feat: 심볼 진단 규칙`
@@ -537,6 +532,7 @@ pub fn check_revs(project: &Project, table: &SymbolTable) -> Vec<Diagnostic>;
 
 **인터페이스**
 - 소비: `resolve::load`, `SymbolTable`, `check::*`
+- 산출: `parse_project()` 와 `compile()` 두 진입점
 - 산출: 실행 가능한 `kang` 바이너리
 
 ```rust
@@ -577,12 +573,27 @@ fn compile() -> Result<(Project, SymbolTable), Vec<Diagnostic>>;
 |---|---|
 | 0 | 성공 |
 | 1 | 컴파일 error 존재 |
-| 2 | 사용법 오류 (알 수 없는 명령, 인자 부족, git 저장소 아님) |
+| 2 | 사용법 오류 (알 수 없는 명령, 인자 부족) + 환경 오류 (git 저장소 아님) |
 | 3 | v2 기능 호출 (`kang inspect`) |
 
 에이전트는 종료 코드로 분기한다. 1과 2를 섞으면 "문서를 고쳐야 한다" 와 "명령을 잘못 썼다" 를 구분할 수 없다.
 
-**핵심 규칙**: 조회 명령은 전부 `compile()` 을 먼저 거친다. error가 있으면 진단만 출력하고 종료 코드 1로 끝낸다. 문서는 한 줄도 출력하지 않는다.
+**환경 오류에는 `--help` 를 출력하지 않는다.** git 저장소가 아닌 것은 명령을 잘못 쓴 게 아니다. 여기서 help 를 보여주면 에이전트가 철자를 의심하며 재시도한다. `git init` 지시만 낸다.
+
+**핵심 규칙**: **조회** 명령은 전부 `compile()` 을 먼저 거친다. error가 있으면 진단만 출력하고 종료 코드 1로 끝낸다. 문서는 한 줄도 출력하지 않는다.
+
+**`bless` 와 `init` 은 `compile()` 을 거치지 않는다.** `bless` 가 필요한 상황은 정의상 전부 error 다 — 핀 없음도 error, 핀 불일치도 error. `compile()` 을 통과해야 실행된다면 `bless` 는 영원히 실행될 수 없다. 대신 `parse_project()` 까지만 쓴다.
+
+```rust
+/// 파싱만 한다. 진단 규칙을 돌리지 않는다.
+/// bless 처럼 error 상태에서 실행되어야 하는 명령이 쓴다.
+fn parse_project() -> Result<(Project, SymbolTable), Vec<Diagnostic>>;
+
+/// parse_project + 모든 진단 규칙. error 가 하나라도 있으면 Err.
+fn compile() -> Result<(Project, SymbolTable), Vec<Diagnostic>>;
+```
+
+경계는 이렇다. **파싱이 실패하면 `bless` 도 실패한다** — 대상 import 줄을 찾을 수 없기 때문이다. 파싱이 성공하면 진단이 몇 개든 `bless` 는 진행한다.
 
 **`--help` 는 에이전트의 첫 접점이다.** 인자를 틀린 에이전트가 다음에 하는 일이 `kang --help` 다. 여기서 명령·인자 형식·종료 코드를 전부 보여줘야 재시도가 성공한다. 사용법 오류 시에도 같은 텍스트를 출력한다.
 
@@ -601,6 +612,7 @@ fn compile() -> Result<(Project, SymbolTable), Vec<Diagnostic>>;
   - `kang_파일이_0개면_그렇다고_알린다`
   - `inspect_는_v2_안내와_함께_종료코드_3_이다`
   - `help_이_명령과_인자_형식과_종료코드를_전부_보여준다`
+  - `git_저장소가_아니면_help_대신_git_init_지시만_출력한다`
 - [ ] **Step 2: `cargo test` — 실패 확인**
 - [ ] **Step 3: 서브커맨드 디스패치와 `compile()` 구현**
 - [ ] **Step 4: `build` / `list` / `keywords` / `refs` 출력 구현**
@@ -694,7 +706,7 @@ pub fn show(
 - 테스트: `tests/cli.rs`
 
 **인터페이스**
-- 소비: `Project`, `SymbolTable`, `hash::rev`
+- 소비: `parse_project()` 의 결과, `hash::rev`. **`compile()` 을 쓰지 않는다** — bless 가 필요한 상황은 전부 error 다
 - 산출:
 
 ```rust
@@ -735,6 +747,8 @@ pub fn bless(
   - `갱신_후_build_가_통과한다`
   - `build_출력의_fix_문자열을_그대로_인자로_받는다`
   - `백틱_없는_심볼_주소를_파싱한다`
+  - `진단이_있는_상태에서도_bless_가_실행된다`
+  - `파싱이_실패하면_bless_도_실패한다`
 - [ ] **Step 2: `cargo test` — 실패 확인**
 - [ ] **Step 3: `ImportAddress::parse` 와 `bless` 구현**
 - [ ] **Step 4: `main.rs` 에 `bless` 서브커맨드 연결**
@@ -761,15 +775,39 @@ pub fn bless(
   - `build_출력을_bless_에_그대로_넘기면_전부_해제된다`
   - `참조처를_먼저_고친_뒤_bless_해도_올바른_핀이_갱신된다`
   - `exception_선언_topic_을_바꾸면_커버_문서가_깨진다`
-  - `동의어로_쓴_본문이_정본_심볼로_해석된다`
   - `순환_import_를_만들면_체인이_출력된다`
   - `show_출력이_유효한_YAML_이다`
   - `error_상태에서는_어떤_조회도_출력되지_않는다`
-  - `빈_디렉토리에서_init_과_build_두_명령으로_통과한다`
-  - `진단_3종_출력이_스펙_5_1_1_예시와_문자단위로_일치한다`
+  - `git_init_후_kang_init_과_build_세_명령으로_통과한다`
+  - `진단_3종의_구조가_스펙_5_1_1_과_일치한다`
 - [ ] **Step 3: `cargo test` 통과 확인**
 - [ ] **Step 4: `cargo clippy -- -D warnings` 통과 확인**
 - [ ] **Step 5: 커밋** — `test: 통합 검증과 fixture 프로젝트`
+
+---
+
+## Task 13: 배포 파이프라인
+
+**파일**
+- 생성: `.github/workflows/release.yml`, `README.md` 설치 절
+
+**인터페이스**
+- 소비: `cargo build --release`
+- 산출: 태그 푸시 시 GitHub Releases 에 바이너리 4종
+
+**구현 요점**
+kang 의 소비자는 다른 프로젝트의 LLM 에이전트다. 그 프로젝트는 TypeScript 일 가능성이 높고 Rust 툴체인이 있을 이유가 없다. 소스 빌드만으로는 설치 경로가 없다.
+
+- 타깃: `aarch64-apple-darwin`, `x86_64-apple-darwin`, `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`
+- 트리거는 `v*` 태그 푸시. 브랜치 푸시에서는 돌지 않는다.
+- 아티팩트 이름에 타깃 트리플을 넣어 설치 스크립트가 `uname` 으로 고를 수 있게 한다.
+- `README.md` 에 curl 한 줄 설치 예시를 넣는다.
+
+- [ ] **Step 1: `release.yml` 작성** — 태그 트리거, 4 타깃 매트릭스 빌드, Releases 업로드
+- [ ] **Step 2: 로컬에서 `cargo build --release --target aarch64-apple-darwin` 성공 확인**
+- [ ] **Step 3: 테스트 태그를 푸시해 워크플로가 4개 아티팩트를 만드는지 확인**
+- [ ] **Step 4: `README.md` 설치 절 작성**
+- [ ] **Step 5: 커밋** — `ci: 크로스 플랫폼 릴리즈 워크플로`
 
 ---
 
@@ -844,31 +882,6 @@ kang 의 주 사용자는 다른 프로젝트에서 일하는 LLM 에이전트�
 
 ---
 
-## Task 13: 배포 파이프라인
-
-**파일**
-- 생성: `.github/workflows/release.yml`, `README.md` 설치 절
-
-**인터페이스**
-- 소비: `cargo build --release`
-- 산출: 태그 푸시 시 GitHub Releases 에 바이너리 4종
-
-**구현 요점**
-kang 의 소비자는 다른 프로젝트의 LLM 에이전트다. 그 프로젝트는 TypeScript 일 가능성이 높고 Rust 툴체인이 있을 이유가 없다. 소스 빌드만으로는 설치 경로가 없다.
-
-- 타깃: `aarch64-apple-darwin`, `x86_64-apple-darwin`, `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`
-- 트리거는 `v*` 태그 푸시. 브랜치 푸시에서는 돌지 않는다.
-- 아티팩트 이름에 타깃 트리플을 넣어 설치 스크립트가 `uname` 으로 고를 수 있게 한다.
-- `README.md` 에 curl 한 줄 설치 예시를 넣는다.
-
-- [ ] **Step 1: `release.yml` 작성** — 태그 트리거, 4 타깃 매트릭스 빌드, Releases 업로드
-- [ ] **Step 2: 로컬에서 `cargo build --release --target aarch64-apple-darwin` 성공 확인**
-- [ ] **Step 3: 테스트 태그를 푸시해 워크플로가 4개 아티팩트를 만드는지 확인**
-- [ ] **Step 4: `README.md` 설치 절 작성**
-- [ ] **Step 5: 커밋** — `ci: 크로스 플랫폼 릴리즈 워크플로`
-
----
-
 ## 완료 조건
 
 - [ ] `cargo test` 전부 통과
@@ -876,7 +889,7 @@ kang 의 소비자는 다른 프로젝트의 LLM 에이전트다. 그 프로젝�
 - [ ] fixture 프로젝트에서 `kang build` 종료 코드 0
 - [ ] 스펙 V0001 의 3~6절 전 항목이 구현됨 (7절 코드 연동은 v2, 8절은 비목표, 9절은 미결정 사항이라 구현 대상이 아님)
 - [ ] 태그 푸시 시 릴리즈 워크플로가 4개 타깃 바이너리를 산출
-- [ ] **빈 저장소에서 `kang init` → `kang build` 가 두 명령으로 통과한다** — TTHW 측정 기준
+- [ ] **빈 디렉토리에서 `git init` → `kang init` → `kang build` 가 세 명령으로 통과한다** — TTHW 측정 기준. `kang init` 은 git 을 요구하지 않지만 `build` 는 요구하므로(스펙 3절) `git init` 이 반드시 낀다
 - [ ] **`kang` 이 자기 저장소에서 동작한다** — 도그푸딩 착수 조건. `plans/`·`docs/adr/`·`CONTEXT.md` 이관은 별도 플랜
 
 ---
@@ -894,7 +907,7 @@ kang 의 소비자는 다른 프로젝트의 LLM 에이전트다. 그 프로젝�
 | 3 | rev 부트스트랩 데드락 | **핀 없이 쓰고 `bless` 가 삽입한다.** 더미 해시가 사라진다. 스펙 4.8 |
 | 4 | `bless` 줄 번호 주소 | **심볼 주소로 변경** — `kang bless <문서> --import <심볼>`. 스펙 6.2, [ADR-0003](../../docs/adr/0003-symbolic-addressing-not-line-numbers.md) |
 | 5 | 프로젝트 루트 미정의 | **git 저장소 루트가 프로젝트 루트.** 설정 파일을 두지 않는다. 스펙 3절 |
-| 11 | 이름이 다른 개념 중복 | **동의어(`also`) 선언 도입.** owner 가 정본 이름 옆에 변형을 선언하고, 다른 파일이 그 이름으로 새 keyword 를 선언하면 error. 유사도 매칭이 아니라 결정론이다. 스펙 4.3 |
+| 11 | 이름이 다른 개념 중복 | **결정론으로 닫히지 않는다.** grilling 에서 동의어(`also`) 를 도입했다가 2차 독립 리뷰 후 **삭제**했다. 동의어는 owner 가 남이 쓸 변형을 예견해야 작동하는데, 예견할 수 있었다면 두 이름이 생기지 않았다. 처음부터 kang 으로 설계하면 변형이 생길 자리가 없고(모든 백틱이 심볼), 이관 시 만나는 변형은 정본으로 통합한다. 스펙 4.3 |
 | 12 | 더 단순한 대안 | **kang 이 정당하다.** 참조 코퍼스(ax-conta)가 이미 `Load when`·`Related`·Ubiquitous Language·living-document 재작성을 손으로 하고 있으나 **강제가 없다.** 50줄 해시 스크립트는 미해결 참조 error·owner 유일성·예외 커버리지를 주지 못한다 |
 
 부수 결정: 폐기 용어에 묘비를 두지 않는다 ([ADR-0001](../../docs/adr/0001-no-tombstones-for-retired-terms.md)), 읽을 때 평탄화·쓸 때 import ([ADR-0002](../../docs/adr/0002-flatten-on-read-import-on-write.md)), keyword 는 도메인 특수 용어만, 이름 충돌은 계층 전체 경로 기준.
@@ -948,15 +961,18 @@ kang 의 소비자는 다른 프로젝트의 LLM 에이전트다. 그 프로젝�
 
 | 코드패스 | 실패 시나리오 | 테스트 | 에러 처리 | 사용자에게 보이나 |
 |---|---|---|---|---|
-| `bless` 다중 위치 | 3번째에서 실패해 파일이 반쯤 갱신됨 | Task 11 (D5 반영 후) | 전체 검증 후 일괄 쓰기 | 보임 |
-| `bless` 주소 지정 | 문서 수정으로 줄이 밀려 엉뚱한 줄 갱신 | **없음** | **없음** | **안 보임 — BLOCKING 4** |
-| `exception` 의미 변경 | 커버 문서가 안 깨짐 | **없음** | **없음** | **안 보임 — BLOCKING 9** |
-| `kang show` 깊이 | 컨텍스트 초과, 잘린 입력으로 LLM 오답 | **없음** | **없음** | **안 보임 — BLOCKING 8** |
-| `load()` IO 실패 | 잘못된 UTF-8 파일 | Task 4 (D6 반영) | 진단으로 변환, 나머지 계속 | 보임 |
-| 미해결 import | `None` 이후 동작 미정 | Task 6 (D6 반영) | 규칙 추가 예정 | 보임 |
-| 파서 실패 | 짝 안 맞는 백틱, 깨진 import | Task 2·3 (D6 반영) | 진단 | 보임 |
+| `bless` 다중 위치 | 검증 중 실패로 파일이 반쯤 갱신됨 | Task 11 | 전체 검증 후 일괄 쓰기 | 보임 |
+| `bless` 주소 지정 | 문서 수정으로 줄이 밀림 | Task 11 | 심볼 주소라 영향 없음 (ADR-0003) | 해당 없음 |
+| `bless` 실행 조건 | error 상태라 `compile()` 이 막음 | Task 9·11 | `parse_project()` 만 거친다 | 보임 |
+| `exception` 의미 변경 | 커버 문서가 안 깨짐 | Task 8 | 선언 topic 의 본문 해시를 핀 | 보임 |
+| `kang show` 깊이 | 컨텍스트 초과, 잘린 입력으로 오답 | **없음** | **없음** | **안 보임 — v1 미구현, 스펙 6.4** |
+| `load()` IO 실패 | 잘못된 UTF-8 파일 | Task 4 | 진단으로 변환, 나머지 계속 | 보임 |
+| 미해결 import | 대상 파일·심볼 부재 | Task 6 | error | 보임 |
+| 파서 실패 | 짝 안 맞는 백틱, 깨진 import | Task 2·3 | 진단 | 보임 |
+| `init` 환경 | git 저장소 아님 | Task 14 | git 없이 진행, `git init` 안내 | 보임 |
+| `iknow` 로 복제 축복 | 남의 정의를 복제하고 "다른 뜻" 선언 | **불가능** | **불가능** | **안 보임 — 감수하는 한계, 스펙 4.4** |
 
-**critical gap 3건** — BLOCKING 4, 8, 9 는 테스트도 에러 처리도 없고 실패가 조용하다. 셋 다 스펙 수정이 선행되어야 한다.
+**critical gap 2건** — `show` 깊이는 v1 미구현이고 모양만 확정돼 있다. `iknow` 복제 경로는 자연어 판정이 필요해 기계적으로 막을 수 없으며 스펙 4.4 가 한계로 명시한다.
 
 ## Worktree parallelization
 
@@ -969,7 +985,7 @@ kang 의 소비자는 다른 프로젝트의 LLM 에이전트다. 그 프로젝�
 | Task 9 | `main.rs` | Task 6·7·8 |
 | Task 10 | `yaml.rs`, `show.rs` | Task 4·5 |
 | Task 11 | `bless.rs` | Task 8 |
-| Task 12 | `tests/` | 전부 |
+| Task 12 | `tests/` | 전부 (**Task 14 포함** — 통합 시나리오가 `kang init` 을 쓴다) |
 | Task 13 | `.github/`, `README.md` | — |
 | Task 14 | `init.rs`, `skill.md` | — |
 
@@ -981,10 +997,10 @@ Lane C: Task 13 + Task 14               (독립, CI·init·스킬)
 Lane D: Task 6 → 7 → 8 → 11             (순차, check.rs 공유 후 bless)
 Lane E: Task 10                         (D 와 병렬, yaml/show)
         ↓ D, E 완료 후
-Lane F: Task 9 → 12
+Lane F: Task 9 → 12   (Lane C 의 Task 14 도 끝나야 시작 가능)
 ```
 
-**실행 순서:** A + B + C 를 병렬 워크트리로 시작. B 완료 후 D + E 병렬. 둘 다 끝나면 F.
+**실행 순서:** A + B + C 를 병렬 워크트리로 시작. B 완료 후 D + E 병렬. **D·E 와 C(Task 14) 가 모두 끝나면** F. Task 12 의 통합 시나리오가 `kang init` 을 호출하므로 C 가 F 의 선행이다.
 
 **충돌 플래그:** Lane D 와 E 는 각각 `check.rs` 와 `yaml.rs`/`show.rs` 만 만지므로 충돌하지 않는다. 단 둘 다 Task 4 의 `SymbolTable` 시그니처에 의존하므로, B 가 끝나기 전에 D·E 를 띄우면 안 된다.
 
@@ -1050,21 +1066,26 @@ Lane F: Task 9 → 12
 | Review | Trigger | Why | Runs | Status | Findings |
 |--------|---------|-----|------|--------|----------|
 | CEO Review | `/plan-ceo-review` | Scope & strategy | 0 | — | — |
-| Codex Review | `/codex review` | Independent 2nd opinion | 0 | — | — |
-| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 1 | ISSUES_RESOLVED | 19 issues, 3 critical gaps — grilling 에서 전부 해소 |
+| Codex Review | `/codex review` | Independent 2nd opinion | 0 | — | Codex CLI 가 ChatGPT 계정 모델 제약으로 실행 불가 |
+| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 2 | CLEAR | 1차 19건, 2차 6건 — 전부 해소 |
 | Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | 해당 없음 (CLI) |
-| DX Review | `/plan-devex-review` | Developer experience gaps | 1 | ISSUES_OPEN | 8차원 평가, 5건 반영, 3건 v1 이후 |
+| DX Review | `/plan-devex-review` | Developer experience gaps | 1 | CLEAR | 8차원 평가, 5건 반영, 3건 v1 이후 |
 
-**OUTSIDE VOICE:** Codex CLI 는 ChatGPT 계정 모델 제약으로 실패, Claude 서브에이전트로 폴백. 13건 발견, 그중 5건이 구현 차단 수준의 스펙 모순. 전부 해소됨.
+**OUTSIDE VOICE:** 2회 실행. Codex 는 계정 제약으로 두 번 다 실패, Claude 서브에이전트로 폴백. 1차 13건(구현 차단 5건 포함) 전부 해소, 2차 13건 전부 해소. 2차에서 찾은 `bless` 실행 불가가 유일한 구현 차단이었다.
 
-**GRILLING (2026-08-05):** `/grill-with-docs` 로 전략 전제와 스펙 모순 처리. 참조 코퍼스 `~/Project/ax-conta` 를 근거로 검증. 구현 차단 5건 해소, 설계 결함 3건 해소, 2건 감수, 동의어 도입, ADR 3건 신설.
+**GRILLING (2026-08-05):** `/grill-with-docs` 로 전략 전제와 스펙 모순 처리. 참조 코퍼스 `~/Project/ax-conta` 를 근거로 검증. 구현 차단 5건 해소, 설계 결함 3건 해소, 2건 감수, ADR 3건 신설.
 
-**DX REVIEW (2026-08-05):** 주 개발자를 LLM 에이전트로 확정. 가장 큰 발견은 **창립 원칙이 DX 에 의해서만 강제된다**는 것 — `kang show` 가 `cat` 보다 어려우면 에이전트가 우회하고, 우회하면 마크다운보다 나빠진다. Task 14(`kang init` + 스킬), 스펙 5.1.1(진단 예시 3건), 종료 코드 규약으로 대응.
+**DX REVIEW (2026-08-05):** 주 개발자를 LLM 에이전트로 확정. 창립 원칙이 DX 에 의해서만 강제된다는 발견에 따라 Task 14(`kang init` + 스킬), 스펙 5.1.1(진단 예시), 종료 코드 규약을 추가.
 
-**VERDICT:** 구현 차단 항목 없음. 스펙이 이번 세션에서 크게 바뀌었으므로 구현 착수 전 `/plan-eng-review` 재실행 권장.
+**PONYTAIL (2026-08-05):** 7건 중 6건 적용. `ImportGraph` 구조체·`canonical_of_synonym`·`assets/` 디렉토리·중복 파일 제거.
+
+**2차 ENG REVIEW 에서 되돌린 결정:** grilling 에서 도입한 **동의어(`also`) 를 삭제**했다. 동의어는 owner 가 남이 쓸 변형을 예견해야 작동하는데, 예견할 수 있었다면 두 이름이 생기지 않았을 것이다. 처음부터 kang 으로 설계하면 변형이 생길 자리가 없다.
+
+**VERDICT:** ENG + DX CLEARED — 구현 착수 가능. 남은 미결정은 전부 v1 이후 항목이다.
 
 **기록 실패:** `gstack-review-log` 가 최소 JSON 도 거부함. `bun` 미설치로 gstack bun 기반 바이너리 일부가 동작하지 않는다. 이 리포트가 유일한 기록이다.
 
 **UNRESOLVED DECISIONS:**
 - 언어 자체의 버전 정책 — kang 문법이 바뀔 때 기존 `.kang` 문서를 어떻게 할지 미정
 - Windows 지원 여부 — 릴리즈 타깃 4종이 macOS·Linux 뿐
+- `kang show` 깊이 임계값 — 모양은 빌드 시점 구조 린트로 확정, 숫자는 도그푸딩 실측 후
