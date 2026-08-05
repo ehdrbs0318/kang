@@ -150,6 +150,40 @@ keyword `채널`: 슬랙 #`일반` 채널을 뜻한다
     assert!(!diagnostics[0].fixes.is_empty());
 }
 
+/// 줄 끝의 백틱이 이스케이프된 것이면 마커의 끝이 아니다.
+/// 이 구멍이 열려 있으면 줄 끝에 `` \` `` 하나를 붙이는 것만으로 정의 손실 검사를 우회한다.
+#[test]
+fn 이스케이프된_백틱으로_끝나면_상세_마커가_아니다() {
+    let source = r#"---
+description: 결제 정책 문서
+---
+
+keyword `x`: 정의다 #`상세` 뒤 텍스트 \`
+"#;
+
+    let diagnostics = parse::parse_document(문서경로(), source).unwrap_err();
+
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(diagnostics[0].code, "K103");
+    assert_eq!(diagnostics[0].locations[0].line, 5);
+}
+
+/// 마커가 없는 줄은 리터럴 백틱으로 끝나도 그대로 통과해야 한다.
+#[test]
+fn 리터럴_백틱으로_끝나는_정의는_통과한다() {
+    let source = r#"---
+description: 결제 정책 문서
+---
+
+keyword `x`: 리터럴 백틱 \` 을 쓴다
+"#;
+
+    let doc = parse::parse_document(문서경로(), source).unwrap();
+
+    assert_eq!(doc.keywords[0].definition, r"리터럴 백틱 \` 을 쓴다");
+    assert_eq!(doc.keywords[0].detail, None);
+}
+
 /// `##` 헤딩마다 topic 을 만들고, 다음 헤딩 직전까지를 본문으로 잘라야 한다.
 #[test]
 fn topic_헤딩과_본문을_잘라낸다() {

@@ -267,7 +267,9 @@ fn parse_keyword_line(path: &DocPath, rest: &str, line_no: usize) -> Result<Keyw
             let tail = &definition_part[marker + 1..];
             // 마커 뒤는 상세 심볼 하나로 끝나야 한다. 텍스트가 더 남아 있는데도
             // 마커로 인정하면 그 텍스트가 정의에서 조용히 사라진다.
-            if tail_symbols.len() != 1 || !tail.ends_with('`') {
+            // 끝의 백틱이 이스케이프된 것이면 심볼을 닫은 것이 아니다 — 그것을 세면
+            // 줄 끝에 `\`` 하나를 붙이는 것만으로 이 검사를 우회할 수 있다.
+            if tail_symbols.len() != 1 || !tail.ends_with('`') || tail.ends_with("\\`") {
                 return Err(keyword_문법_오류(
                     path,
                     line_no,
