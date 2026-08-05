@@ -249,9 +249,13 @@ exception 은 본문이 없지만 의미는 **그것이 선언된 topic 의 맥�
 
 한 exception을 둘 이상의 topic이 cover하면 error다. 예외 하나에 정책 하나를 강제한다.
 
-### 5.3 참조 전파
+### 5.3 참조 전파 (v2)
 
 코드가 어떤 topic을 참조하면, 그 topic이 import하는 상위 topic도 참조된 것으로 간주하여 재귀적으로 전파한다. import 그래프가 DAG이므로 "상위"가 well-defined이며, 순환으로 인한 오판이 발생하지 않는다.
+
+**v1 에는 이 규칙의 소비자가 없다.** 참조 전파는 코드가 topic 을 참조할 때 정의되고 코드 연동은 7절(v2)이다. `kang show` 의 재귀 임베드는 import 관계를 직접 순회하므로 전파가 필요 없다.
+
+순환 검출은 **파일 단위**로 한다 (5.1). 파일 그래프가 DAG 면 topic 그래프도 DAG 다 — topic 간선 T→U 는 반드시 file(T)→file(U) 를 동반하므로 파일 단위 금지가 더 강하다.
 
 ## 6. CLI
 
@@ -527,39 +531,6 @@ declare function kangTopic<K extends keyof KangTopics>(
 - 언어별 애노테이션의 이름과 인자 형태, 심볼 인덱스 파일의 포맷 — v2 착수 시 결정.
 - 에러 메시지 포맷 — LLM이 자가 수정할 수 있도록 수정 위치와 방법을 명시해야 한다. 구현 시 상세 설계.
 
-## 10. 구현 체크리스트
+## 10. 구현
 
-### 언어 코어
-
-- [ ] 렉서: 백틱 심볼, 이스케이프, 코드 펜스 처리
-- [ ] 파서: frontmatter, keyword, topic, exception, cover, import, 주석형 modifier
-- [ ] AST 정의 및 파일 단위 심볼 테이블
-- [ ] 프로젝트 전역 심볼 해석기 (경로 → 파일 → 심볼)
-- [ ] import 그래프 구성 및 순환 검출
-- [ ] topic별 사용 심볼 추적 (완결성 검증, unused import 검출)
-- [ ] 심볼 중복 검사 및 `iknow` 상호 명시 검증
-- [ ] exception 상태 기계 검증 (5.2)
-- [ ] cover 중복 검사
-- [ ] rev 해시 산출 — 정규화 규칙 및 SHA-256 앞 6자리
-- [ ] rev 핀 불일치 검출 및 diff 출력
-- [ ] 진단 리포터 (error/warn, 수정 안내 포함)
-
-### CLI
-
-- [ ] `kang build`
-- [ ] `kang bless` — 다중 위치 인자, `kang build` 출력과 형식 호환
-- [ ] `kang list`
-- [ ] `kang keywords` — 경로 스코프만 지원한다
-- [ ] `kang refs`
-- [ ] `kang show` — YAML 직렬화, 재귀 임베드, 중복 제거
-- [ ] 컴파일 실패 시 출력 차단 공통 처리
-
-### 검증
-
-- [ ] 각 진단 규칙별 컴파일 실패/통과 테스트
-- [ ] 다이아몬드 의존에서 `kang show` 중복 제거 확인
-- [ ] 순환 import 검출 및 에러 메시지 확인
-- [ ] 참조 전파가 상위까지 도달하는지 확인
-- [ ] 대상 변경 시 rev 핀 불일치가 모든 참조처에서 발생하는지 확인
-- [ ] `kang build` 출력을 그대로 `kang bless` 인자로 넘겨 전체 해제가 되는지 확인
-- [ ] 정규화 대상 변경(줄 끝 공백, 연속 빈 줄)이 해시를 바꾸지 않는지 확인
+구현 태스크와 검증 체크리스트는 `V0002-kang-v1-implementation.md` 가 유일한 출처다. 여기에 중복해 두지 않는다 — 두 곳에 있으면 갈라진다.

@@ -139,6 +139,8 @@ pub struct SymbolRef {
 
 pub struct Keyword {
     pub name: KeywordName,
+    /// `also` 로 선언한 동의어. 전역에서 정본 이름으로 해석된다.
+    pub synonyms: Vec<KeywordName>,
     pub definition: String,
     pub detail: Option<String>,   // #`상세 topic` 이름
     pub iknow: Vec<SymbolRef>,
@@ -190,7 +192,8 @@ pub fn parse_document(path: DocPath, source: &str) -> Result<Document, Vec<Diagn
 
 **구현 요점**
 - frontmatter는 `---` 로 감싼 블록. `description` 이 없으면 error.
-- `keyword` 줄: 이름(계층 `.` 구분) → `:` → 한 줄 정의 → 선택적 `#`상세 topic`.
+- `keyword` 줄: 이름(계층 `.` 구분) → 선택적 `also` 동의어 목록 → `:` → 한 줄 정의 → 선택적 `` #`상세 topic` ``.
+  - `` keyword `승격` also `promote`: 실행 산출물을 새 기준선으로 채택하는 행위 ``
 - `##` 로 시작하면 새 topic. 다음 `##` 직전까지가 body.
 - 백틱 스캔: `` \` `` 는 리터럴, ` ``` ` 펜스 내부는 건너뛴다. 그 외 백틱 쌍은 심볼 참조로 `refs` 에 기록.
 - 줄 번호를 모든 노드에 기록한다. 진단 품질이 여기 달려 있다.
@@ -206,6 +209,7 @@ pub fn parse_document(path: DocPath, source: &str) -> Result<Document, Vec<Diagn
   - `frontmatter_블록_자체가_없으면_에러다`
   - `keyword_에_한줄정의가_없으면_에러다`
   - `짝이_맞지_않는_백틱은_에러다`
+  - `also_동의어_목록을_읽는다`
 - [ ] **Step 2: `cargo test` — 실패 확인**
 - [ ] **Step 3: `ast.rs` 타입 정의 (`Diagnostic` 포함)**
 - [ ] **Step 4: `parse.rs` 구현 — frontmatter, keyword, topic, 백틱 스캔**
@@ -229,8 +233,10 @@ pub fn parse_document(path: DocPath, source: &str) -> Result<Document, Vec<Diagn
   - `/` 경로, `.` keyword, `#` topic, `!` exception. 마지막 구분자로 `kind` 를 결정한다.
   - `.` 는 keyword 진입 후 계층에도 쓰인다. 첫 `.` 이후는 전부 키워드 이름 조각이다.
   - `as`, `rev` 는 선택 토큰. 그룹 문법은 없다 — 한 줄에 하나.
-- `exception `이름` [pending]` 과 `cover `이름`` 은 topic 본문 안에서 인식한다.
-- `// iknow <심볼 참조 목록>` 은 keyword / topic 헤딩 / exception 줄 뒤에 붙는다.
+  - **세 종류 모두 rev 핀을 가질 수 있다.** exception 도 예외가 아니다 (스펙 4.7).
+- `` exception `이름` [pending] `` 과 `` cover `이름` `` 은 topic 본문 안에서 인식한다.
+- `// iknow <대상>, <대상>, …` 은 keyword / topic 헤딩 / exception 줄 뒤에 붙는다. 쉼표로 여러 대상을 나열한다.
+  - **`iknow` 는 import 가 아니다.** 파서는 대상을 `Vec<SymbolRef>` 로 담기만 하고, `imports` 에 넣지 않는다. 그래프 간선이 되지 않는 것이 스펙 4.4 의 핵심이다.
 - `// uncoded` 는 topic 헤딩 줄 뒤에만 붙는다.
 - 이 modifier들은 topic `body` 에서 제외한다 — rev 해시에 들어가면 안 된다.
 
@@ -242,7 +248,9 @@ pub fn parse_document(path: DocPath, source: &str) -> Result<Document, Vec<Diagn
   - `rev_핀을_읽는다`
   - `exception_과_pending_을_읽는다`
   - `cover_를_읽는다`
-  - `iknow_대상_목록을_읽는다`
+  - `iknow_대상_목록을_쉼표로_읽는다`
+  - `iknow_대상은_imports_에_들어가지_않는다`
+  - `exception_import_도_rev_핀을_읽는다`
   - `uncoded_modifier_는_body_에서_제외된다`
   - `구분자가_없는_import_는_에러다`
   - `알_수_없는_modifier_는_에러다`
@@ -271,7 +279,12 @@ pub struct Project {
     pub docs: HashMap<DocPath, Document>,
 }
 
-/// 루트 디렉토리를 재귀 순회하며 .kang 파일을 전부 읽어 파싱한다.
+/// 프로젝트 루트를 찾는다. git 저장소 루트가 곧 kang 프로젝트 루트다.
+/// git 저장소가 아니면 그 사실을 진단으로 돌려준다.
+pub fn find_root(cwd: &Path) -> Result<PathBuf, Diagnostic>;
+
+/// 루트를 재귀 순회하며 .kang 파일을 전부 읽어 파싱한다.
+/// 모든 DocPath 는 루트 기준 상대 경로이므로 어느 하위 디렉토리에서 실행해도 동일하다.
 pub fn load(root: &Path) -> (Project, Vec<Diagnostic>);
 
 /// 심볼 하나를 가리키는 프로젝트 전역 식별자.
@@ -291,27 +304,36 @@ impl SymbolTable {
     pub fn scope(&self, doc: &DocPath) -> HashMap<String, SymbolId>;
 
     /// 같은 이름으로 선언된 심볼들을 모아 반환한다. iknow 검사에 쓴다.
+    /// 동의어도 이 색인에 들어간다 — 동의어와 같은 이름의 새 선언을 잡기 위해서다.
     pub fn by_name(&self, name: &str) -> &[SymbolId];
 
+    /// 이 이름이 어떤 keyword 의 동의어라면 그 정본 심볼을 돌려준다.
+    pub fn canonical_of_synonym(&self, name: &str) -> Option<SymbolId>;
+
     pub fn owner(&self, id: SymbolId) -> &DocPath;
-    pub fn hash_source(&self, id: SymbolId) -> Option<&str>;
+    pub fn hash_source(&self, id: SymbolId) -> &str;
 }
 ```
 
 **구현 요점**
 - 디렉토리 순회는 `std::fs::read_dir` 재귀로 직접 쓴다. `.kang` 확장자만 읽는다.
-- `hash_source` 는 keyword면 한 줄 정의, topic이면 body, exception이면 `None` 을 준다. Task 8이 이걸 쓴다.
+- `hash_source` 는 세 종류 모두에 값이 있다 — keyword 는 한 줄 정의, topic 은 body, **exception 은 그 예외를 선언한 topic 의 body** 다 (스펙 4.8). Task 8이 이걸 쓴다.
+- 동의어는 정본 심볼로 해석되도록 스코프에 함께 등록한다. 본문에서 동의어를 써도 같은 `SymbolId` 가 나와야 한다.
 - `by_name` 은 `HashMap<String, Vec<SymbolId>>` 로 미리 색인해 둔다. 매번 선형 스캔하면 iknow 검사가 O(n²)가 된다.
 - 읽기 실패와 잘못된 UTF-8 은 그 파일에 대한 진단으로 바꾸고 나머지 파일 처리를 계속한다. 한 파일 때문에 전체가 죽으면 안 된다.
 
-- [ ] **Step 1: 실패하는 테스트 작성** — 시나리오 5개
+- [ ] **Step 1: 실패하는 테스트 작성** — 시나리오 9개
+  - `git_루트를_프로젝트_루트로_찾는다`
+  - `하위_디렉토리에서_실행해도_DocPath_가_같다`
+  - `git_저장소가_아니면_진단을_낸다`
   - `하위_디렉토리의_kang_파일을_전부_읽는다`
   - `kang_이_아닌_파일은_무시한다`
   - `자기_파일의_심볼을_스코프에서_찾는다`
   - `import_한_alias_를_스코프에서_찾는다`
+  - `동의어가_정본_심볼로_해석된다`
   - `같은_이름_심볼을_by_name_으로_모은다`
 - [ ] **Step 2: `cargo test` — 실패 확인**
-- [ ] **Step 3: `load` 구현 (재귀 순회 + 파싱)**
+- [ ] **Step 3: `find_root` 와 `load` 구현 (git 루트 탐색 + 재귀 순회 + 파싱)**
 - [ ] **Step 4: `SymbolTable` 구현**
 - [ ] **Step 5: `cargo test` 통과 확인**
 - [ ] **Step 6: 커밋** — `feat: 프로젝트 로드와 전역 심볼 테이블`
@@ -320,43 +342,38 @@ impl SymbolTable {
 
 ## Task 5: import 그래프 + 순환 검출
 
-> **2026-08-05 축소.** `ancestors()` 와 참조 전파는 **v2 로 미룬다.** 참조 전파는 "코드가 topic 을 참조하면 상위 topic 도 참조된 것으로 친다" 는 규칙이고 코드 연동 자체가 v2 이므로 v1 에 호출자가 없다. `show` 의 재귀 임베드는 import 를 직접 순회한다. 아래 `ancestors` 관련 시그니처와 테스트 2건은 v1 범위 밖이다.
-
 **파일**
 - 수정: `src/resolve.rs`
 - 테스트: `tests/check.rs`
 
 **인터페이스**
-- 소비: `Project`, `SymbolTable`
+- 소비: `Project`
 - 산출:
 
 ```rust
 pub struct ImportGraph { /* 비공개 */ }
 
 impl ImportGraph {
-    /// import 관계로 DAG 를 만든다. 순환이 있으면 체인 전체를 진단에 담는다.
+    /// 파일 단위 import 관계로 DAG 를 만든다. 순환이 있으면 체인 전체를 진단에 담는다.
     pub fn build(project: &Project) -> (ImportGraph, Vec<Diagnostic>);
-
-    /// 주어진 topic 이 직간접적으로 import 하는 모든 상위 topic.
-    /// 참조 전파(스펙 5.3)에 쓴다.
-    pub fn ancestors(&self, doc: &DocPath, topic: &str) -> Vec<(DocPath, String)>;
 }
 ```
 
 **구현 요점**
-- 노드는 문서가 아니라 **topic** 이다. 참조 전파가 topic 단위이기 때문이다.
+- **노드는 파일이다.** 스펙 5.1 의 순환 규칙이 파일 단위이기 때문이다. 파일 그래프가 DAG 면 topic 그래프도 DAG 다 — topic 간선 T→U 는 반드시 file(T)→file(U) 를 동반하므로 파일 단위 금지가 더 강하다.
+- **`iknow` 는 간선이 아니다.** 상호 명시가 순환으로 잡히면 안 된다 (스펙 4.4). 간선은 `imports` 에서만 만든다.
 - 순환 검출은 DFS + 방문 색칠. 순환 발견 시 스택을 그대로 체인으로 출력하고 "공통 개념을 상위 파일로 추출하라"를 `fix` 에 담는다.
+- `ancestors()` 와 참조 전파는 **v2**다. 참조 전파는 코드가 topic 을 참조할 때 정의되는 규칙이고 코드 연동이 v2 이므로 v1 에 호출자가 없다. `show` 의 재귀 임베드는 `Document.imports` 를 직접 순회한다.
 
 - [ ] **Step 1: 실패하는 테스트 작성** — 시나리오 4개
   - `직접_순환을_검출한다`
   - `3단계_순환의_체인_전체를_출력한다`
-  - `ancestors_가_상위_topic_을_재귀적으로_모은다`
-  - `다이아몬드_의존에서_ancestors_가_중복되지_않는다`
+  - `iknow_상호_명시는_순환이_아니다`
+  - `자기_파일_import_는_순환이다`
 - [ ] **Step 2: `cargo test` — 실패 확인**
-- [ ] **Step 3: 그래프 구성과 DFS 순환 검출 구현**
-- [ ] **Step 4: `ancestors` 구현**
-- [ ] **Step 5: `cargo test` 통과 확인**
-- [ ] **Step 6: 커밋** — `feat: import 그래프와 순환 검출`
+- [ ] **Step 3: 파일 그래프 구성과 DFS 순환 검출 구현**
+- [ ] **Step 4: `cargo test` 통과 확인**
+- [ ] **Step 5: 커밋** — `feat: import 그래프와 순환 검출`
 
 ---
 
@@ -383,25 +400,44 @@ pub fn report(diags: &[Diagnostic]) -> String;
 | 상황 | 심각도 |
 |---|---|
 | 본문 백틱 심볼이 스코프에 없음 | error |
+| **import 대상 파일이나 심볼이 존재하지 않음** | error |
 | import 했으나 어떤 topic 에서도 미사용 | error |
 | 한 심볼에 두 개 이상 alias | error |
 | 서로 다른 파일이 같은 이름 심볼 선언, iknow 없음 | error |
+| **다른 파일이 어떤 keyword 의 동의어와 같은 이름으로 새 keyword 선언** | error |
 | iknow 가 관련 파일 전체를 상호 명시하지 않음 | error |
+| **iknow 대상 파일이나 심볼이 존재하지 않음** | error |
 
-- iknow 검사는 상호성까지 본다. N개 파일이 같은 이름을 선언하면 각 파일이 나머지 N-1개를 전부 명시해야 한다. 누락된 파일 경로를 `fix` 에 나열한다.
+- **이름 충돌 판정은 계층 전체 경로 기준이다.** `결제`.`상태` 와 `구독`.`상태` 는 다른 이름이므로 충돌이 아니다 (스펙 4.3).
+- iknow 검사는 상호성까지 본다. N개 파일이 같은 이름을 선언하면 각 파일이 나머지 N-1개를 전부 명시해야 한다. 누락된 파일 경로를 `fixes` 에 나열한다.
+- **iknow 는 import 가 아니므로 미사용 검사 대상이 아니다.** 경로 실재와 상호성만 본다 (스펙 4.4).
+- 동의어 충돌 진단은 동의어를 선언한 owner 경로를 `locations` 에 담는다.
 - 사용 여부는 topic 별로 추적한다. 파일 전체에서 한 번이라도 쓰였으면 통과.
 
-- [ ] **Step 1: 실패하는 테스트 작성** — 시나리오 7개
+**진단 출력 포맷** — 이 태스크에서 확정한다. LLM 이 스스로 고치는 유일한 입력이므로 여기서 흔들리면 안 된다.
+
+- 모든 진단은 `code`(`K001` 형식), `message`, `locations`(최소 1개), `fixes` 를 갖는다.
+- `locations` 각 항목은 문서 경로·줄 번호·`note`(그 위치가 왜 관련되는지)를 갖는다. 순환 체인과 iknow 누락이 다중 위치의 대표 사례다.
+- `fixes` 각 항목은 문서 경로와 **적용할 행동**을 갖는다. 줄 번호를 수정 좌표로 쓰지 않는다 (ADR-0003).
+- 셸 명령을 담는 `fix` 는 **인용을 붙여 출력**한다. 에이전트가 복사해 그대로 실행할 수 있어야 한다.
+
+- [ ] **Step 1: 실패하는 테스트 작성** — 시나리오 13개
   - `미선언_백틱_심볼은_에러다`
+  - `없는_파일을_import_하면_에러다`
+  - `없는_심볼을_import_하면_에러다`
   - `사용하지_않는_import_는_에러다`
   - `한_심볼에_두_alias_는_에러다`
   - `이름_충돌에_iknow_가_없으면_에러다`
   - `iknow_가_한쪽에만_있으면_에러다`
   - `3개_파일_충돌은_각자_나머지_2개를_명시해야_한다`
-  - `진단_메시지가_누락된_파일_경로를_포함한다`
+  - `iknow_대상이_없으면_에러다`
+  - `계층이_다르면_같은_말단_이름도_충돌이_아니다`
+  - `동의어와_같은_이름의_새_선언은_에러다`
+  - `진단이_관련_위치를_전부_담는다`
+  - `셸_명령_fix_는_인용되어_출력된다`
 - [ ] **Step 2: `cargo test` — 실패 확인**
-- [ ] **Step 3: `report` 구현**
-- [ ] **Step 4: `check_symbols` 의 5개 규칙 구현**
+- [ ] **Step 3: 진단 출력 포맷 확정과 `report` 구현**
+- [ ] **Step 4: `check_symbols` 의 8개 규칙 구현**
 - [ ] **Step 5: `cargo test` 통과 확인**
 - [ ] **Step 6: 커밋** — `feat: 심볼 진단 규칙`
 
@@ -455,7 +491,7 @@ pub fn check_exceptions(project: &Project, table: &SymbolTable) -> Vec<Diagnosti
 - 산출: `check::check_revs(project, table) -> Vec<Diagnostic>`
 
 ```rust
-/// 스펙 4.7 의 rev 핀을 검사한다.
+/// 스펙 4.8 의 rev 핀을 검사한다.
 pub fn check_revs(project: &Project, table: &SymbolTable) -> Vec<Diagnostic>;
 ```
 
@@ -463,20 +499,22 @@ pub fn check_revs(project: &Project, table: &SymbolTable) -> Vec<Diagnostic>;
 
 | 상황 | 심각도 |
 |---|---|
-| keyword·topic import 에 rev 핀 없음 | error |
+| import 에 rev 핀 없음 (keyword·topic·exception 세 종류 모두) | error |
 | rev 핀이 대상의 현재 해시와 불일치 | error |
-| exception import 의 rev 핀이 **선언 topic 본문**의 해시와 불일치 | error |
 
-- 불일치 진단의 `fix` 는 `kang bless <문서경로>:<줄번호>` 형태를 담는다. Task 11의 `bless` 가 그대로 받는 형식이어야 한다.
+해시 입력은 `SymbolTable::hash_source` 가 준다 — keyword 는 한 줄 정의, topic 은 body, **exception 은 그 예외를 선언한 topic 의 body** 다.
+
+- 불일치·부재 진단의 `fix` 는 `kang bless <문서> --import '<심볼>'` 형태를 담는다. Task 11의 `bless` 가 그대로 받는 형식이며, 셸 인용을 붙여 출력한다.
+- **줄 번호를 쓰지 않는다** (ADR-0003). 문서를 고친 뒤 bless 하는 것이 정상 워크플로이므로 줄이 밀린다.
 - **diff 를 출력하지 않는다.** kang 은 이전 본문을 저장하지 않는다. 무엇이 바뀌었는지는 `git diff` 가 보여준다는 안내만 넣는다.
 
-- [ ] **Step 1: 실패하는 테스트 작성** — 시나리오 5개
+- [ ] **Step 1: 실패하는 테스트 작성** — 시나리오 6개
   - `rev_핀이_없으면_에러다`
   - `rev_핀이_일치하면_통과한다`
   - `대상_본문이_바뀌면_에러다`
   - `exception_핀은_선언_topic_본문의_해시다`
   - `이름을_유지한_채_선언_topic_을_바꾸면_커버_문서가_깨진다`
-  - `진단_fix_가_bless_인자_형식이다`
+  - `진단_fix_가_bless_심볼_주소_형식이다`
 - [ ] **Step 2: `cargo test` — 실패 확인**
 - [ ] **Step 3: `check_revs` 구현**
 - [ ] **Step 4: `cargo test` 통과 확인**
@@ -495,10 +533,11 @@ pub fn check_revs(project: &Project, table: &SymbolTable) -> Vec<Diagnostic>;
 - 산출: 실행 가능한 `kang` 바이너리
 
 ```rust
-/// 서브커맨드를 파싱한다. v1 에는 플래그가 없고 위치 인자만 있다.
+/// 서브커맨드를 파싱한다.
 enum Command {
     Build,
-    Bless(Vec<String>),
+    /// kang bless <문서> --import <심볼>
+    Bless { doc: String, import: String },
     List(Option<String>),
     Keywords(Option<String>),
     Refs(String),
@@ -510,23 +549,33 @@ enum Command {
 fn compile() -> Result<(Project, SymbolTable, ImportGraph), Vec<Diagnostic>>;
 ```
 
-**출력 규칙** (스펙 6.1)
+**인자 문법** (스펙 6.0)
+- **인자에 백틱을 쓰지 않는다.** 백틱은 셸 명령 치환이며 비대화형 호출에서도 터진다. 에이전트가 kang 을 부르는 방식이 정확히 비대화형이라 조용한 오작동이 된다.
+- `kang refs docs/A.결제`, `kang show 'docs/A#결제의 방법'` 처럼 `/`·`.`·`#`·`!` 만으로 파싱한다.
+- 공백이 있는 이름은 셸 인용이 필요하다. 정상 규약이다.
+
+**출력 규칙** (스펙 6.2)
 - 한 라인이 의미론적 완결성을 갖는다. 경로는 항상 전체 경로, 계층 축약 없음.
 - `kang list [경로]` → `docs/A: {description}`
 - `kang keywords [경로]` → `docs/A.결제: 사용자가 상품 대금을 지불하는 행위`
 - `kang refs <키워드>` → `docs/A#결제의 방식`
+- `keywords` 스코프는 **경로 스코프만** 지원한다.
 
 **핵심 규칙**: 조회 명령은 전부 `compile()` 을 먼저 거친다. error가 있으면 진단만 출력하고 종료 코드 1로 끝낸다. 문서는 한 줄도 출력하지 않는다.
 
-`ponytail:` 인자 파싱을 직접 쓴다. v1에는 플래그가 없어 `match` 로 충분하다. 플래그가 생기면 clap 으로 교체.
+`ponytail:` 인자 파싱을 직접 쓴다. 플래그는 `bless --import` 하나뿐이라 `match` 로 충분하다. 플래그가 늘면 clap 으로 교체.
 
-- [ ] **Step 1: 실패하는 테스트 작성** — 시나리오 6개
+- [ ] **Step 1: 실패하는 테스트 작성** — 시나리오 10개
   - `build_는_정상_프로젝트에서_종료코드_0_이다`
   - `build_는_에러가_있으면_종료코드_1_이다`
   - `에러가_있으면_list_가_아무것도_출력하지_않는다`
   - `list_가_전체_경로로_출력한다`
   - `keywords_가_경로_스코프로_필터된다`
   - `refs_가_키워드를_참조하는_topic_을_출력한다`
+  - `백틱_없는_인자를_파싱한다`
+  - `알_수_없는_서브커맨드는_사용법을_출력하고_종료코드_2_다`
+  - `인자가_부족하면_사용법을_출력한다`
+  - `kang_파일이_0개면_그렇다고_알린다`
 - [ ] **Step 2: `cargo test` — 실패 확인**
 - [ ] **Step 3: 서브커맨드 디스패치와 `compile()` 구현**
 - [ ] **Step 4: `build` / `list` / `keywords` / `refs` 출력 구현**
@@ -558,10 +607,10 @@ impl Emitter {
     /// literal scalar(`|`) 로 멀티라인 본문을 넣는다.
     /// folded scalar(`>`) 는 개행이 접혀 마크다운이 깨지므로 쓰지 않는다.
     pub fn block(&mut self, key: &str, body: &str);
-    pub fn key(&mut self, key: &str);
-    pub fn item(&mut self);
-    pub fn indent(&mut self);
-    pub fn dedent(&mut self);
+    /// 키 아래에 항목 목록을 선언적으로 넣는다.
+    pub fn seq(&mut self, key: &str, items: impl IntoIterator<Item = Emitter>);
+    /// 키 아래에 중첩 매핑을 선언적으로 넣는다.
+    pub fn map(&mut self, key: &str, body: Emitter);
     pub fn finish(self) -> String;
 }
 
@@ -578,20 +627,22 @@ pub enum ShowTarget {
     Topic(DocPath, String),
 }
 
-/// 스펙 6.2 의 YAML 을 만든다.
+/// 스펙 6.3 의 YAML 을 만든다.
 pub fn show(
     project: &Project,
     table: &SymbolTable,
-    graph: &ImportGraph,
     target: &ShowTarget,
 ) -> String;
 ```
 
-**출력 스키마** — 스펙 6.2 그대로. 최상위 키 순서는 `path`, `keywords`, `referencingKeywords`, `exceptions`, `covers`, `topics`.
+**출력 스키마** — 스펙 6.3 그대로. 최상위 키 순서는 `path`, `keywords`, `referencingKeywords`, `exceptions`, `covers`, `topics`.
 
-**중복 제거**: 이미 전개한 topic·키워드는 방문 집합에 넣고, 두 번째부터는 경로 문자열만 넣는다. 깊이 제한은 두지 않는다.
+- keyword 항목은 `name`·`description`·`referencedBy` 와, `#` 로 연결된 상세 topic 이 있으면 **`detail`(그 topic 의 전체 경로)** 을 담는다. 파싱만 하고 버리지 않는다.
+- 재귀 임베드는 `ImportGraph` 가 아니라 `Document.imports` 를 직접 순회한다. 참조 전파는 v2 다.
 
-`ponytail:` YAML 이미터를 직접 쓴다. 한계는 인용 규칙 — 한글 description 에 `: ` 가 들어가는 경우가 위험 지점이고 `scalar()` 테스트가 그걸 막는다. 스키마가 늘어나면 serde 기반 크레이트로 교체.
+**중복 제거**: 이미 전개한 topic·키워드는 방문 집합에 넣고, 두 번째부터는 경로 문자열만 넣는다. **깊이 제한은 v1 에 두지 않는다** — 손댈 때는 읽기 시점 옵션이 아니라 빌드 시점 구조 린트로 만든다 (스펙 6.3).
+
+`ponytail:` YAML 이미터를 직접 쓴다. 이미터 API 는 선언형 `seq`/`map` 만 노출하고 수동 들여쓰기 커서를 주지 않는다 — 짝 맞추기 실수가 구조적으로 불가능해야 한다. 한계는 인용 규칙이고, 한글 description 에 `: ` 가 들어가는 경우가 위험 지점이며 `scalar()` 테스트가 그걸 막는다. 스키마가 늘어나면 serde 기반 크레이트로 교체.
 
 - [ ] **Step 1: 실패하는 테스트 작성** — 시나리오 7개
   - `콜론이_포함된_설명은_인용된다`
@@ -622,40 +673,45 @@ pub fn show(
 - 산출:
 
 ```rust
-/// rev 핀이 붙은 한 줄의 위치. `docs/A:12` 형식을 파싱한 결과다.
-pub struct RefLocation {
-    pub doc: DocPath,
-    pub line: usize,
+/// 갱신 대상 import 를 가리키는 주소. `docs/A.결제` 를 파싱한 결과다.
+/// 줄 번호를 쓰지 않는다 (ADR-0003).
+pub struct ImportAddress {
+    pub target: SymbolRef,
 }
 
-impl RefLocation {
-    /// `docs/A:12` 를 파싱한다. Task 8 의 진단 fix 가 이 형식으로 출력한다.
-    pub fn parse(s: &str) -> Result<RefLocation, String>;
+impl ImportAddress {
+    /// `docs/A.결제`·`docs/A#결제의 방법`·`docs/A!무료 상품` 을 파싱한다.
+    /// Task 8 의 진단 fix 가 이 형식으로 출력한다. 백틱은 쓰지 않는다.
+    pub fn parse(s: &str) -> Result<ImportAddress, String>;
 }
 
-/// 주어진 위치들의 rev 핀을 대상의 현재 해시로 갱신한다.
-/// 갱신한 개수를 반환한다.
+/// `doc` 안에서 `addr` 이 가리키는 import 의 rev 핀을 현재 해시로 맞춘다.
+/// 핀이 있으면 갱신하고 없으면 삽입한다 (스펙 4.8).
 pub fn bless(
     project: &Project,
     table: &SymbolTable,
-    locations: &[RefLocation],
-) -> Result<usize, String>;
+    doc: &DocPath,
+    addr: &ImportAddress,
+) -> Result<(), String>;
 ```
 
 **구현 요점**
-- 해당 줄의 `rev "..."` 부분만 치환한다. 나머지는 건드리지 않는다.
-- 지정한 줄에 rev 핀이 없으면 에러로 거부한다.
-- 여러 위치를 한 번에 받는다. `kang build` 출력의 `fix` 문자열을 그대로 인자로 넘길 수 있어야 한다.
-- 일괄 해제 수단을 만들지 않는다. 심볼 이름만 주고 전체를 갱신하는 경로가 있으면 안 된다.
+- **주소는 심볼이다.** 문서를 고친 뒤 bless 하는 것이 정상 워크플로라 줄이 밀리고, 줄 번호로 갱신하면 엉뚱한 핀을 조용히 바꾼다 (ADR-0003).
+- 한 파일 안에서 같은 심볼을 두 번 import 하는 것은 이미 error 이므로 주소는 유일하게 결정된다.
+- 해당 import 줄의 `rev "..."` 부분만 치환하고, **없으면 줄 끝에 삽입**한다. 나머지는 건드리지 않는다.
+- 그 문서에 해당 import 가 없으면 에러로 거부한다.
+- 일괄 해제 수단을 만들지 않는다. 심볼 이름만 주고 전체 참조처를 갱신하는 경로가 있으면 안 된다.
 
-- [ ] **Step 1: 실패하는 테스트 작성** — 시나리오 5개
+- [ ] **Step 1: 실패하는 테스트 작성** — 시나리오 7개
   - `rev_핀을_현재_해시로_갱신한다`
-  - `여러_위치를_한_번에_갱신한다`
-  - `rev_핀이_없는_줄은_거부한다`
+  - `핀이_없으면_삽입한다`
+  - `문서를_고쳐_줄이_밀려도_올바른_import_를_찾는다`
+  - `그_문서에_없는_import_는_거부한다`
   - `갱신_후_build_가_통과한다`
   - `build_출력의_fix_문자열을_그대로_인자로_받는다`
+  - `백틱_없는_심볼_주소를_파싱한다`
 - [ ] **Step 2: `cargo test` — 실패 확인**
-- [ ] **Step 3: `RefLocation::parse` 와 `bless` 구현**
+- [ ] **Step 3: `ImportAddress::parse` 와 `bless` 구현**
 - [ ] **Step 4: `main.rs` 에 `bless` 서브커맨드 연결**
 - [ ] **Step 5: `cargo test` 통과 확인**
 - [ ] **Step 6: 커밋** — `feat: kang bless`
@@ -673,11 +729,14 @@ pub fn bless(
 **구현 요점**
 스펙 V0001 의 예제(`docs/A`, `docs/B`, `docs/C` — 결제·카드결제·무료결제)를 fixture 로 만들고, 전 명령을 실제로 돌린다.
 
-- [ ] **Step 1: fixture 프로젝트 작성** — 스펙 7.3 예제와 동일한 3개 문서
-- [ ] **Step 2: 통합 테스트 작성** — 시나리오 6개
+- [ ] **Step 1: fixture 프로젝트 작성** — 결제·카드결제·무료결제 3개 문서. git 저장소여야 루트 탐색이 동작하므로 fixture 도 저장소로 만든다
+- [ ] **Step 2: 통합 테스트 작성** — 시나리오 9개
   - `fixture_프로젝트가_build_를_통과한다`
   - `상위_문서_수정_후_모든_참조처가_깨진다`
   - `build_출력을_bless_에_그대로_넘기면_전부_해제된다`
+  - `참조처를_먼저_고친_뒤_bless_해도_올바른_핀이_갱신된다`
+  - `exception_선언_topic_을_바꾸면_커버_문서가_깨진다`
+  - `동의어로_쓴_본문이_정본_심볼로_해석된다`
   - `순환_import_를_만들면_체인이_출력된다`
   - `show_출력이_유효한_YAML_이다`
   - `error_상태에서는_어떤_조회도_출력되지_않는다`
@@ -719,6 +778,7 @@ kang 의 소비자는 다른 프로젝트의 LLM 에이전트다. 그 프로젝�
 - [ ] fixture 프로젝트에서 `kang build` 종료 코드 0
 - [ ] 스펙 V0001 의 3~6절 전 항목이 구현됨 (7절 코드 연동은 v2, 8절은 비목표, 9절은 미결정 사항이라 구현 대상이 아님)
 - [ ] 태그 푸시 시 릴리즈 워크플로가 4개 타깃 바이너리를 산출
+- [ ] **`kang` 이 자기 저장소에서 동작한다** — 도그푸딩 착수 조건. `plans/`·`docs/adr/`·`CONTEXT.md` 이관은 별도 플랜
 
 ---
 
