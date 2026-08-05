@@ -717,17 +717,19 @@ fn help_이_명령과_인자_형식과_종료코드를_전부_보여준다() {
         .split_once("아직 구현되지 않은 명령")
         .expect("미구현 명령을 따로 알려야 한다")
         .1;
-    for 명령 in ["kang init", "kang bless", "kang inspect"] {
+    for 명령 in ["kang init", "kang inspect"] {
         assert!(
             미구현_절.contains(명령),
             "{명령} 이 미구현으로 표시되지 않았다: {stdout}"
         );
     }
     // 구현된 명령이 미구현 목록에 남아 있으면 에이전트가 쓸 수 있는 명령을 쓰지 않는다.
-    assert!(
-        !미구현_절.contains("kang show <"),
-        "kang show 가 아직 미구현으로 표시되어 있다: {stdout}"
-    );
+    for 명령 in ["kang show <", "kang bless <"] {
+        assert!(
+            !미구현_절.contains(명령),
+            "{명령} 이 아직 미구현으로 표시되어 있다: {stdout}"
+        );
+    }
     정리(&root);
 }
 
@@ -1246,4 +1248,523 @@ topics:
 "#
     );
     정리(&root);
+}
+
+// ---------------------------------------------------------------------------
+// bless
+// ---------------------------------------------------------------------------
+
+/// 루트 아래 상대 경로의 파일을 읽는다.
+///
+/// `bless` 는 kang 에서 유일하게 사용자 파일을 고쳐 쓰는 명령이므로, 검증은
+/// 종료 코드가 아니라 **파일 바이트**로 해야 한다.
+///
+/// # 매개변수
+/// - `root`: 프로젝트 루트
+/// - `상대`: 루트 기준 상대 경로
+///
+/// # 반환값
+/// 파일 내용 전체
+fn 읽기(root: &Path, 상대: &str) -> String {
+    fs::read_to_string(root.join(상대)).expect("파일을 읽을 수 있어야 한다")
+}
+
+/// 핀이 없는 import 하나를 가진 두 문서짜리 프로젝트를 만든다.
+///
+/// 스펙 4.8 의 3단계 레시피 1단계 — "핀 없이 쓴다" 상태다.
+///
+/// # 매개변수
+/// - `root`: 프로젝트 루트
+fn 핀_없는_프로젝트(root: &Path) {
+    쓰기(
+        root,
+        "docs/base.kang",
+        "---\ndescription: 기초\n---\n\n## 기초 정책\n\n모든 정책의 바탕이다.\n",
+    );
+    쓰기(
+        root,
+        "docs/top.kang",
+        "---\ndescription: 꼭대기\n---\n\nimport `docs`/`base`#`기초 정책` as `기초`\n\n## 꼭대기 정책\n\n`기초` 를 따른다.\n",
+    );
+}
+
+/// 스펙 4.8: 핀이 없으면 삽입한다. 더미 해시를 손으로 적는 의식이 생기지 않는다.
+#[test]
+fn bless_가_핀이_없는_import_에_핀을_삽입한다() {
+    let root = 임시_루트("bless-insert");
+    git_저장소로(&root);
+    핀_없는_프로젝트(&root);
+
+    let (stdout, stderr, 코드) = 실행(
+        &root,
+        &["bless", "docs/top", "--import", "docs/base#기초 정책"],
+    );
+
+    assert_eq!(코드, 0, "{stderr}");
+    assert_eq!(stdout, "", "bless 는 표준 출력에 데이터를 내지 않는다");
+    let 기초_핀 = 핀(&root, &["docs", "base"], SymbolKind::Topic, "기초 정책");
+    assert_eq!(
+        읽기(&root, "docs/top.kang"),
+        format!(
+            "---\ndescription: 꼭대기\n---\n\nimport `docs`/`base`#`기초 정책` as `기초` rev \"{기초_핀}\"\n\n## 꼭대기 정책\n\n`기초` 를 따른다.\n"
+        )
+    );
+    정리(&root);
+}
+
+/// 스펙 4.8: 핀이 있으면 현재 해시로 갱신한다. 삽입과 치환은 다른 편집이다.
+#[test]
+fn bless_가_틀린_핀을_현재_해시로_갱신한다() {
+    let root = 임시_루트("bless-update");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/base.kang",
+        "---\ndescription: 기초\n---\n\n## 기초 정책\n\n모든 정책의 바탕이다.\n",
+    );
+    쓰기(
+        &root,
+        "docs/top.kang",
+        "---\ndescription: 꼭대기\n---\n\nimport `docs`/`base`#`기초 정책` as `기초` rev \"000000\"\n\n## 꼭대기 정책\n\n`기초` 를 따른다.\n",
+    );
+
+    let (_, stderr, 코드) = 실행(
+        &root,
+        &["bless", "docs/top", "--import", "docs/base#기초 정책"],
+    );
+
+    assert_eq!(코드, 0, "{stderr}");
+    let 기초_핀 = 핀(&root, &["docs", "base"], SymbolKind::Topic, "기초 정책");
+    assert_ne!(
+        기초_핀, "000000",
+        "픽스처의 옛 핀이 현재 해시와 같으면 안 된다"
+    );
+    assert_eq!(
+        읽기(&root, "docs/top.kang"),
+        format!(
+            "---\ndescription: 꼭대기\n---\n\nimport `docs`/`base`#`기초 정책` as `기초` rev \"{기초_핀}\"\n\n## 꼭대기 정책\n\n`기초` 를 따른다.\n"
+        )
+    );
+    정리(&root);
+}
+
+/// **이 태스크의 핵심 계약.** bless 가 넣은 핀을 `check_revs` 가 곧바로 거부하면
+/// 핀을 붙일 방법이 아예 없어진다. 스펙 V0001:417 — fix 를 적용하면 새 진단이 생기면 안 된다.
+#[test]
+fn bless_후_build_가_통과한다() {
+    let root = 임시_루트("bless-build-ok");
+    git_저장소로(&root);
+    핀_없는_프로젝트(&root);
+
+    let (_, stderr, 코드) = 실행(&root, &["build"]);
+    assert_eq!(코드, 1, "{stderr}");
+    assert!(stderr.contains("K020"), "{stderr}");
+
+    let (_, stderr, 코드) = 실행(
+        &root,
+        &["bless", "docs/top", "--import", "docs/base#기초 정책"],
+    );
+    assert_eq!(코드, 0, "{stderr}");
+
+    let (stdout, stderr, 코드) = 실행(&root, &["build"]);
+    assert_eq!(코드, 0, "{stderr}");
+    assert_eq!(stderr, "", "핀을 붙였으면 진단이 남지 않아야 한다");
+    assert_eq!(stdout, "");
+    정리(&root);
+}
+
+/// 진단의 `[shell] fix` 가 만드는 주소와 `bless` 가 받는 주소가 다르면, 에이전트가
+/// 복사해 실행한 명령이 통째로 실패한다. 문자열을 그대로 셸에 넣어 확인한다.
+#[test]
+fn build_이_낸_fix_명령을_그대로_실행하면_통과한다() {
+    let root = 임시_루트("bless-fix-roundtrip");
+    git_저장소로(&root);
+    핀_없는_프로젝트(&root);
+
+    let (_, stderr, 코드) = 실행(&root, &["build"]);
+    assert_eq!(코드, 1, "{stderr}");
+    let 명령 = 셸_fix(&stderr);
+    assert!(명령.starts_with("kang bless "), "{명령}");
+
+    let 결과 = Command::new("sh")
+        .arg("-c")
+        .arg(&명령)
+        .current_dir(&root)
+        .env("PATH", 바이너리_경로())
+        .output()
+        .expect("sh 를 실행할 수 있어야 한다");
+    assert_eq!(
+        결과.status.code(),
+        Some(0),
+        "fix 명령이 실패했다: {명령}\n{}",
+        String::from_utf8_lossy(&결과.stderr)
+    );
+
+    let (_, stderr, 코드) = 실행(&root, &["build"]);
+    assert_eq!(코드, 0, "{stderr}");
+    정리(&root);
+}
+
+/// 스펙 6.2: 대상이 바뀌면 `K021` 이 나고, 다시 `bless` 하면 해소된다.
+#[test]
+fn bless_가_대상이_바뀐_뒤의_핀_불일치를_해소한다() {
+    let root = 임시_루트("bless-k021");
+    git_저장소로(&root);
+    핀_없는_프로젝트(&root);
+    실행(
+        &root,
+        &["bless", "docs/top", "--import", "docs/base#기초 정책"],
+    );
+
+    // 대상 본문을 고친다. 참조처가 깨지는 것이 rev 핀의 목적이다.
+    쓰기(
+        &root,
+        "docs/base.kang",
+        "---\ndescription: 기초\n---\n\n## 기초 정책\n\n모든 정책의 바탕이며 이제 한 줄이 늘었다.\n",
+    );
+    let (_, stderr, 코드) = 실행(&root, &["build"]);
+    assert_eq!(코드, 1, "{stderr}");
+    assert!(stderr.contains("K021"), "{stderr}");
+
+    let (_, stderr, 코드) = 실행(
+        &root,
+        &["bless", "docs/top", "--import", "docs/base#기초 정책"],
+    );
+    assert_eq!(코드, 0, "{stderr}");
+
+    let (_, stderr, 코드) = 실행(&root, &["build"]);
+    assert_eq!(코드, 0, "{stderr}");
+    정리(&root);
+}
+
+/// 두 번 돌려도 두 번째는 아무것도 바꾸지 않아야 한다. 실패한 bless 를 다시 돌리는
+/// 것이 정상 복구 경로이므로 멱등하지 않으면 재실행이 위험해진다.
+#[test]
+fn bless_는_멱등하다() {
+    let root = 임시_루트("bless-idempotent");
+    git_저장소로(&root);
+    핀_없는_프로젝트(&root);
+
+    실행(
+        &root,
+        &["bless", "docs/top", "--import", "docs/base#기초 정책"],
+    );
+    let 첫_번째 = 읽기(&root, "docs/top.kang");
+    let (_, stderr, 코드) = 실행(
+        &root,
+        &["bless", "docs/top", "--import", "docs/base#기초 정책"],
+    );
+
+    assert_eq!(코드, 0, "{stderr}");
+    assert_eq!(읽기(&root, "docs/top.kang"), 첫_번째);
+    정리(&root);
+}
+
+/// **원문 보존은 신뢰 경계다.** 핀만 갈아 끼우고 나머지 바이트는 건드리지 않는다 —
+/// 줄 끝(`\r\n`), 파일 끝 개행 유무, 들여쓰기, 줄 끝 공백 전부. 문서를 파싱해서
+/// 다시 직렬화하면 이 중 하나는 반드시 깨진다.
+#[test]
+fn bless_가_핀_외의_바이트를_보존한다() {
+    let root = 임시_루트("bless-bytes");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/base.kang",
+        "---\ndescription: 기초\n---\n\n## 기초 정책\n\n모든 정책의 바탕이다.\n",
+    );
+    // CRLF 줄 끝 + 들여쓴 import + 줄 끝 공백 + 파일 끝 개행 없음.
+    쓰기(
+        &root,
+        "docs/top.kang",
+        "---\r\ndescription: 꼭대기\r\n---\r\n\r\n  import `docs`/`base`#`기초 정책` as `기초`  \r\n\r\n## 꼭대기 정책\r\n\r\n`기초` 를 따른다.",
+    );
+
+    let (_, stderr, 코드) = 실행(
+        &root,
+        &["bless", "docs/top", "--import", "docs/base#기초 정책"],
+    );
+
+    assert_eq!(코드, 0, "{stderr}");
+    let 기초_핀 = 핀(&root, &["docs", "base"], SymbolKind::Topic, "기초 정책");
+    assert_eq!(
+        읽기(&root, "docs/top.kang"),
+        format!(
+            "---\r\ndescription: 꼭대기\r\n---\r\n\r\n  import `docs`/`base`#`기초 정책` as `기초` rev \"{기초_핀}\"  \r\n\r\n## 꼭대기 정책\r\n\r\n`기초` 를 따른다."
+        )
+    );
+    정리(&root);
+}
+
+/// 주소는 심볼이다 (ADR-0003). 문서를 고쳐 줄이 밀려도 같은 주소가 같은 import 를
+/// 가리켜야 하고, 지정하지 않은 import 는 한 글자도 바뀌면 안 된다.
+#[test]
+fn bless_가_줄이_밀려도_지정한_import_만_고친다() {
+    let root = 임시_루트("bless-shifted");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/base.kang",
+        "---\ndescription: 기초\n---\n\nkeyword `결제`: 대금을 지불하는 행위\n\n## 기초 정책\n\n모든 정책의 바탕이다.\n",
+    );
+    // 두 import 사이에 줄이 끼어 뒤쪽 import 의 줄 번호가 밀린 상태다.
+    쓰기(
+        &root,
+        "docs/top.kang",
+        "---\ndescription: 꼭대기\n---\n\nimport `docs`/`base`.`결제` as `결제`\n\nimport `docs`/`base`#`기초 정책` as `기초`\n\n## 꼭대기 정책\n\n`결제` 와 `기초` 를 따른다.\n",
+    );
+
+    let (_, stderr, 코드) = 실행(
+        &root,
+        &["bless", "docs/top", "--import", "docs/base#기초 정책"],
+    );
+
+    assert_eq!(코드, 0, "{stderr}");
+    let 기초_핀 = 핀(&root, &["docs", "base"], SymbolKind::Topic, "기초 정책");
+    assert_eq!(
+        읽기(&root, "docs/top.kang"),
+        format!(
+            "---\ndescription: 꼭대기\n---\n\nimport `docs`/`base`.`결제` as `결제`\n\nimport `docs`/`base`#`기초 정책` as `기초` rev \"{기초_핀}\"\n\n## 꼭대기 정책\n\n`결제` 와 `기초` 를 따른다.\n"
+        )
+    );
+    정리(&root);
+}
+
+/// 스펙 6.0: 인자에 백틱을 쓰지 않는다. keyword 는 `.`, topic 은 `#`, exception 은 `!` 다.
+/// exception 의 핀은 **그것을 선언한 topic 의 해시**와 같아야 한다 (스펙 4.8).
+#[test]
+fn bless_가_백틱_없는_세_종류_주소를_받는다() {
+    let root = 임시_루트("bless-three-kinds");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/base.kang",
+        "---\ndescription: 기초\n---\n\nkeyword `결제`: 대금을 지불하는 행위\n\n## 기초 정책\n\n모든 정책의 바탕이다.\n\nexception `무료 상품`\n",
+    );
+    쓰기(
+        &root,
+        "docs/top.kang",
+        "---\ndescription: 꼭대기\n---\n\nimport `docs`/`base`.`결제` as `결제`\nimport `docs`/`base`#`기초 정책` as `기초`\nimport `docs`/`base`!`무료 상품` as `무료`\n\n## 꼭대기 정책\n\n`결제` 와 `기초` 를 따르고 `무료` 를 다룬다.\n\ncover `무료`\n",
+    );
+
+    // 세 주소를 차례로 축복한다. 셸 인용이 필요한 공백 있는 이름을 포함한다.
+    for 주소 in [
+        "docs/base.결제",
+        "docs/base#기초 정책",
+        "docs/base!무료 상품",
+    ] {
+        let (_, stderr, 코드) = 실행(&root, &["bless", "docs/top", "--import", 주소]);
+        assert_eq!(코드, 0, "{주소}: {stderr}");
+    }
+
+    let 결제_핀 = 핀(&root, &["docs", "base"], SymbolKind::Keyword, "결제");
+    let 기초_핀 = 핀(&root, &["docs", "base"], SymbolKind::Topic, "기초 정책");
+    let 무료_핀 = 핀(&root, &["docs", "base"], SymbolKind::Exception, "무료 상품");
+    assert_eq!(무료_핀, 기초_핀, "exception 은 선언 topic 의 해시를 쓴다");
+    assert_eq!(
+        읽기(&root, "docs/top.kang"),
+        format!(
+            "---\ndescription: 꼭대기\n---\n\nimport `docs`/`base`.`결제` as `결제` rev \"{결제_핀}\"\nimport `docs`/`base`#`기초 정책` as `기초` rev \"{기초_핀}\"\nimport `docs`/`base`!`무료 상품` as `무료` rev \"{무료_핀}\"\n\n## 꼭대기 정책\n\n`결제` 와 `기초` 를 따르고 `무료` 를 다룬다.\n\ncover `무료`\n"
+        )
+    );
+
+    let (_, stderr, 코드) = 실행(&root, &["build"]);
+    assert_eq!(코드, 0, "{stderr}");
+    정리(&root);
+}
+
+/// 그 문서에 없는 import 를 조용히 성공으로 돌려주면, 에이전트는 핀을 붙였다고 믿고
+/// 같은 error 를 다시 만난다.
+///
+/// **대상 심볼은 실재한다.** 없는 심볼로 물으면 그쪽 분기가 먼저 걸려 이 규칙이
+/// 검증되지 않는다.
+#[test]
+fn bless_가_그_문서에_없는_import_를_거부한다() {
+    let root = 임시_루트("bless-no-import");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/base.kang",
+        "---\ndescription: 기초\n---\n\nkeyword `결제`: 대금을 지불하는 행위\n\n## 기초 정책\n\n모든 정책의 바탕이다.\n",
+    );
+    // `기초 정책` 만 import 한다. `결제` 는 실재하는 심볼이지만 이 문서가 들여오지 않았다.
+    쓰기(
+        &root,
+        "docs/top.kang",
+        "---\ndescription: 꼭대기\n---\n\nimport `docs`/`base`#`기초 정책` as `기초`\n\n## 꼭대기 정책\n\n`기초` 를 따른다.\n",
+    );
+    let 원본 = 읽기(&root, "docs/top.kang");
+
+    let (stdout, stderr, 코드) =
+        실행(&root, &["bless", "docs/top", "--import", "docs/base.결제"]);
+
+    assert_eq!(코드, 2, "{stderr}");
+    assert_eq!(stdout, "");
+    assert!(stderr.contains("docs/base.결제"), "{stderr}");
+    assert!(
+        stderr.contains("이 import 가 없습니다"),
+        "대상 없음이 아니라 import 없음이어야 한다: {stderr}"
+    );
+    assert_eq!(읽기(&root, "docs/top.kang"), 원본, "거부했으면 쓰지 않는다");
+    정리(&root);
+}
+
+/// 대상 심볼이 없으면 해시할 것이 없다. 없는 핀을 지어내면 `K021` 이 영원히 남는다.
+#[test]
+fn bless_가_대상_심볼이_없는_import_를_거부한다() {
+    let root = 임시_루트("bless-no-target");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/base.kang",
+        "---\ndescription: 기초\n---\n\n## 기초 정책\n\n모든 정책의 바탕이다.\n",
+    );
+    쓰기(
+        &root,
+        "docs/top.kang",
+        "---\ndescription: 꼭대기\n---\n\nimport `docs`/`base`#`없는 정책` as `없음`\n\n## 꼭대기 정책\n\n`없음` 을 따른다.\n",
+    );
+    let 원본 = 읽기(&root, "docs/top.kang");
+
+    let (stdout, stderr, 코드) = 실행(
+        &root,
+        &["bless", "docs/top", "--import", "docs/base#없는 정책"],
+    );
+
+    assert_eq!(코드, 2, "{stderr}");
+    assert_eq!(stdout, "");
+    assert_eq!(읽기(&root, "docs/top.kang"), 원본, "거부했으면 쓰지 않는다");
+    정리(&root);
+}
+
+/// 없는 문서를 조용히 넘기면 오타 하나가 "핀을 붙였다" 는 거짓 확신이 된다.
+#[test]
+fn bless_가_없는_문서를_거부한다() {
+    let root = 임시_루트("bless-no-doc");
+    git_저장소로(&root);
+    핀_없는_프로젝트(&root);
+
+    let (stdout, stderr, 코드) = 실행(
+        &root,
+        &["bless", "docs/zzz", "--import", "docs/base#기초 정책"],
+    );
+
+    assert_eq!(코드, 2, "{stderr}");
+    assert_eq!(stdout, "");
+    assert!(stderr.contains("docs/zzz"), "{stderr}");
+    정리(&root);
+}
+
+/// 인자의 **모양**이 틀린 것은 사용법 오류다. 도움말이 에이전트의 첫 접점이라는
+/// 규약이 이 분기에서만 깨지면 안 된다.
+#[test]
+fn bless_가_구분자_없는_주소를_사용법_오류로_거부한다() {
+    let root = 임시_루트("bless-bad-addr");
+    git_저장소로(&root);
+    핀_없는_프로젝트(&root);
+
+    let (도움말, _, _) = 실행(&root, &["--help"]);
+    let (stdout, stderr, 코드) = 실행(&root, &["bless", "docs/top", "--import", "docs/base"]);
+
+    assert_eq!(코드, 2, "{stderr}");
+    assert_eq!(stdout, "");
+    assert!(stderr.contains(&도움말), "{stderr}");
+    정리(&root);
+}
+
+/// **bless 는 error 상태에서 실행되어야 한다.** 핀 없음도 error, 핀 불일치도 error 이므로
+/// `compile()` 통과를 요구하면 영원히 실행될 수 없다. 개념 이름을 바꾸는 정상 워크플로
+/// (스펙 6.1) 는 여러 문서가 동시에 깨진 상태를 지난다.
+#[test]
+fn bless_가_다른_진단이_있는_상태에서도_실행된다() {
+    let root = 임시_루트("bless-with-errors");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/base.kang",
+        "---\ndescription: 기초\n---\n\n## 기초 정책\n\n모든 정책의 바탕이다.\n",
+    );
+    // `없는 심볼` 이 `K001` 을, 핀 없는 import 가 `K020` 을 낸다.
+    쓰기(
+        &root,
+        "docs/top.kang",
+        "---\ndescription: 꼭대기\n---\n\nimport `docs`/`base`#`기초 정책` as `기초`\n\n## 꼭대기 정책\n\n`기초` 와 `없는 심볼` 을 따른다.\n",
+    );
+
+    let (_, stderr, 코드) = 실행(&root, &["build"]);
+    assert_eq!(코드, 1, "{stderr}");
+    assert!(stderr.contains("K001"), "{stderr}");
+
+    let (_, stderr, 코드) = 실행(
+        &root,
+        &["bless", "docs/top", "--import", "docs/base#기초 정책"],
+    );
+
+    assert_eq!(코드, 0, "{stderr}");
+    let 기초_핀 = 핀(&root, &["docs", "base"], SymbolKind::Topic, "기초 정책");
+    assert!(
+        읽기(&root, "docs/top.kang").contains(&format!("rev \"{기초_핀}\"")),
+        "핀이 삽입되지 않았다"
+    );
+    정리(&root);
+}
+
+/// **파싱이 실패하면 고쳐 쓰지 않는다.** 읽지 못한 문서에 수정을 얹으면 사용자는
+/// 깨진 프로젝트에 편집까지 더해진 상태를 받는다.
+#[test]
+fn bless_가_파싱_실패_상태에서는_실행되지_않는다() {
+    let root = 임시_루트("bless-parse-fail");
+    git_저장소로(&root);
+    핀_없는_프로젝트(&root);
+    // frontmatter 가 없는 문서는 파싱 자체가 실패한다.
+    쓰기(&root, "docs/broken.kang", "## 깨진 문서\n\n내용.\n");
+    let 원본 = 읽기(&root, "docs/top.kang");
+
+    let (stdout, stderr, 코드) = 실행(
+        &root,
+        &["bless", "docs/top", "--import", "docs/base#기초 정책"],
+    );
+
+    assert_eq!(코드, 1, "{stderr}");
+    assert_eq!(stdout, "");
+    assert_eq!(
+        읽기(&root, "docs/top.kang"),
+        원본,
+        "파싱이 실패했으면 한 바이트도 쓰지 않는다"
+    );
+    정리(&root);
+}
+
+/// 진단이 낸 `[shell] fix` 에서 셸 명령만 잘라낸다.
+///
+/// # 매개변수
+/// - `stderr`: `kang build` 의 진단 출력
+///
+/// # 반환값
+/// `kang` 으로 시작하는 셸 명령 한 줄
+fn 셸_fix(stderr: &str) -> String {
+    let 줄 = stderr
+        .lines()
+        .find(|줄| 줄.contains("[shell]"))
+        .expect("진단에 셸 fix 가 있어야 한다");
+    let at = 줄.find("kang ").expect("fix 에 kang 명령이 있어야 한다");
+    줄[at..].to_string()
+}
+
+/// 테스트용 `kang` 바이너리가 있는 디렉토리를 `PATH` 로 만든다.
+///
+/// 진단이 낸 fix 는 `kang` 이라는 이름만 안다. 셸이 그 이름을 찾을 수 있어야
+/// "복사해 그대로 실행" 을 실제로 검증할 수 있다.
+///
+/// # 반환값
+/// 바이너리 디렉토리를 앞에 붙인 `PATH` 값
+fn 바이너리_경로() -> String {
+    let dir = Path::new(env!("CARGO_BIN_EXE_kang"))
+        .parent()
+        .expect("바이너리에 상위 디렉토리가 있어야 한다")
+        .display()
+        .to_string();
+    match std::env::var("PATH") {
+        Ok(기존) => format!("{dir}:{기존}"),
+        Err(_) => dir,
+    }
 }

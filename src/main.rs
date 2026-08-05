@@ -13,6 +13,7 @@
 //! 서브커맨드가 인자 파싱 이상의 상태를 갖게 되면 그때 타입으로 올린다.
 
 use kang::ast::{Diagnostic, DocPath, Severity, SymbolKind, SymbolRef};
+use kang::bless::{self, ImportAddress};
 use kang::check;
 use kang::resolve::{self, Project, SymbolTable};
 use kang::show::{self, ShowTarget};
@@ -26,6 +27,7 @@ const 사용법: &str = "kang — 문서 컴파일러
 
 명령:
   kang build                           컴파일 및 검증
+  kang bless <문서> --import <심볼>    rev 핀 갱신·삽입
   kang list [경로]                     문서 목록과 description
   kang keywords [경로]                 키워드 목록
   kang refs <키워드>                   키워드를 참조하는 topic
@@ -34,7 +36,6 @@ const 사용법: &str = "kang — 문서 컴파일러
 
 아직 구현되지 않은 명령 (부르면 종료 코드 3 이며, 다른 방법이 없습니다):
   kang init                            에이전트 진입점과 첫 문서 생성
-  kang bless <문서> --import <심볼>    rev 핀 갱신·삽입
   kang inspect                         코드 대조 (v2)
 
 인자 문법:
@@ -85,12 +86,10 @@ fn main() {
         ["keywords", 스코프] => 키워드들(Some(스코프)),
         ["refs", 키워드] => 참조들(키워드),
         ["show", 대상] => 조회(대상),
-        // 아래 둘은 Task 11·14 가 본체를 채운다. 지금 사용법 오류로 흘려보내면
-        // 에이전트가 있는 명령을 없다고 배운다.
+        ["bless", 문서, "--import", 심볼] => 축복(문서, 심볼),
+        // Task 14 가 본체를 채운다. 지금 사용법 오류로 흘려보내면 에이전트가 있는 명령을
+        // 없다고 배운다.
         ["init"] => 미구현("kang init", "이 빌드에는 아직 없습니다."),
-        ["bless", _문서, "--import", _심볼] => {
-            미구현("kang bless", "이 빌드에는 아직 없습니다.")
-        }
         // v1 에 없는 것과 **v1 이 만들지 않기로 한 것**은 다르다. 앞의 셋은 다음 빌드를
         // 기다리면 되지만 이것은 기다려도 오지 않는다 (스펙 6절).
         ["inspect"] => 미구현("kang inspect", "v2 기능이며 아직 구현되지 않았습니다."),
@@ -255,6 +254,50 @@ fn 종료_코드(진단들: &[Diagnostic]) -> i32 {
 fn 미구현(명령: &str, 사정: &str) -> i32 {
     eprintln!("아직 쓸 수 없는 명령입니다: {명령} — {사정}");
     3
+}
+
+/// import 의 rev 핀을 갱신하거나 삽입한다 (스펙 6.2).
+///
+/// **[`compile`] 이 아니라 [`parse_project`] 를 쓴다.** `bless` 가 필요한 상황은 정의상
+/// 전부 error 이므로(`K020`·`K021`) 컴파일 통과를 요구하면 영원히 실행될 수 없다.
+/// 문서를 **읽지 못한** 경우(`K050`·`K051`·`K052`·`K1xx`)만 막는다.
+///
+/// 성공 알림은 표준 오류로 낸다. `bless` 는 데이터를 내지 않는 명령이므로 표준 출력은
+/// 비어 있어야 하고, 파일을 고쳐 쓰고 조용히 끝나면 무엇이 바뀌었는지 알 길이 없다.
+///
+/// # 매개변수
+/// - `문서`: 고쳐 쓸 문서 경로. 백틱을 쓰지 않는다 (스펙 6.0)
+/// - `심볼`: 갱신할 import 의 심볼 주소. `K020`·`K021` 의 fix 가 내는 것과 같은 형식이다
+///
+/// # 반환값
+/// 프로세스 종료 코드
+fn 축복(문서: &str, 심볼: &str) -> i32 {
+    // 주소부터 본다. 인자의 **모양**이 틀린 것은 프로젝트를 읽기 전에 답이 나오는
+    // 사용법 오류이고, 그때 도움말을 함께 내는 것이 에이전트의 재시도 경로다.
+    let addr = match ImportAddress::parse(심볼) {
+        Ok(addr) => addr,
+        Err(사유) => {
+            eprintln!("{사유}");
+            eprintln!("{사용법}");
+            return 2;
+        }
+    };
+
+    let (project, table) = match parse_project() {
+        Ok(결과) => 결과,
+        Err(진단들) => return 종료_코드(&진단들),
+    };
+
+    let path = DocPath(경로_조각(Some(문서)));
+    // 실패는 전부 "그런 문서·import·대상이 없다" 또는 IO 다. 문서가 규칙을 어긴 것이
+    // 아니므로 1 이 아니라 2 다 — `refs`·`show` 가 없는 주소에 주는 코드와 같다.
+    if let Err(사유) = bless::bless(&project, &table, &path, &addr) {
+        eprintln!("rev 핀을 갱신하지 못했습니다 — 문서 {문서}, import {심볼}: {사유}");
+        return 2;
+    }
+
+    eprintln!("rev 핀을 갱신했습니다 — 문서 {문서}, import {심볼}");
+    0
 }
 
 /// 문서 목록과 description 을 한 줄씩 찍는다 (스펙 6.3).
