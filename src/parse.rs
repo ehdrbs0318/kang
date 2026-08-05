@@ -3,9 +3,7 @@
 //! 파서는 **파일 하나만 안다.** 다른 파일을 읽거나 심볼을 해석하지 않는다.
 //! 프로젝트 전체를 보는 것은 `resolve` 의 몫이다.
 //!
-//! 이 모듈이 내는 진단 코드는 문법 계열인 `K1xx` 를 쓴다.
-//! 스펙 5.1.1 이 못박은 `K001`·`K012`·`K021` 은 이름 해석·iknow·rev 검사의 것이므로
-//! 겹치지 않게 대역을 나눈다.
+//! 이 모듈이 내는 진단 코드는 문법·파싱 대역인 `K100`-`K199` 를 쓴다.
 //!
 //! | 코드 | 규칙 |
 //! |---|---|
@@ -13,6 +11,7 @@
 //! | `K102` | frontmatter 에 `description` 이 없음 |
 //! | `K103` | keyword 선언 문법이 올바르지 않음 |
 //! | `K104` | 백틱 짝이 맞지 않음 |
+//! | `K105` | topic 헤딩에 백틱이 있음 |
 
 use crate::ast::{
     Diagnostic, DocPath, Document, Fix, FixKind, Keyword, KeywordName, Location, Severity, Topic,
@@ -69,12 +68,15 @@ pub fn parse_document(path: DocPath, source: &str) -> Result<Document, Vec<Diagn
         }
 
         // `## ` 는 새 topic 의 시작이다. `###` 이하는 topic 본문의 마크다운 헤딩이다.
-        // ponytail: 헤딩 텍스트를 그대로 topic 이름으로 쓴다. 스펙 4.5 의 헤딩 예시에
-        // 백틱이 없어서 이름 안의 백틱을 벗기지 않는다. 백틱 헤딩을 허용하기로 하면 그때 올린다.
         if let Some(heading) = trimmed.strip_prefix("## ") {
+            // 헤딩에 백틱이 있으면 그 topic 은 CLI 인자로 주소를 댈 수 없다 (스펙 6.0).
+            // 짝 검사(K104)보다 먼저 판정해야 "주소 불가능" 이라는 정확한 진단이 나온다.
+            if heading.contains('`') {
+                diagnostics.push(헤딩_백틱(&path, heading.trim(), line_no));
+            }
             topics.push(Topic {
                 name: heading.trim().to_string(),
-                body: String::new(),
+                body: raw.to_string(),
                 uncoded: false,
                 iknow: Vec::new(),
                 refs: Vec::new(),
@@ -82,6 +84,7 @@ pub fn parse_document(path: DocPath, source: &str) -> Result<Document, Vec<Diagn
                 covers: Vec::new(),
                 line: line_no,
             });
+            continue;
         }
 
         // keyword 선언은 서술이 아니라 선언이므로 topic 본문에 담지 않는다 (스펙 4.8).
@@ -93,14 +96,13 @@ pub fn parse_document(path: DocPath, source: &str) -> Result<Document, Vec<Diagn
             continue;
         }
 
-        // 헤딩 줄을 포함한 나머지는 현재 topic 의 본문이다.
-        // topic 밖의 줄은 이 태스크에서 다루지 않는다.
+        // 나머지 줄은 현재 topic 의 본문이다. topic 밖의 줄은 이 태스크에서 다루지 않는다.
         let Some(topic) = topics.last_mut() else {
             continue;
         };
         push_body_line(topic, raw);
 
-        // 본문의 백틱 쌍은 전부 심볼 참조다. 헤딩도 본문의 일부이므로 똑같이 훑는다.
+        // 본문의 백틱 쌍은 전부 심볼 참조다.
         match scan_symbols(raw) {
             Some(symbols) => topic
                 .refs
@@ -319,16 +321,13 @@ fn find_definition_colon(rest: &str) -> Option<usize> {
 
 /// topic 본문에 원문 한 줄을 덧붙인다.
 ///
-/// 본문의 첫 줄은 언제나 `##` 헤딩이므로, 비어 있을 때만 개행 없이 붙인다.
+/// 본문은 헤딩 줄로 시작하므로 언제나 앞에 개행을 넣는다.
 ///
 /// # 매개변수
 /// - `topic`: 본문을 채울 topic
 /// - `raw`: 덧붙일 원문 한 줄
 fn push_body_line(topic: &mut Topic, raw: &str) {
-    // 첫 줄 앞에 개행을 넣으면 원문과 어긋난다.
-    if !topic.body.is_empty() {
-        topic.body.push('\n');
-    }
+    topic.body.push('\n');
     topic.body.push_str(raw);
 }
 
@@ -407,6 +406,38 @@ fn keyword_문법_오류(path: &DocPath, line: usize, message: String) -> Diagno
             kind: FixKind::Edit,
             doc: Some(path.clone()),
             action: "이 줄을 `keyword `<이름>`: <한 줄 정의>` 형식으로 고치세요. 상세 설명이 필요하면 줄 끝에 `#`<topic 이름>`` 을 붙입니다".to_string(),
+        }],
+    }
+}
+
+/// topic 헤딩에 백틱이 있다는 진단을 만든다.
+///
+/// 백틱이 든 헤딩은 CLI 인자로 주소를 댈 수 없어(스펙 6.0) 조회 불가능한 심볼이 된다.
+///
+/// # 매개변수
+/// - `path`: 대상 문서 경로
+/// - `heading`: 문제가 된 헤딩 텍스트
+/// - `line`: 헤딩이 있는 줄 번호
+///
+/// # 반환값
+/// `K105` 진단
+fn 헤딩_백틱(path: &DocPath, heading: &str, line: usize) -> Diagnostic {
+    Diagnostic {
+        severity: Severity::Error,
+        code: "K105",
+        message: "topic 헤딩에 백틱이 있습니다. 이 topic 은 CLI 로 주소를 댈 수 없습니다."
+            .to_string(),
+        locations: vec![Location {
+            doc: path.clone(),
+            line,
+            note: "이 topic 헤딩".to_string(),
+        }],
+        fixes: vec![Fix {
+            kind: FixKind::Edit,
+            doc: Some(path.clone()),
+            action: format!(
+                "topic 헤딩 \"{heading}\" 에서 백틱을 지우고 평문 이름으로 고치세요. CLI 인자에는 백틱을 쓸 수 없어서(스펙 6.0) 백틱이 든 헤딩은 kang show 로 조회할 수 없습니다"
+            ),
         }],
     }
 }

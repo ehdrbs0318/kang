@@ -200,6 +200,40 @@ description: 결제 정책 문서
     assert!(!diagnostics[0].fixes.is_empty());
 }
 
+/// topic 헤딩에 백틱이 있으면 error 여야 한다.
+/// 백틱이 든 헤딩은 CLI 인자로 주소를 댈 수 없다 (스펙 6.0).
+#[test]
+fn topic_헤딩에_백틱이_있으면_에러다() {
+    // 짝이 맞는 백틱은 K104 로 잡히지 않으므로 K105 만이 막는다.
+    let 짝맞음 = r#"---
+description: 결제 정책 문서
+---
+
+## `결제` 의 방법
+"#;
+
+    let diagnostics = parse::parse_document(문서경로(), 짝맞음).unwrap_err();
+
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(diagnostics[0].code, "K105");
+    assert_eq!(diagnostics[0].severity, Severity::Error);
+    assert_eq!(diagnostics[0].locations[0].line, 5);
+    assert!(!diagnostics[0].fixes.is_empty());
+
+    // 백틱이 하나뿐이어도 짝 검사(K104)보다 K105 가 먼저 판정한다.
+    let 짝안맞음 = r#"---
+description: 결제 정책 문서
+---
+
+## 결제 `의 방법
+"#;
+
+    let diagnostics = parse::parse_document(문서경로(), 짝안맞음).unwrap_err();
+
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(diagnostics[0].code, "K105");
+}
+
 /// 문서 경로는 `/` 로 이은 전체 경로 하나로만 출력된다.
 #[test]
 fn 문서_경로는_슬래시로_출력된다() {
