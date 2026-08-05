@@ -1,0 +1,60 @@
+name: release
+
+# v* 태그 푸시에서만 돈다. 브랜치 푸시에서는 돌지 않는다.
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - { target: aarch64-apple-darwin, os: macos-14 }
+          - { target: x86_64-apple-darwin, os: macos-14 }
+          - { target: x86_64-unknown-linux-gnu, os: ubuntu-24.04 }
+          # ponytail: arm 러너로 네이티브 빌드한다. 이 러너를 쓸 수 없는 플랜이면
+          # ubuntu-24.04 에 gcc-aarch64-linux-gnu 를 깔고 크로스 링크로 바꾼다.
+          - { target: aarch64-unknown-linux-gnu, os: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # tests/cli.rs 의 show YAML 게이트는 파서가 없으면 건너뛴다. CI 에서는 파서를
+      # 깔고 KANG_REQUIRE_YAML 로 "건너뛰기" 자체를 실패로 만든다.
+      - run: python3 -m pip install --break-system-packages --quiet pyyaml
+
+      - run: cargo test
+        env:
+          KANG_REQUIRE_YAML: '1'
+
+      - run: rustup target add ${{ matrix.target }}
+      - run: cargo build --release --target ${{ matrix.target }}
+
+      # 설치 스크립트가 uname 으로 고를 수 있도록 이름에 타깃 트리플을 넣는다.
+      # README 의 curl 한 줄이 만드는 이름이 바로 이것이다.
+      - run: mv target/${{ matrix.target }}/release/kang kang-${{ matrix.target }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kang-${{ matrix.target }}
+          path: kang-${{ matrix.target }}
+
+  # 네 빌드가 모두 끝난 뒤에만 릴리즈를 만든다. 하나라도 실패하면 태그에 반쪽
+  # 릴리즈가 남지 않는다.
+  release:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - run: gh release create "$GITHUB_REF_NAME" --generate-notes dist/kang-*
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}

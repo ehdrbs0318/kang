@@ -2297,15 +2297,18 @@ fn 순환_import_를_만들면_체인이_출력된다() {
 ///
 /// **의존성을 늘리지 않는다.** `python3` 과 `pyyaml` 이 있으면 반드시 돌고, 없으면
 /// 건너뛴다. 이미터 자체의 단위 검증은 `tests/yaml.rs` 에 있다.
+///
+/// `KANG_REQUIRE_YAML` 이 켜진 환경에서는 건너뛰기가 실패다. CI 가 이 변수를 켜므로
+/// 파서 없는 이미지로 갈아타는 순간 조용히 빠지지 않고 터진다.
 #[test]
 fn show_출력이_유효한_yaml_이다() {
     let root = 임시_루트("show-yaml");
     git_저장소로(&root);
     예제_프로젝트_통과(&root);
 
-    // ponytail: python3 이나 pyyaml 이 없는 환경에서는 이 게이트가 조용히 빠진다. YAML
-    // 파서를 의존성으로 들이지 않기 위한 대가이며, CI 가 파서 없는 이미지로 도는 일이
-    // 생기면 그때 `serde_yaml` 을 dev-dependency 로 올린다.
+    // ponytail: python3 이나 pyyaml 이 없는 로컬 환경에서는 이 게이트가 빠진다. YAML
+    // 파서를 의존성으로 들이지 않기 위한 대가이며, CI 는 아래 KANG_REQUIRE_YAML 로
+    // 그 빠짐을 실패로 바꾼다.
     let 파서_있음 = Command::new("python3")
         .args(["-c", "import yaml"])
         .stdout(Stdio::null())
@@ -2313,6 +2316,12 @@ fn show_출력이_유효한_yaml_이다() {
         .status()
         .is_ok_and(|상태| 상태.success());
     if !파서_있음 {
+        // KANG_REQUIRE_YAML 이 켜졌다면 건너뛰기가 곧 실패다. cargo test 는 통과한
+        // 테스트의 출력을 삼키므로, eprintln 만으로는 CI 화면에 아무것도 남지 않는다.
+        assert!(
+            std::env::var_os("KANG_REQUIRE_YAML").is_none(),
+            "KANG_REQUIRE_YAML 이 켜졌는데 python3 또는 pyyaml 이 없다"
+        );
         eprintln!("python3 또는 pyyaml 이 없어 YAML 검증을 건너뛴다");
         정리(&root);
         return;
