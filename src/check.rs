@@ -418,14 +418,19 @@ pub fn check_exceptions(project: &Project, table: &SymbolTable) -> Vec<Diagnosti
         let 커버_위치 = || -> Vec<Location> {
             짝.iter()
                 .map(|c| Location {
+                    // 이름 뒤에 조사를 붙이지 않는다 ([`대상_설명`] 과 같은 이유다) —
+                    // 끝소리에 따라 "이/가" 가 갈리는데 컴파일러가 판정할 수 없어,
+                    // 붙이면 어느 한쪽에서 반드시 어색해진다. 줄표로 받는다.
                     doc: c.doc.clone(),
                     line: c.line,
-                    note: format!("topic `{}` 이 여기서 이 예외를 커버합니다.", c.topic),
+                    note: format!("topic `{}` — 여기서 이 예외를 커버합니다.", c.topic),
                 })
                 .collect()
         };
         // 지울 cover 줄을 줄 번호 없이 지목한다 (ADR-0003). cover 에 적힌 이름은 alias 일 수
         // 있으므로 예외의 정본 이름이 아니라 **그 줄에 적힌 이름**을 그대로 적는다.
+        //
+        // 각 항목이 "줄" 로 끝나므로 뒤에 붙는 "을"·"입니다" 는 끝소리가 고정이다.
         let 커버_설명 = 짝
             .iter()
             .map(|c| {
@@ -466,9 +471,7 @@ pub fn check_exceptions(project: &Project, table: &SymbolTable) -> Vec<Diagnosti
                     Fix {
                         kind: FixKind::Edit,
                         doc: Some((*doc).clone()),
-                        action: format!(
-                            "정책이 아직 결정되지 않은 것이라면 이 exception 선언 줄 끝에 pending 을 붙이세요. 그러면 `{이름}` 은 error 가 아니라 `K031` 알림이 되고 빌드는 통과합니다."
-                        ),
+                        action: "정책이 아직 결정되지 않은 것이라면 이 exception 선언 줄 끝에 pending 을 붙이세요. 그러면 이 예외는 error 가 아니라 `K031` 알림이 되고 빌드는 통과합니다.".to_string(),
                     },
                 ],
             },
@@ -498,7 +501,7 @@ pub fn check_exceptions(project: &Project, table: &SymbolTable) -> Vec<Diagnosti
                     // 어느 것을 남길지는 사람이 정한다. 문서를 하나 고를 근거가 없다.
                     doc: None,
                     action: format!(
-                        "이 예외를 실제로 다루는 정책 하나만 남기고 나머지 cover 줄을 지우세요. 지금 커버하는 것은 {커버_설명} 입니다."
+                        "이 예외를 실제로 다루는 정책 하나만 남기고 나머지 cover 줄을 지우세요. 지금 커버하는 것은 {커버_설명}입니다."
                     ),
                 }],
             },
@@ -519,7 +522,7 @@ pub fn check_exceptions(project: &Project, table: &SymbolTable) -> Vec<Diagnosti
                     kind: FixKind::Edit,
                     doc: Some((*doc).clone()),
                     action: format!(
-                        "정책이 정해지면 그것을 다루는 topic 에 cover `{이름}` 을 추가하고, 이 선언에서 pending 을 지우세요."
+                        "정책이 정해지면 그것을 다루는 topic 에 다음 줄을 추가하고, 이 선언에서 pending 을 지우세요: cover `{이름}`"
                     ),
                 }],
             },
@@ -545,16 +548,14 @@ pub fn check_exceptions(project: &Project, table: &SymbolTable) -> Vec<Diagnosti
                     Fix {
                         kind: FixKind::Edit,
                         doc: Some((*doc).clone()),
-                        action: format!(
-                            "정책이 이미 결정된 것이라면(커버하는 topic 이 그 정책입니다) 이 exception 선언에서 pending 을 지우세요. 그러면 `{이름}` 은 커버된 일반 예외가 되어 통과합니다."
-                        ),
+                        action: "정책이 이미 결정된 것이라면(커버하는 topic 이 그 정책입니다) 이 exception 선언에서 pending 을 지우세요. 그러면 이 예외는 커버된 일반 예외가 되어 통과합니다.".to_string(),
                     },
                     Fix {
                         kind: FixKind::Edit,
                         // 커버가 여러 문서에 흩어질 수 있어 문서를 하나로 고를 수 없다.
                         doc: None,
                         action: format!(
-                            "정책이 아직 결정되지 않은 것이라면 {커버_설명} 을 지우세요. 그러면 `{이름}` 은 `K031` 알림이 되고 빌드는 통과합니다."
+                            "정책이 아직 결정되지 않은 것이라면 {커버_설명}을 지우세요. 그러면 이 예외는 `K031` 알림이 되고 빌드는 통과합니다."
                         ),
                     },
                 ],
@@ -609,7 +610,7 @@ pub fn check_exceptions(project: &Project, table: &SymbolTable) -> Vec<Diagnosti
                 doc: c.doc.clone(),
                 line: c.line,
                 note: format!(
-                    "topic `{}` 이 여기서 커버하려는 대상을 찾지 못했습니다.",
+                    "topic `{}` — 여기서 커버하려는 대상을 찾지 못했습니다.",
                     c.topic
                 ),
             }],
