@@ -2182,3 +2182,31 @@ fn 상호_명시가_완전하면_진단이_없다() {
     assert!(진단.is_empty(), "{진단:?}");
     정리(&root);
 }
+
+/// `[edit]` 는 문서 문법이다 (스펙 5.1.1). 계층 이름을 백틱 **한 쌍**으로 감싸면
+/// `` `결제수단.카드` `` 라는, 문서 어디에도 없는 문자열을 찾으라고 시키게 된다.
+#[test]
+fn 계층_이름_진단은_조각마다_백틱을_두른다() {
+    let root = 임시_루트("hierarchy-doc-syntax");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/x.kang",
+        "---\ndescription: 결제\n---\n\nkeyword `결제수단`: 대금을 내는 방법\nkeyword `결제수단`.`카드`: 카드를 사용한 결제\n",
+    );
+    // alias 없이 계층 keyword 를 import 하고 쓰지 않는다.
+    쓰기(
+        &root,
+        "docs/b.kang",
+        "---\ndescription: 청구\n---\n\nimport `docs`/`x`.`결제수단`.`카드`\n\n## 청구의 방법\n\n청구서를 발행한다.\n",
+    );
+
+    let 진단 = 심볼_검사(&root);
+
+    assert_eq!(코드들(&진단), vec!["K003"], "{진단:?}");
+    let 편집 = &진단[0].fixes[0];
+    assert_eq!(편집.kind, FixKind::Edit);
+    assert!(편집.action.contains("`결제수단`.`카드`"), "{}", 편집.action);
+    assert!(!편집.action.contains("`결제수단.카드`"), "{}", 편집.action);
+    정리(&root);
+}

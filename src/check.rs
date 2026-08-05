@@ -588,29 +588,28 @@ fn 미해결_검사(
     선언들: &BTreeMap<String, Vec<선언>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
-    // 등장 순서를 따로 들고 다닌다. HashMap 만 쓰면 진단 순서가 실행마다 뒤집힌다.
-    let mut 순서: Vec<&str> = Vec::new();
-    let mut 자리들: HashMap<&str, Vec<(usize, &'static str)>> = HashMap::new();
+    // 등장 순서대로 담는다. HashMap 을 쓰면 진단 순서가 실행마다 뒤집히므로,
+    // 순서를 따로 관리하는 대신 순서 있는 자료구조 하나만 쓴다.
+    // 한 문서에서 해석되지 않는 이름은 많아야 몇 개라 선형 탐색으로 충분하다.
+    let mut 자리들: Vec<(&str, Vec<(usize, &'static str)>)> = Vec::new();
 
     // 해석되지 않은 참조를 이름별로 모은다.
     for (이름, 줄, 자리) in 참조 {
         if scope.contains_key(이름) {
             continue;
         }
-        let 모음 = 자리들.entry(이름.as_str()).or_default();
-        // 이 이름을 처음 보는 자리에서만 순서에 넣는다.
-        if 모음.is_empty() {
-            순서.push(이름.as_str());
+        match 자리들.iter_mut().find(|(본, _)| *본 == 이름) {
+            Some((_, 모음)) => 모음.push((*줄, *자리)),
+            None => 자리들.push((이름, vec![(*줄, *자리)])),
         }
-        모음.push((*줄, *자리));
     }
 
     // 이름마다 진단 하나를 만든다.
-    for 이름 in 순서 {
+    for (이름, 모음) in 자리들 {
         diagnostics.push(미해결_심볼(
             &document.path,
             이름,
-            &자리들[이름],
+            &모음,
             선언들.get(이름).map_or(&[][..], Vec::as_slice),
         ));
     }
@@ -654,7 +653,7 @@ fn import_검사(
             .unwrap_or_else(|| import.target.name.join("."));
         // 사용 여부는 문서 전체에서 본다. 한 topic 에서라도 쓰였으면 통과다.
         if !사용.contains(&이름) {
-            diagnostics.push(미사용_import(document, import, &이름));
+            diagnostics.push(미사용_import(document, import));
         }
 
         let 같은_대상 = 대상별.iter_mut().find(|(대상, _)| {
@@ -814,6 +813,35 @@ fn 심볼_주소(doc: &DocPath, kind: &SymbolKind, name: &str, 백틱: bool) -> 
     }
 }
 
+/// 참조 대상을 찾지 못한 이유를 한 문장으로 말한다.
+///
+/// **문서가 없는 것과 문서 안에 심볼이 없는 것은 다른 사실이다.** 뭉뚱그리면 둘 중
+/// 하나에 대해 진단이 거짓을 말한다. 파싱에 실패해 [`Project::docs`] 에서 빠진 문서를
+/// "없는 파일" 이라 단정하지 않도록 두 원인을 함께 적는다.
+///
+/// # 매개변수
+/// - `대상`: 찾지 못한 심볼 참조
+/// - `project`: 파싱을 마친 프로젝트. 대상 문서의 실재를 여기서 본다
+///
+/// # 반환값
+/// 원인을 설명하는 한 문장
+fn 대상_설명(대상: &SymbolRef, project: &Project) -> String {
+    if project.docs.contains_key(&대상.doc) {
+        // 조사를 이름 뒤에 붙이지 않는다. 이름의 끝소리에 따라 "이/가" 가 갈리는데
+        // 컴파일러가 그것을 판정할 수 없어, 붙이면 어느 한쪽에서 반드시 어색해진다.
+        format!(
+            "문서 {} 에는 그 이름의 {} 선언이 없습니다.",
+            대상.doc,
+            종류_낱말(&대상.kind)
+        )
+    } else {
+        format!(
+            "이 프로젝트에서 문서 {} 를 찾지 못했습니다. 경로가 틀렸거나 그 문서가 컴파일되지 않았습니다.",
+            대상.doc
+        )
+    }
+}
+
 /// 심볼 종류를 문서에 쓰는 낱말로 바꾼다.
 ///
 /// # 매개변수
@@ -944,32 +972,22 @@ fn 미해결_심볼(
 /// `K002` 진단
 fn import_대상_없음(document: &Document, import: &Import, project: &Project) -> Diagnostic {
     let 대상 = &import.target;
-    let 이름 = 대상.name.join(".");
-    let 문서_문법 = 심볼_주소(&대상.doc, &대상.kind, &이름, true);
-    let 낱말 = 종류_낱말(&대상.kind);
+    let 문서_문법 = 심볼_주소(&대상.doc, &대상.kind, &대상.name.join("."), true);
 
-    // 문서 자체가 없는 경우와, 문서는 있는데 심볼이 없는 경우를 갈라 말한다.
-    let (설명, 처방) = if project.docs.contains_key(&대상.doc) {
-        (
-            format!("문서 {} 에 {낱말} `{이름}` 이 없습니다.", 대상.doc),
-            format!(
-                "이 import 줄의 대상 이름을 고치거나, 대상 문서에서 {낱말} `{이름}` 을 선언하세요."
-            ),
-        )
+    // 문서 자체가 없으면 경로를, 심볼이 없으면 이름을 고쳐야 한다. 처방이 갈린다.
+    let 처방 = if project.docs.contains_key(&대상.doc) {
+        format!("이 import 줄의 대상 이름을 고치거나, 대상 문서에 다음을 선언하세요: {문서_문법}")
     } else {
-        (
-            format!(
-                "이 프로젝트에서 문서 {} 를 찾지 못했습니다. 경로가 틀렸거나 그 문서가 컴파일되지 않았습니다.",
-                대상.doc
-            ),
-            "이 import 줄의 대상 경로를 실재하는 문서로 고치세요. 그 문서가 컴파일에 실패했다면 먼저 그쪽 진단을 고치세요.".to_string(),
-        )
+        "이 import 줄의 대상 경로를 실재하는 문서로 고치세요. 그 문서가 컴파일에 실패했다면 먼저 그쪽 진단을 고치세요.".to_string()
     };
 
     Diagnostic {
         severity: Severity::Error,
         code: "K002",
-        message: format!("import 대상을 찾지 못했습니다 — {문서_문법}. {설명}"),
+        message: format!(
+            "import 대상을 찾지 못했습니다 — {문서_문법}. {}",
+            대상_설명(대상, project)
+        ),
         locations: vec![Location {
             doc: document.path.clone(),
             line: import.line,
@@ -988,27 +1006,40 @@ fn import_대상_없음(document: &Document, import: &Import, project: &Project)
 /// # 매개변수
 /// - `document`: import 를 쓴 문서
 /// - `import`: 쓰이지 않은 import
-/// - `이름`: 이 문서에서 그 심볼이 묶인 로컬 이름
 ///
 /// # 반환값
 /// `K003` 진단
-fn 미사용_import(document: &Document, import: &Import, 이름: &str) -> Diagnostic {
+fn 미사용_import(document: &Document, import: &Import) -> Diagnostic {
+    // 이 문서에서 그 심볼을 부를 때 **실제로 쓰는 표기**다. alias 는 백틱 한 쌍이고,
+    // alias 가 없으면 대상의 계층 이름이므로 조각마다 백틱을 두른다 (스펙 4.1).
+    // 계층 이름을 한 쌍으로 감싸면 문서에 없는 문자열을 찾으라고 시키게 된다.
+    let 표기 = match &import.alias {
+        Some(alias) => format!("`{alias}`"),
+        None => import
+            .target
+            .name
+            .iter()
+            .map(|조각| format!("`{조각}`"))
+            .collect::<Vec<String>>()
+            .join("."),
+    };
+
     Diagnostic {
         severity: Severity::Error,
         code: "K003",
         message: format!(
-            "import 했으나 이 문서의 어느 곳에서도 쓰지 않았습니다 — `{이름}`. 쓰지 않는 import 는 문서가 무엇을 전제하는지 흐린다."
+            "import 했으나 이 문서의 어느 곳에서도 쓰지 않았습니다 — {표기}. 쓰지 않는 import 는 문서가 무엇을 전제하는지 흐립니다."
         ),
         locations: vec![Location {
             doc: document.path.clone(),
             line: import.line,
-            note: format!("여기서 `{이름}` 으로 import 했습니다."),
+            note: format!("여기서 import 했고, 이 문서에서 부르는 이름은 {표기} 입니다."),
         }],
         fixes: vec![Fix {
             kind: FixKind::Edit,
             doc: Some(document.path.clone()),
             action: format!(
-                "이 import 줄을 지우세요. 이 문서가 실제로 그 개념을 쓴다면, 쓰는 자리에서 `{이름}` 으로 참조하세요."
+                "이 import 줄을 지우세요. 이 문서가 실제로 그 개념을 쓴다면, 쓰는 자리에서 다음 표기로 참조하세요: {표기}"
             ),
         }],
     }
@@ -1040,7 +1071,7 @@ fn 이름_여럿(
             .map(|(이름, 줄)| Location {
                 doc: document.path.clone(),
                 line: *줄,
-                note: format!("여기서 `{이름}` 으로 묶었습니다."),
+                note: format!("여기서 묶은 이름: `{이름}`"),
             })
             .collect(),
         fixes: vec![Fix {
@@ -1061,29 +1092,20 @@ fn 이름_여럿(
 /// # 반환값
 /// `K010` 진단
 fn iknow_대상_없음(하나: &선언, 대상: &SymbolRef, project: &Project) -> Diagnostic {
-    let 이름 = 대상.name.join(".");
-    let 문서_문법 = 심볼_주소(&대상.doc, &대상.kind, &이름, true);
-    let 낱말 = 종류_낱말(&대상.kind);
-
-    // import 와 같은 이유로 두 경우를 갈라 말한다.
-    let 설명 = if project.docs.contains_key(&대상.doc) {
-        format!("문서 {} 에 {낱말} `{이름}` 이 없습니다.", 대상.doc)
-    } else {
-        format!(
-            "이 프로젝트에서 문서 {} 를 찾지 못했습니다. 경로가 틀렸거나 그 문서가 컴파일되지 않았습니다.",
-            대상.doc
-        )
-    };
+    let 문서_문법 = 심볼_주소(&대상.doc, &대상.kind, &대상.name.join("."), true);
 
     Diagnostic {
         severity: Severity::Error,
         code: "K010",
-        message: format!("iknow 대상을 찾지 못했습니다 — {문서_문법}. {설명}"),
+        message: format!(
+            "iknow 대상을 찾지 못했습니다 — {문서_문법}. {}",
+            대상_설명(대상, project)
+        ),
         locations: vec![Location {
             doc: 하나.doc.clone(),
             line: 하나.line,
             note: format!(
-                "여기 {} `{}` 선언의 iknow 가 그 대상을 가리킵니다.",
+                "여기 {} 선언의 iknow 가 그 대상을 가리킵니다 — `{}`",
                 종류_낱말(&하나.kind),
                 하나.name
             ),
@@ -1092,7 +1114,7 @@ fn iknow_대상_없음(하나: &선언, 대상: &SymbolRef, project: &Project) -
             kind: FixKind::Edit,
             doc: Some(하나.doc.clone()),
             action: format!(
-                "이 선언의 iknow 대상 주소를 실재하는 심볼로 고치세요. 그 대상이 사라졌다면 iknow 에서 {문서_문법} 를 지우세요."
+                "이 선언의 iknow 대상 주소를 실재하는 심볼로 고치세요. 그 대상이 사라졌다면 iknow 목록에서 다음을 지우세요: {문서_문법}"
             ),
         }],
     }
@@ -1128,12 +1150,9 @@ fn iknow_불완전(
                 // 첫 자리에만 "여기서", 나머지는 "여기서도" 라고 말한다. 어느 쪽이 원인인지는
                 // 컴파일러가 알 수 없으므로 순서를 주장하지 않는다.
                 note: if 자리 == 0 {
-                    format!("여기서 {} `{이름}` 을 선언했습니다.", 종류_낱말(&하나.kind))
+                    format!("여기서 선언했습니다 — {} `{이름}`", 종류_낱말(&하나.kind))
                 } else {
-                    format!(
-                        "여기서도 {} `{이름}` 을 선언했습니다.",
-                        종류_낱말(&하나.kind)
-                    )
+                    format!("여기서도 선언했습니다 — {} `{이름}`", 종류_낱말(&하나.kind))
                 },
             })
             .collect(),
@@ -1156,12 +1175,12 @@ fn iknow_불완전(
                     doc: Some(대표.doc.clone()),
                     action: if 이미_있음 {
                         format!(
-                            "{낱말} `{이름}` 선언의 iknow 목록에 {} 를 덧붙이세요.",
+                            "{낱말} `{이름}` 선언의 iknow 목록에 다음을 덧붙이세요: {}",
                             목록.join(", ")
                         )
                     } else {
                         format!(
-                            "{낱말} `{이름}` 선언 줄 끝에 // iknow {} 를 추가하세요.",
+                            "{낱말} `{이름}` 선언 줄 끝에 다음을 추가하세요: // iknow {}",
                             목록.join(", ")
                         )
                     },
