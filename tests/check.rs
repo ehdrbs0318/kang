@@ -3006,3 +3006,174 @@ fn 예외가_아닌_이름을_커버하면_다른_이유를_말한다() {
     assert!(!diagnostics[0].fixes[0].action.contains("import"));
     정리(&root);
 }
+
+/// `K032` 의 첫 수정은 pending 만 지우라고 말한다. 커버가 둘 이상이면 그것만으로는
+/// `(일반, 커버 둘)` 이 되어 `K033` 이 새로 난다 — "통과합니다" 가 거짓이 된다.
+/// 스펙 V0001:417 은 에이전트가 fix 를 **그대로 적용**한다고 정한다.
+#[test]
+fn k032_의_수정이_커버_둘일_때_통과를_약속하지_않는다() {
+    let root = 임시_루트("exc-k032-multi");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: A\n---\n\n## 정책\n\n본문이다.\n\nexception `해외 결제` pending\n\n## 처리 하나\n\n하나.\n\ncover `해외 결제`\n\n## 처리 둘\n\n둘.\n\ncover `해외 결제`\n",
+    );
+
+    let diagnostics = 예외_검사(&root);
+
+    assert_eq!(코드들(&diagnostics), vec!["K032"]);
+    let 첫_수정 = &diagnostics[0].fixes[0].action;
+    // pending 만 지우면 `K033` 이 남으므로 통과를 약속하면 안 된다.
+    assert!(!첫_수정.contains("통과합니다"), "{첫_수정}");
+    // 대신 커버를 하나로 줄이라는 것까지 함께 말해야 그대로 적용할 수 있다.
+    assert!(첫_수정.contains("하나만"), "{첫_수정}");
+    정리(&root);
+}
+
+/// 커버가 하나뿐이면 pending 을 지우는 것으로 정말 통과한다. 그 문장은 남아야 한다.
+#[test]
+fn k032_의_수정이_커버_하나일_때는_통과를_약속한다() {
+    let root = 임시_루트("exc-k032-single");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: A\n---\n\n## 정책\n\n본문이다.\n\nexception `해외 결제` pending\n\n## 처리\n\n하나.\n\ncover `해외 결제`\n",
+    );
+
+    let diagnostics = 예외_검사(&root);
+
+    assert!(
+        diagnostics[0].fixes[0].action.contains("통과합니다"),
+        "{:?}",
+        diagnostics[0].fixes[0].action
+    );
+    정리(&root);
+}
+
+/// `K031` 의 수정대로 다른 문서의 topic 에 cover 만 넣으면 그 이름이 그 문서의 스코프에
+/// 없어 `K034` 와 `K030` 이 난다. warn 을 없애려던 수정이 error 둘을 만들면 안 된다.
+#[test]
+fn k031_의_수정이_타_문서_import_를_함께_안내한다() {
+    let root = 임시_루트("exc-k031-import");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: A\n---\n\n## 정책\n\n본문이다.\n\nexception `해외 결제` pending\n",
+    );
+
+    let diagnostics = 예외_검사(&root);
+
+    assert_eq!(코드들(&diagnostics), vec!["K031"]);
+    let 수정 = &diagnostics[0].fixes[0].action;
+    assert!(수정.contains("import `docs`/`a`!`해외 결제`"), "{수정}");
+    정리(&root);
+}
+
+/// `K030`·`K031` 의 note 는 "프로젝트에 없습니다" 라고 단정하면 안 된다.
+/// 이름만 같고 import 되지 않은 cover 줄이 문서에 **문자 그대로 있을 수 있고**,
+/// 그때 같은 실행의 `K034` 가 그 줄을 지목해 두 진단이 서로를 반박하는 모양이 된다.
+#[test]
+fn k030_의_note_가_이름만_같은_cover_를_없다고_말하지_않는다() {
+    let root = 임시_루트("exc-note-precise");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: A\n---\n\n## 정책\n\n본문이다.\n\nexception `무료 상품`\n",
+    );
+    // import 이 없어 해석되지 않을 뿐, `cover `무료 상품`` 은 파일에 문자 그대로 있다.
+    쓰기(
+        &root,
+        "docs/b.kang",
+        "---\ndescription: B\n---\n\n## 처리\n\n하나다.\n\ncover `무료 상품`\n",
+    );
+
+    let diagnostics = 예외_검사(&root);
+
+    assert_eq!(코드들(&diagnostics), vec!["K030", "K034"]);
+    let note = &diagnostics[0].locations[0].note;
+    assert!(!note.contains("프로젝트에 없습니다"), "{note}");
+    // 해석 기준으로 좁혀 말해야 grep 으로 반증되지 않는다.
+    assert!(note.contains("가리키는"), "{note}");
+    정리(&root);
+}
+
+/// 같은 이름의 exception 이 iknow 로 여러 문서에 합법적으로 존재할 수 있다 (스펙 4.4·5.1).
+/// 그때 `K034` 의 import 수정이 첫 문서를 단정하면 진단이 거짓을 말한다.
+/// 후보마다 조건절을 붙인다 — `미해결_심볼` 이 같은 자리에서 지키는 규칙이다.
+#[test]
+fn k034_는_후보가_여럿이면_문서를_단정하지_않는다() {
+    let root = 임시_루트("exc-k034-multi-owner");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: A\n---\n\n## 정책 가\n\n본문이다.\n\nexception `무료 상품` // iknow `docs`/`b`!`무료 상품`\n",
+    );
+    쓰기(
+        &root,
+        "docs/b.kang",
+        "---\ndescription: B\n---\n\n## 정책 나\n\n본문이다.\n\nexception `무료 상품` // iknow `docs`/`a`!`무료 상품`\n",
+    );
+    쓰기(
+        &root,
+        "docs/c.kang",
+        "---\ndescription: C\n---\n\n## 처리\n\n하나다.\n\ncover `무료 상품`\n",
+    );
+
+    let diagnostics = 예외_검사(&root);
+
+    assert_eq!(코드들(&diagnostics), vec!["K030", "K030", "K034"]);
+    let k034 = &diagnostics[2];
+    // 후보 둘을 각각 조건절과 함께 준다. 마지막은 이름 수정/줄 삭제 안내다.
+    assert_eq!(k034.fixes.len(), 3);
+    assert!(
+        k034.fixes[0].action.contains("docs/a 가 같은 개념이라면"),
+        "{:?}",
+        k034.fixes[0].action
+    );
+    assert!(
+        k034.fixes[0]
+            .action
+            .contains("import `docs`/`a`!`무료 상품`"),
+        "{:?}",
+        k034.fixes[0].action
+    );
+    assert!(
+        k034.fixes[1].action.contains("docs/b 가 같은 개념이라면"),
+        "{:?}",
+        k034.fixes[1].action
+    );
+    정리(&root);
+}
+
+/// 후보가 하나뿐이면 조건절 없이 그대로 단정해도 참이다.
+#[test]
+fn k034_는_후보가_하나면_조건절을_붙이지_않는다() {
+    let root = 임시_루트("exc-k034-single-owner");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: A\n---\n\n## 정책\n\n본문이다.\n\nexception `무료 상품`\n",
+    );
+    쓰기(
+        &root,
+        "docs/b.kang",
+        "---\ndescription: B\n---\n\n## 처리\n\n하나다.\n\ncover `무료 상품`\n",
+    );
+
+    let diagnostics = 예외_검사(&root);
+
+    let k034 = &diagnostics[1];
+    assert_eq!(k034.fixes.len(), 2);
+    assert!(
+        !k034.fixes[0].action.contains("같은 개념이라면"),
+        "{:?}",
+        k034.fixes[0].action
+    );
+    정리(&root);
+}
