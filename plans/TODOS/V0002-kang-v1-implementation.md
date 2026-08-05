@@ -318,7 +318,9 @@ impl SymbolTable {
 
 ---
 
-## Task 5: import 그래프 + 순환 검출 + 참조 전파
+## Task 5: import 그래프 + 순환 검출
+
+> **2026-08-05 축소.** `ancestors()` 와 참조 전파는 **v2 로 미룬다.** 참조 전파는 "코드가 topic 을 참조하면 상위 topic 도 참조된 것으로 친다" 는 규칙이고 코드 연동 자체가 v2 이므로 v1 에 호출자가 없다. `show` 의 재귀 임베드는 import 를 직접 순회한다. 아래 `ancestors` 관련 시그니처와 테스트 2건은 v1 범위 밖이다.
 
 **파일**
 - 수정: `src/resolve.rs`
@@ -463,7 +465,7 @@ pub fn check_revs(project: &Project, table: &SymbolTable) -> Vec<Diagnostic>;
 |---|---|
 | keyword·topic import 에 rev 핀 없음 | error |
 | rev 핀이 대상의 현재 해시와 불일치 | error |
-| exception import 에 rev 핀이 있음 | error |
+| exception import 의 rev 핀이 **선언 topic 본문**의 해시와 불일치 | error |
 
 - 불일치 진단의 `fix` 는 `kang bless <문서경로>:<줄번호>` 형태를 담는다. Task 11의 `bless` 가 그대로 받는 형식이어야 한다.
 - **diff 를 출력하지 않는다.** kang 은 이전 본문을 저장하지 않는다. 무엇이 바뀌었는지는 `git diff` 가 보여준다는 안내만 넣는다.
@@ -472,7 +474,8 @@ pub fn check_revs(project: &Project, table: &SymbolTable) -> Vec<Diagnostic>;
   - `rev_핀이_없으면_에러다`
   - `rev_핀이_일치하면_통과한다`
   - `대상_본문이_바뀌면_에러다`
-  - `exception_import_에_rev_가_있으면_에러다`
+  - `exception_핀은_선언_topic_본문의_해시다`
+  - `이름을_유지한_채_선언_topic_을_바꾸면_커버_문서가_깨진다`
   - `진단_fix_가_bless_인자_형식이다`
 - [ ] **Step 2: `cargo test` — 실패 확인**
 - [ ] **Step 3: `check_revs` 구현**
@@ -745,13 +748,15 @@ kang 의 소비자는 다른 프로젝트의 LLM 에이전트다. 그 프로젝�
 | 7 | 마찰의 인센티브가 반대로 걸린다 | import 를 지우고 복붙하는 편이 싸다. 같은 이유로 시스템이 막을 수 없다. 작성 스킬이 `show` 선행을 지시하는 것이 완화 수단이다 |
 | 10 | 백틱 전면 심볼화의 채택 비용 | `200원`·`null`·`POST /payments` 가 미해결 심볼 error 가 된다. **도그푸딩(kang 자기 문서 이관)으로 실측한 뒤 판단한다.** 마크다운 렌더링 호환 결정도 그때 함께 명시한다 |
 
-### 미해결
+### 나머지도 해소됨
 
-| # | 항목 | 상태 |
+| # | 항목 | 결론 |
 |---|---|---|
-| 8 | `kang show` 깊이 무제한 | 출력이 임계를 넘으면 문서 구조가 잘못됐다는 신호로 보고 build 를 error 로 막는 안을 검토 중 (T7) |
-| 9 | `exception` 이 rev 강제의 구멍 | `cover` 가 exception 소속 topic 의 rev 를 핀해야 논리가 닫힌다 (T6) |
-| 13 | `ancestors()` 의 v1 소비자 | 참조 전파는 코드 참조 전용이라 v1 에 호출자가 없다. Task 5 의 절반을 v2 로 미룰지 미결 (T9) |
+| 8 | `kang show` 깊이 무제한 | **v1 미구현, 모양만 확정.** 임계값을 데이터 없이 고르면 추측이므로 도그푸딩에서 실측한다. 손댈 때는 읽기 시점이 아니라 **빌드 시점 구조 린트**로 만든다 — "이 문서가 참조하는 정책이 너무 많다". 스펙 6.3 |
+| 9 | `exception` 이 rev 강제의 구멍 | **exception import 도 rev 핀을 갖는다.** 해시 입력은 그 예외를 선언한 topic 의 본문이다. 이름을 유지한 채 맥락을 바꿔도 커버 문서가 깨진다. 스펙 4.8 |
+| 13 | `ancestors()` 의 v1 소비자 | **v2 로 미룬다.** 참조 전파는 코드 참조 전용이고 코드 연동이 v2 이므로 v1 에 호출자가 없다. Task 5 축소 |
+
+**구현 차단 항목 없음.**
 
 ### 이관 대상
 
@@ -825,44 +830,25 @@ Lane F: Task 9 → 12
 
 ## Implementation Tasks
 
-이번 리뷰의 발견에서 나온 것들이다. Task 1~13 과 별개로, **스펙 수정이 먼저다.**
+`/plan-eng-review` 와 독립 리뷰의 발견에서 나왔고, **2026-08-05 `/grill-with-docs` 세션에서 전부 처리했다.** 스펙 V0001 갱신 완료.
 
-- [ ] **T1 (P1, human: ~2h / CC: ~20min)** — 스펙 V0001 — 셸에서 실행 가능한 CLI 인자 문법 확정
-  - 발견 출처: Outside voice 1번 — `` kang refs docs/A.`결제` `` 는 셸 명령 치환
-  - 파일: `plans/*/V0001-kang-language-design.md` 6절
-  - 검증: 확정된 예시를 실제 zsh 에서 실행해 오류가 없는지 확인
-- [ ] **T2 (P1, human: ~2h / CC: ~20min)** — 스펙 V0001 — `iknow` 문법 정의와 순환 금지 충돌 해소
-  - 발견 출처: Outside voice 2번 — 상호 명시가 상호 참조가 되어 순환 error 와 동시 만족 불가
-  - 파일: V0001 4장(문법 추가), 5.1
-  - 검증: 3개 파일 이름 충돌 시나리오를 손으로 써서 규칙 위반이 없는지 확인
-- [ ] **T3 (P1, human: ~1h / CC: ~15min)** — 스펙 V0001 — rev 핀 부트스트랩 경로 정의
-  - 발견 출처: Outside voice 3번 — 새 import 에 핀을 얻을 방법이 없음
-  - 파일: V0001 4.7, 6.0
-  - 검증: 새 import 작성부터 build 통과까지 손으로 따라가 더미 해시 타이핑이 없는지 확인
-- [ ] **T4 (P1, human: ~1h / CC: ~15min)** — 스펙 V0001 — bless 주소를 줄 번호에서 심볼 식별자로 변경
-  - 발견 출처: Outside voice 4번 — 문서 수정 후 줄이 밀려 엉뚱한 줄을 조용히 갱신
-  - 파일: V0001 6.0, V0002 Task 11
-  - 검증: 문서를 고친 뒤 bless 하는 통합 테스트 시나리오 추가
-- [ ] **T5 (P1, human: ~30min / CC: ~10min)** — 스펙 V0001 — 프로젝트 루트 결정 규칙 정의
-  - 발견 출처: Outside voice 10번 — `load(root)` 의 root 가 어디에도 정의되지 않음
-  - 파일: V0001 3절
-  - 검증: 하위 디렉토리에서 실행해도 `DocPath` 가 동일한지 확인하는 테스트
-- [ ] **T6 (P2, human: ~1h / CC: ~15min)** — 스펙 V0001 — `cover` 가 exception 소속 topic 의 rev 를 핀하도록 변경
-  - 발견 출처: Outside voice 11번 — exception 경로에서 "100% 기계적 강제"가 거짓
-  - 파일: V0001 4.5, 4.7, 5.2
-  - 검증: exception 이름 유지 + topic 본문 변경 시 커버 문서가 깨지는 테스트
-- [ ] **T7 (P2, human: ~1h / CC: ~15min)** — 스펙 V0001 — show 출력 크기 임계 초과 시 build error 규칙 추가
-  - 발견 출처: Outside voice 8번 — DAG 깊이 무제한, 실패가 조용함
-  - 파일: V0001 6.2
-  - 검증: 깊은 체인 fixture 로 임계 초과 시 error 가 나는지 확인
-- [ ] **T8 (P2, human: ~2h / CC: ~20min)** — 스펙 V0001 — 백틱 전면 심볼화의 마크다운 호환 결정 명시
-  - 발견 출처: Outside voice 9번 — `200원`, `null` 이 전부 error, 에디터 렌더링 논의 부재
-  - 파일: V0001 4.2, 8절
-  - 검증: 실제 정책 문서 한 편을 kang 문법으로 옮겨 이스케이프 빈도 측정
-- [ ] **T9 (P3, human: ~30min / CC: ~10min)** — V0002 Task 5·12 — `ancestors()` 를 v2 로 미룰지 결정
-  - 발견 출처: Cross-model tension — v1 에 호출자가 없음
-  - 파일: V0002 Task 5, Task 12
-  - 검증: `show` 재귀가 import 직접 순회로 동작하는지 확인
+- [x] **T1** — CLI 인자 문법 확정. 백틱 제거, `fix` 문자열 인용 출력. 스펙 6.0
+- [x] **T2** — `iknow` 문법 정의와 순환 충돌 해소. 부인(disavowal)이라 import 간선이 아니다. 스펙 4.4
+- [x] **T3** — rev 핀 부트스트랩. 핀 없이 쓰고 `bless` 가 삽입한다. 스펙 4.8
+- [x] **T4** — `bless` 주소를 심볼로 변경. 스펙 6.1, ADR-0003
+- [x] **T5** — 프로젝트 루트 = git 저장소 루트. 스펙 3절
+- [x] **T6** — exception import 도 rev 핀을 갖는다. 해시 입력은 선언 topic 본문. 스펙 4.8
+- [x] **T7** — show 깊이. v1 미구현으로 결정하되 모양 확정 — 빌드 시점 구조 린트. 스펙 6.3
+- [x] **T8** — 백틱 전면 심볼화의 채택 비용. **도그푸딩으로 실측한 뒤 판단**하기로 결정. 마크다운 렌더링 호환 결정도 그때 함께
+- [x] **T9** — `ancestors()` 를 v2 로. Task 5 축소
+
+### 다음 작업
+
+- [ ] **T10 (P1)** — 갱신된 스펙에 맞춰 Task 1~13 의 시그니처와 테스트 시나리오를 재점검
+  - 특히 Task 3(`iknow` 파싱), Task 8(exception rev), Task 11(`bless` 심볼 주소), Task 9(CLI 인자)
+  - 검증: 스펙 4·5·6 절의 모든 규칙이 어느 태스크에 대응하는지 대조
+- [ ] **T11 (P2)** — 도그푸딩 계획. `plans/`·`docs/adr/`·`CONTEXT.md` 를 `.kang` 으로 옮기는 순서와 성공 기준
+  - 여기서 T8(백틱 비용)과 T7(깊이 임계)의 실측값이 나온다
 
 ## GSTACK REVIEW REPORT
 
@@ -876,11 +862,12 @@ Lane F: Task 9 → 12
 
 **OUTSIDE VOICE:** Codex CLI 는 설치되어 있으나 ChatGPT 계정이 `gpt-5.4` / `gpt-5.1-codex-max` 를 거부해 Claude 서브에이전트로 폴백. 13건 발견, 그중 5건이 구현 차단 수준의 스펙 모순.
 
-**CROSS-MODEL TENSION:** `ancestors()` 의 v1 필요성. Eng review 는 topic 그래프 이원화를 권고(D2 승인). Outside voice 는 참조 전파가 코드 참조 전용이므로 v1 에 호출자가 없다고 판단. 후자가 맞아 보이나 미결.
+**CROSS-MODEL TENSION:** `ancestors()` 의 v1 필요성. Eng review 는 topic 그래프 이원화를 권고(D2 승인). Outside voice 는 참조 전파가 코드 참조 전용이므로 v1 에 호출자가 없다고 판단. **2026-08-05 grilling 에서 outside voice 채택 — v2 로 미룸.**
 
-**VERDICT:** NOT CLEARED — 스펙 V0001 에 구현 차단 모순 5건(BLOCKING 1~5). `/grilling` 으로 전략 전제(BLOCKING 11, 12) 검증 후 스펙을 수정하고 재리뷰 필요.
+**GRILLING (2026-08-05):** `/grill-with-docs` 로 전략 전제와 스펙 모순을 처리. 참조 코퍼스 `~/Project/ax-conta` 를 근거로 검증. 결과 — 구현 차단 5건 해소, 설계 결함 3건 해소, 2건은 알고 감수, 동의어 도입, ADR 3건 신설. **구현 차단 항목 없음.**
+
+**VERDICT:** 스펙 모순 해소 완료. 구현 착수 전 T10(스펙↔태스크 재대조) 필요. 그 뒤 `/plan-eng-review` 재실행 권장 — 이번 리뷰 이후 스펙이 크게 바뀌었다.
 
 **기록 실패:** `gstack-review-log` 가 최소 JSON 도 거부함. `bun` 미설치로 gstack bun 기반 바이너리 일부가 동작하지 않는다. 이 리포트가 유일한 기록이다.
 
-**UNRESOLVED DECISIONS:**
-- `ancestors()` 와 참조 전파를 v1 에 둘지 v2 로 미룰지 (T9, cross-model tension)
+NO UNRESOLVED DECISIONS
