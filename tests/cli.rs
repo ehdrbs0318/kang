@@ -181,18 +181,32 @@ fn 경고만_있으면_list_가_문서를_출력한다() {
     정리(&root);
 }
 
-/// 통과하지 못한 문서는 어떤 CLI 명령으로도 출력되지 않는다 (스펙 5절).
+/// 통과하지 못한 문서는 **어떤** CLI 명령으로도 출력되지 않는다 (스펙 5절).
+///
+/// 세 조회 함수는 같은 패턴을 손으로 반복한 별개 match 다. `list` 만 못박으면
+/// 나머지 둘에서 `compile()` 을 `parse_project()` 로 바꾸거나 `return` 을 빼도 잡히지 않는다.
 #[test]
-fn 에러가_있으면_list_가_아무것도_출력하지_않는다() {
-    let root = 임시_루트("list-err");
+fn 에러가_있으면_조회_명령이_아무것도_출력하지_않는다() {
+    let root = 임시_루트("lookup-err");
     git_저장소로(&root);
     에러_문서(&root);
 
-    let (stdout, stderr, 코드) = 실행(&root, &["list"]);
+    // 조회 명령 셋을 모두 돈다.
+    for 인자 in [
+        ["list", ""].as_slice(),
+        ["keywords", ""].as_slice(),
+        ["refs", "docs/a.결제"].as_slice(),
+    ] {
+        let 인자: Vec<&str> = 인자.iter().copied().filter(|칸| !칸.is_empty()).collect();
+        let (stdout, stderr, 코드) = 실행(&root, &인자);
 
-    assert_eq!(코드, 1, "stderr: {stderr}");
-    assert_eq!(stdout, "", "error 가 있으면 문서를 한 줄도 내지 않는다");
-    assert!(stderr.contains("K001"), "{stderr}");
+        assert_eq!(코드, 1, "{인자:?} — stderr: {stderr}");
+        assert_eq!(
+            stdout, "",
+            "{인자:?} — error 가 있으면 문서를 한 줄도 내지 않는다"
+        );
+        assert!(stderr.contains("K001"), "{인자:?} — {stderr}");
+    }
     정리(&root);
 }
 
@@ -406,6 +420,32 @@ fn keywords_가_경로_스코프로_필터된다() {
         스코프,
         "docs/a.결제: 사용자가 상품 대금을 지불하는 행위\ndocs/a.결제일: 실제 대금이 처리되는 날짜\n"
     );
+    정리(&root);
+}
+
+/// 스코프가 아무 문서도 맞히지 못하면 오타 하나가 "이 디렉토리에는 문서가 없다" 는
+/// 결론이 된다. 다만 **판정은 맞은 문서 수**여야 한다 — 문서는 있고 키워드만 없는
+/// 합법 상태에 거짓 안내가 붙으면 안 된다.
+#[test]
+fn 맞는_문서가_없는_스코프를_알린다() {
+    let root = 임시_루트("empty-scope");
+    git_저장소로(&root);
+    // 키워드가 없는 문서다. 스코프는 맞지만 `keywords` 는 낼 것이 없다.
+    쓰기(&root, "docs/a.kang", "---\ndescription: A\n---\n");
+
+    // 맞은 문서가 0 이면 알린다. 종료 코드는 바꾸지 않는다.
+    for 명령 in ["list", "keywords"] {
+        let (stdout, stderr, 코드) = 실행(&root, &[명령, "없는경로"]);
+        assert_eq!(코드, 0, "{명령} — 필터가 빈 결과를 내는 것은 오류가 아니다");
+        assert_eq!(stdout, "", "{명령} — {stdout}");
+        assert!(stderr.contains("없는경로"), "{명령} — {stderr}");
+    }
+
+    // 문서는 맞았는데 낼 키워드가 없는 것은 합법 상태다. 알리면 거짓이 된다.
+    let (stdout, stderr, 코드) = 실행(&root, &["keywords", "docs"]);
+    assert_eq!(코드, 0, "{stderr}");
+    assert_eq!(stdout, "");
+    assert_eq!(stderr, "", "문서가 맞았으므로 스코프는 빗나가지 않았다");
     정리(&root);
 }
 
@@ -637,10 +677,11 @@ fn help_이_명령과_인자_형식과_종료코드를_전부_보여준다() {
     // 인자 형식 — 백틱 금지와 셸 인용.
     assert!(stdout.contains("백틱"), "{stdout}");
     assert!(stdout.contains("kang refs docs/A.결제"), "{stdout}");
-    // 종료 코드 네 가지.
+    // 종료 코드 네 가지. 숫자만 세면 도움말이 `0 1 2 3` 으로 퇴화해도 통과하고,
+    // `"2"` 는 본문의 `v2` 만으로도 만족된다. 설명까지 함께 본다.
     assert!(stdout.contains("종료 코드"), "{stdout}");
-    for 코드값 in ["0", "1", "2", "3"] {
-        assert!(stdout.contains(코드값), "{stdout}");
+    for 칸 in ["0  성공", "1  컴파일", "2  사용법", "3  아직"] {
+        assert!(stdout.contains(칸), "종료 코드 칸 {칸} 이 없다: {stdout}");
     }
     // 아직 구현되지 않은 명령을 조건 없이 나열하면, 그것을 치고 종료 코드 3 을 받은
     // 에이전트가 표에 없는 상황을 만나 재시도할 곳이 없다.
