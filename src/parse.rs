@@ -116,12 +116,12 @@ pub fn parse_document(path: DocPath, source: &str) -> Result<Document, Vec<Diagn
         push_body_line(topic, raw);
 
         // 본문의 백틱 쌍은 전부 심볼 참조다.
-        match scan_line(raw) {
+        match scan_symbols(raw) {
             // 빈 백틱 쌍은 가리키는 심볼이 없다.
-            Some((symbols, _)) if symbols.iter().any(String::is_empty) => {
+            Some(symbols) if symbols.iter().any(String::is_empty) => {
                 diagnostics.push(빈_심볼(&path, line_no));
             }
-            Some((symbols, _)) => topic
+            Some(symbols) => topic
                 .refs
                 .extend(symbols.into_iter().map(|symbol| (symbol, line_no))),
             None => diagnostics.push(백틱_짝_없음(&path, line_no)),
@@ -209,8 +209,7 @@ fn parse_frontmatter(
 /// 백틱 짝이 맞지 않으면 `K104`, 이름이나 한 줄 정의가 없으면 `K103` 진단
 fn parse_keyword_line(path: &DocPath, rest: &str, line_no: usize) -> Result<Keyword, Diagnostic> {
     // 이름과 정의 양쪽의 백틱이 모두 닫혀 있어야 구분자를 신뢰할 수 있다.
-    // 같은 패스가 이름과 정의를 가르는 `:` 위치도 함께 돌려준다.
-    let Some((symbols, colon)) = scan_line(rest) else {
+    let Some(symbols) = scan_symbols(rest) else {
         return Err(백틱_짝_없음(path, line_no));
     };
 
@@ -219,7 +218,8 @@ fn parse_keyword_line(path: &DocPath, rest: &str, line_no: usize) -> Result<Keyw
         return Err(빈_심볼(path, line_no));
     }
 
-    let Some(colon) = colon else {
+    // 이름 뒤의 `:` 가 이름과 정의를 가른다. 정의 안의 `:` 에 걸리면 안 되므로 첫 번째만 본다.
+    let Some(colon) = find_definition_colon(rest) else {
         return Err(keyword_문법_오류(
             path,
             line_no,
@@ -231,9 +231,7 @@ fn parse_keyword_line(path: &DocPath, rest: &str, line_no: usize) -> Result<Keyw
     let definition_part = rest[colon + 1..].trim();
 
     // 이름은 백틱으로 감싼 조각들이며 `.` 로 계층을 이룬다.
-    let names = scan_line(name_part)
-        .map(|(names, _)| names)
-        .unwrap_or_default();
+    let names = scan_symbols(name_part).unwrap_or_default();
     if names.is_empty() {
         return Err(keyword_문법_오류(
             path,
@@ -246,9 +244,7 @@ fn parse_keyword_line(path: &DocPath, rest: &str, line_no: usize) -> Result<Keyw
     let (definition, detail) = match definition_part.rfind("#`") {
         Some(marker) => {
             let tail = &definition_part[marker + 1..];
-            let mut tail_symbols = scan_line(tail)
-                .map(|(symbols, _)| symbols)
-                .unwrap_or_default();
+            let mut tail_symbols = scan_symbols(tail).unwrap_or_default();
             // 마커 뒤는 상세 심볼 하나로 끝나야 한다. 텍스트가 더 남아 있는데도
             // 마커로 인정하면 그 텍스트가 정의에서 조용히 사라진다.
             if tail_symbols.len() != 1 || !tail.ends_with('`') {
@@ -274,8 +270,7 @@ fn parse_keyword_line(path: &DocPath, rest: &str, line_no: usize) -> Result<Keyw
 
     // 정의 안의 백틱도 심볼 참조다 (스펙 4.2 "본문과 선언부의 모든 백틱").
     // 이름과 상세 topic 은 각각 name·detail 이 이미 들고 있으므로 refs 에 넣지 않는다.
-    let refs = scan_line(definition)
-        .map(|(symbols, _)| symbols)
+    let refs = scan_symbols(definition)
         .unwrap_or_default()
         .into_iter()
         .map(|symbol| (symbol, line_no))
@@ -291,32 +286,28 @@ fn parse_keyword_line(path: &DocPath, rest: &str, line_no: usize) -> Result<Keyw
     })
 }
 
-/// 한 줄을 한 번만 훑어 백틱 심볼과 백틱 밖 첫 `:` 의 위치를 함께 돌려준다.
+/// 한 줄에서 백틱 쌍 안의 심볼 이름을 등장 순서대로 뽑는다.
 ///
-/// `\` 는 언제나 다음 한 바이트를 리터럴로 만든다. 그래서 `` \` `` 는 백틱 리터럴이고
-/// `\\` 는 역슬래시 리터럴이므로 그 뒤의 백틱은 정상적인 구분자로 남는다 (스펙 4.2).
-///
-/// 백틱 안의 `:` 는 심볼 이름의 일부이므로 경계로 세지 않는다.
+/// `\`` 로 이스케이프한 백틱은 리터럴이므로 구분자로 세지 않는다 (스펙 4.2).
+/// 스펙이 정의하는 이스케이프는 이것 하나뿐이다 — `\\` 는 이스케이프가 아니라
+/// 역슬래시 문자 그대로이므로, 그 뒤의 `\`` 는 여전히 백틱 리터럴이다.
 ///
 /// # 매개변수
 /// - `line`: 검사할 한 줄
 ///
 /// # 반환값
-/// `(백틱 쌍 안의 이름들, 백틱 밖 첫 `:` 의 바이트 위치)`.
-/// 백틱 짝이 맞지 않으면 `None`
-fn scan_line(line: &str) -> Option<(Vec<String>, Option<usize>)> {
+/// 백틱 쌍 안의 이름들. 짝이 맞지 않으면 `None`
+fn scan_symbols(line: &str) -> Option<Vec<String>> {
     let bytes = line.as_bytes();
     let mut symbols = Vec::new();
     let mut open: Option<usize> = None;
-    let mut colon: Option<usize> = None;
     let mut index = 0;
 
-    // 바이트 단위로 훑는다. 백틱·역슬래시·콜론은 ASCII 라 UTF-8 이어 바이트와 겹치지 않는다.
+    // 바이트 단위로 훑는다. 백틱과 역슬래시는 ASCII 라 UTF-8 이어 바이트와 겹치지 않는다.
     while index < bytes.len() {
         match bytes[index] {
-            // 역슬래시는 다음 한 바이트를 리터럴로 만든다. 이어 바이트로 건너뛰어도
-            // 그 값이 ASCII 구분자와 겹치지 않으므로 해석이 어긋나지 않는다.
-            b'\\' => index += 2,
+            // 이스케이프된 백틱은 리터럴이므로 두 바이트를 통째로 건너뛴다.
+            b'\\' if bytes.get(index + 1) == Some(&b'`') => index += 2,
             b'`' => {
                 match open {
                     // 여는 백틱이 있었으면 여기서 닫히며 사이가 심볼 이름이다.
@@ -329,22 +320,45 @@ fn scan_line(line: &str) -> Option<(Vec<String>, Option<usize>)> {
                 }
                 index += 1;
             }
-            // 백틱 밖의 첫 `:` 만 이름과 정의의 경계다.
-            b':' if open.is_none() && colon.is_none() => {
-                colon = Some(index);
-                index += 1;
-            }
             _ => index += 1,
         }
     }
 
     // ponytail: 백틱 쌍은 한 줄 안에서 닫힌다고 본다. 심볼 이름에 줄바꿈이 들어갈 수
     // 없으므로 여는 백틱이 남은 줄은 오타다. 여러 줄 심볼 이름이 생기면 그때 올린다.
-    if open.is_some() {
-        None
-    } else {
-        Some((symbols, colon))
+    if open.is_some() { None } else { Some(symbols) }
+}
+
+/// keyword 선언에서 이름과 정의를 가르는 `:` 의 바이트 위치를 찾는다.
+///
+/// 백틱 안의 `:` 는 이름의 일부이므로 건너뛴다.
+///
+/// # 매개변수
+/// - `rest`: `keyword ` 뒤의 나머지 텍스트
+///
+/// # 반환값
+/// 백틱 밖에 있는 첫 `:` 의 바이트 위치. 없으면 `None`
+fn find_definition_colon(rest: &str) -> Option<usize> {
+    let bytes = rest.as_bytes();
+    let mut in_backtick = false;
+    let mut index = 0;
+
+    // 백틱 안팎을 추적하면서 이름 뒤에 오는 첫 `:` 를 찾는다.
+    while index < bytes.len() {
+        match bytes[index] {
+            // 이스케이프된 백틱은 구분자가 아니다.
+            b'\\' if bytes.get(index + 1) == Some(&b'`') => index += 2,
+            b'`' => {
+                in_backtick = !in_backtick;
+                index += 1;
+            }
+            // 백틱 밖의 `:` 만 이름과 정의의 경계다.
+            b':' if !in_backtick => return Some(index),
+            _ => index += 1,
+        }
     }
+
+    None
 }
 
 /// topic 본문에 원문 한 줄을 덧붙인다.
@@ -403,13 +417,13 @@ fn frontmatter_미종료(path: &DocPath, line: usize) -> Diagnostic {
         locations: vec![Location {
             doc: path.clone(),
             line,
-            note: "여기서 연 블록이 끝나지 않았습니다".to_string(),
+            note: "여기서 연 frontmatter 가 닫히지 않았습니다".to_string(),
         }],
         fixes: vec![Fix {
             kind: FixKind::Edit,
             doc: Some(path.clone()),
             action:
-                "frontmatter 키들 바로 다음에 블록을 닫는 `---` 줄을 추가하세요. 여는 `---` 을 새로 만들지 마세요"
+                "이 frontmatter 블록의 마지막 키 줄 다음에 블록을 닫는 `---` 줄을 추가하세요. 여는 `---` 을 새로 만들지 마세요"
                     .to_string(),
         }],
     }
@@ -598,7 +612,8 @@ fn 백틱_짝_없음(path: &DocPath, line: usize) -> Diagnostic {
         locations: vec![Location {
             doc: path.clone(),
             line,
-            note: "이 줄의 백틱 개수가 홀수입니다".to_string(),
+            note: "이 줄에 닫히지 않은 여는 백틱이 있습니다 (이스케이프된 `\\`` 는 세지 않습니다)"
+                .to_string(),
         }],
         fixes: vec![Fix {
             kind: FixKind::Edit,

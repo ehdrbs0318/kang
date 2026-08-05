@@ -38,8 +38,9 @@ fn description_이_없으면_에러다() {
 /// 그대로 적용하면 열린 `---` 이 남아 문서가 더 망가진다.
 #[test]
 fn 닫히지_않은_frontmatter_는_닫는_구분자를_안내한다() {
-    // 여는 `---` 이 3번째 줄이라 진단이 그 줄을 가리키는지 확인할 수 있다.
-    let source = "\n\n---\ndescription: 결제 정책 문서\n";
+    // 여는 `---` 이 3번째 줄이다. fix 를 그대로 적용해 새 블록이 앞에 붙으면
+    // 에러가 사라지면서 사용자의 frontmatter 가 본문으로 강등된다 — 진단이 문제를 은폐한다.
+    let source = "\n\n---\ndescription: 결제 정책 문서\n본문";
 
     let diagnostics = parse::parse_document(문서경로(), source).unwrap_err();
 
@@ -139,6 +140,8 @@ description: 결제 정책 문서
 
 사용자는 결제를 한다.
 
+keyword `결제일`: 실제 대금이 처리되는 날짜
+
 ## 청구서
 
 청구서는 결제로 생긴다.
@@ -152,8 +155,12 @@ description: 결제 정책 문서
     assert!(doc.topics[0].body.starts_with("## 결제의 방법"));
     assert!(doc.topics[0].body.contains("사용자는 결제를 한다."));
     assert!(!doc.topics[0].body.contains("## 청구서"));
+    // topic 한가운데의 keyword 선언은 합법이지만 서술이 아니므로 본문에서 빠진다
+    // (스펙 4.8). 섞여 들어가면 Task 8 의 rev 해시가 조용히 전부 바뀐다.
+    assert_eq!(doc.keywords.len(), 1);
+    assert!(!doc.topics[0].body.contains("keyword"));
     assert_eq!(doc.topics[1].name, "청구서");
-    assert_eq!(doc.topics[1].line, 9);
+    assert_eq!(doc.topics[1].line, 11);
     assert!(doc.topics[1].body.contains("청구서는 결제로 생긴다."));
     // Task 3 의 몫은 이 태스크가 건드리지 않는다. 침범하면 여기서 깨진다.
     assert!(doc.imports.is_empty());
@@ -161,6 +168,28 @@ description: 결제 정책 문서
     assert!(doc.topics[0].covers.is_empty());
     assert!(doc.topics[0].iknow.is_empty());
     assert!(!doc.topics[0].uncoded);
+}
+
+/// 진단은 첫 개에서 멈추지 않고 파일 전체에서 모아야 한다.
+/// description 누락에서 조기 반환하면 뒤의 두 진단을 놓친다.
+#[test]
+fn 진단을_파일_전체에서_모은다() {
+    // 백틱 스캔은 topic 안에서만 돌므로 K104 를 낼 줄보다 헤딩이 먼저 와야 한다.
+    let source = r#"---
+title: description 이 없다
+---
+
+keyword `결제`
+
+## 결제의 방법
+
+`짝없음
+"#;
+
+    let diagnostics = parse::parse_document(문서경로(), source).unwrap_err();
+
+    let codes: Vec<&str> = diagnostics.iter().map(|d| d.code).collect();
+    assert_eq!(codes, vec!["K102", "K103", "K104"]);
 }
 
 /// 본문의 백틱 쌍은 심볼 참조로 등장 줄과 함께 수집해야 한다.
@@ -230,23 +259,6 @@ fn 결제() {}
     assert_eq!(diagnostics[0].severity, Severity::Error);
     assert_eq!(diagnostics[0].locations[0].line, 7);
     assert!(!diagnostics[0].fixes.is_empty());
-}
-
-/// 역슬래시 자신이 이스케이프된 경우, 뒤따르는 백틱은 정상적인 심볼 구분자다.
-#[test]
-fn 리터럴_역슬래시_뒤의_심볼은_참조로_읽힌다() {
-    let source = r#"---
-description: 결제 정책 문서
----
-
-## 경로 표기
-
-윈도우 경로는 \\ 로 끝난다. 그 뒤의 \\`결제` 는 참조다.
-"#;
-
-    let doc = parse::parse_document(문서경로(), source).unwrap();
-
-    assert_eq!(doc.topics[0].refs, vec![("결제".to_string(), 7)]);
 }
 
 /// 빈 백틱 쌍은 가리키는 심볼이 없다. 조용히 버리면 참조가 사라지므로 error 다.
