@@ -912,15 +912,30 @@ fn 계층_상위_검사(
         //
         // 종류도 본다. `.` 는 키워드 계층이므로(스펙 4.1:68) topic·exception 은 상위가
         // 될 수 없다. 같은 파일 가지가 이미 keyword 전용이라 이것이 대칭이다.
-        let 같은_이름 = document
+        // 통과 판정은 **모든** import 를 본다. 이름만 보고 첫 줄을 집어 종류를 물으면,
+        // 같은 이름을 topic 과 keyword 로 각각 import 한 문서에서 topic 줄이 먼저 나올 때
+        // keyword import 가 있는데도 진단이 난다.
+        if document.imports.iter().any(|import| {
+            import.target.kind == SymbolKind::Keyword && import.target.name[..] == *상위
+        }) {
+            continue;
+        }
+
+        // 여기까지 왔으면 keyword import 는 없다. 이름만 같은 import 가 있으면 그 종류를
+        // 진단에 실어 보낸다 — "import 되지 않았다" 고 하면 거짓이기 때문이다.
+        // 위에서 keyword 가 없음이 확정되었으므로 어느 줄을 집어도 참인 종류다.
+        let 잘못된_종류 = document
             .imports
             .iter()
-            .find(|import| import.target.name[..] == *상위);
-        match 같은_이름.map(|import| &import.target.kind) {
-            Some(SymbolKind::Keyword) => continue,
-            // 이름은 import 되어 있으나 종류가 다르다. "import 되지 않았다" 고 하면 거짓이다.
-            종류 => diagnostics.push(계층_상위_없음(document, keyword, 상위, 종류, 선언들)),
-        }
+            .find(|import| import.target.name[..] == *상위)
+            .map(|import| &import.target.kind);
+        diagnostics.push(계층_상위_없음(
+            document,
+            keyword,
+            상위,
+            잘못된_종류,
+            선언들,
+        ));
     }
 }
 
