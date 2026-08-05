@@ -18,6 +18,7 @@
 //! | `K109` | import 선언 문법이 올바르지 않음 |
 //! | `K110` | modifier 문법이 올바르지 않음 |
 //! | `K111` | exception / cover 선언 문법이 올바르지 않음 |
+//! | `K112` | topic 밖에 내용이 있음 |
 
 use crate::ast::{
     Diagnostic, DocPath, Document, Exception, Fix, FixKind, Import, Keyword, KeywordName, Location,
@@ -56,11 +57,25 @@ pub fn parse_document(path: DocPath, source: &str) -> Result<Document, Vec<Diagn
     let mut topics: Vec<Topic> = Vec::new();
     // 열려 있는 코드 펜스의 (시작 줄, 백틱 개수). 닫히면 None 으로 돌아간다.
     let mut fence_open: Option<(usize, usize)> = None;
+    // 직전에 걸린 topic 밖 내용의 줄 번호. 연속된 줄을 한 덩어리로 묶는 데 쓴다.
+    let mut topic_밖_직전: Option<usize> = None;
 
     // frontmatter 다음 줄부터 끝까지 순회하며 keyword 선언과 topic 을 모은다.
     for (index, raw) in lines.iter().enumerate().skip(body_start) {
         let line_no = index + 1;
         let trimmed = raw.trim_start();
+
+        // 스펙 3절: topic 밖에는 frontmatter·import·keyword·빈 줄 외의 내용을 둘 수 없다.
+        // 판정은 이 한 곳에서만 한다. 아래 분기들보다 앞에 두되 줄을 소비하지는 않으므로,
+        // 펜스·헤딩·선언의 기존 처리는 그대로 이어진다.
+        // 펜스 갱신 **전에** 보므로 여는 줄만 걸리고 안쪽 줄은 그 블록에 딸린 것으로 본다.
+        if topics.is_empty() && fence_open.is_none() && !topic_밖_허용(trimmed) {
+            // 연속된 줄은 한 덩어리로 본다. 서문 열 줄에 진단 열 개는 소음이다.
+            if topic_밖_직전.map(|prev| prev + 1) != Some(line_no) {
+                diagnostics.push(topic_밖_내용(&path, line_no));
+            }
+            topic_밖_직전 = Some(line_no);
+        }
 
         // 코드 펜스 경계와 그 안쪽은 심볼 해석도 topic 분할도 하지 않는다 (스펙 4.2).
         let fence_run = trimmed.bytes().take_while(|&byte| byte == b'`').count();
@@ -192,27 +207,24 @@ pub fn parse_document(path: DocPath, source: &str) -> Result<Document, Vec<Diagn
             continue;
         }
 
-        // 나머지 줄은 현재 topic 의 본문이다.
-        if let Some(topic) = topics.last_mut() {
-            push_body_line(topic, raw);
-        }
+        // 나머지 줄은 현재 topic 의 본문이다. topic 밖의 줄은 위에서 이미 K112 로 걸렸으므로
+        // 짝 검사를 덧붙이지 않는다 — 존재할 수 없는 줄에 진단을 하나 더 얹는 소음이다.
+        // 백틱을 쓰면서 topic 밖에 놓일 수 있는 줄은 import 와 keyword 뿐이고,
+        // 그 둘은 각자의 파서가 백틱_검사 를 부른다.
+        let Some(topic) = topics.last_mut() else {
+            continue;
+        };
+        push_body_line(topic, raw);
 
-        // 본문의 백틱 쌍은 전부 심볼 참조다. topic 밖의 줄도 짝 검사만은 받는다 —
-        // 받지 않으면 첫 `##` 이전 구간이 검사 없는 사각지대가 된다.
+        // 본문의 백틱 쌍은 전부 심볼 참조다.
         match scan_symbols(raw) {
             // 빈 백틱 쌍은 가리키는 심볼이 없다.
             Some(symbols) if symbols.iter().any(String::is_empty) => {
                 diagnostics.push(빈_심볼(&path, line_no));
             }
-            // ponytail: topic 밖 줄의 심볼 이름은 담을 자리가 AST 에 없어 버린다.
-            // 짝 검사만 남는다. 그 구간에 서술을 두는 문법이 생기면 그때 올린다.
-            Some(symbols) => {
-                if let Some(topic) = topics.last_mut() {
-                    topic
-                        .refs
-                        .extend(symbols.into_iter().map(|symbol| (symbol, line_no)));
-                }
-            }
+            Some(symbols) => topic
+                .refs
+                .extend(symbols.into_iter().map(|symbol| (symbol, line_no))),
             None => diagnostics.push(백틱_짝_없음(&path, line_no)),
         }
     }
@@ -749,6 +761,29 @@ fn 백틱_검사(path: &DocPath, text: &str, line_no: usize) -> Result<Vec<Strin
     Ok(symbols)
 }
 
+/// topic 밖에 놓여도 되는 줄인지 판정한다 (스펙 3절).
+///
+/// frontmatter 는 본문 순회에 들어오기 전에 처리되므로 여기서 볼 일이 없다.
+/// `exception`·`cover` 는 topic 밖에서 `K111` 이 더 구체적으로 잡으므로 여기서 제외한다 —
+/// 겹쳐 세면 한 줄에 진단이 둘이 된다.
+///
+/// # 매개변수
+/// - `trimmed`: 앞 공백을 뗀 한 줄
+///
+/// # 반환값
+/// topic 밖에 있어도 `K112` 를 내지 않는 줄이면 참
+fn topic_밖_허용(trimmed: &str) -> bool {
+    trimmed.is_empty()
+        // `##` 는 여기서 topic 을 여니 밖이 아니다. `###` 이하는 topic 을 열지 못한다.
+        || trimmed
+            .strip_prefix("##")
+            .is_some_and(|rest| !rest.starts_with('#'))
+        || trimmed.starts_with("import ")
+        || trimmed.starts_with("keyword ")
+        || trimmed.starts_with("exception ")
+        || trimmed.starts_with("cover ")
+}
+
 /// 선언 줄을 선언부와 modifier 부로 가른다.
 ///
 /// modifier 의 `//` 는 **공백 뒤에만** 온다. 이 조건이 없으면 `https://` 같은 본문
@@ -1134,6 +1169,35 @@ fn 선언_문법_오류(path: &DocPath, line: usize, message: String) -> Diagnos
             kind: FixKind::Edit,
             doc: Some(path.clone()),
             action: "이 줄을 `exception `<이름>`` (정책이 아직 없으면 뒤에 ` pending`) 또는 `cover `<이름>`` 형식으로 고치고, `##` 헤딩으로 시작하는 topic 안에 두세요".to_string(),
+        }],
+    }
+}
+
+/// topic 밖에 내용이 있다는 진단을 만든다 (스펙 3절).
+///
+/// 연속된 줄은 한 덩어리로 보고 첫 줄에서 한 번만 낸다.
+///
+/// # 매개변수
+/// - `path`: 대상 문서 경로
+/// - `line`: 덩어리가 시작하는 줄 번호
+///
+/// # 반환값
+/// `K112` 진단
+fn topic_밖_내용(path: &DocPath, line: usize) -> Diagnostic {
+    Diagnostic {
+        severity: Severity::Error,
+        code: "K112",
+        message: "topic 밖에는 내용을 둘 수 없습니다. 이 내용은 어떤 rev 해시에도 들어가지 않고 kang show 로도 볼 수 없습니다."
+            .to_string(),
+        locations: vec![Location {
+            doc: path.clone(),
+            line,
+            note: "여기서부터 어떤 topic 에도 속하지 않는 내용이 시작합니다".to_string(),
+        }],
+        fixes: vec![Fix {
+            kind: FixKind::Edit,
+            doc: Some(path.clone()),
+            action: "이 내용을 `##` 헤딩으로 시작하는 topic 안으로 옮기세요. 문서 전체를 소개하는 한 문장이라면 frontmatter 의 `description` 으로 접고, 문서 제목 줄이라면 지웁니다 — 문서의 식별자는 파일 경로 하나뿐입니다. 선언을 쓰려던 것이라면 `import ` 또는 `keyword ` 로 시작하는지 확인하세요".to_string(),
         }],
     }
 }

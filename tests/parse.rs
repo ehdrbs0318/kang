@@ -987,10 +987,10 @@ import `docs`/``.`결제`
     assert_eq!(diagnostics[0].locations[0].line, 5);
 }
 
-/// topic 밖의 줄도 백틱 짝 검사를 받는다.
-/// 받지 않으면 첫 `##` 이전 구간이 검사 없는 사각지대가 된다.
+/// topic 밖의 짝없는 백틱은 내용 규칙(K112)이 먼저 잡는다.
+/// 그 줄은 애초에 존재할 수 없으므로 짝 검사를 덧붙이면 진단이 둘이 된다.
 #[test]
-fn topic_밖의_짝없는_백틱도_에러다() {
+fn topic_밖의_짝없는_백틱은_내용_규칙이_잡는다() {
     let source = r#"---
 description: 결제 정책 문서
 ---
@@ -1003,7 +1003,223 @@ description: 결제 정책 문서
     let diagnostics = parse::parse_document(문서경로(), source).unwrap_err();
 
     assert_eq!(diagnostics.len(), 1);
-    assert_eq!(diagnostics[0].code, "K104");
+    assert_eq!(diagnostics[0].code, "K112");
+    assert_eq!(diagnostics[0].locations[0].line, 5);
+}
+
+/// 문서의 식별자는 파일 경로 하나뿐이다 (스펙 3절). `#` 제목 줄은 topic 밖 내용이다.
+#[test]
+fn 문서_제목_줄은_에러다() {
+    let source = r#"---
+description: 결제 정책 문서
+---
+
+# 결제 정책
+
+## 결제의 방법
+"#;
+
+    let diagnostics = parse::parse_document(문서경로(), source).unwrap_err();
+
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(diagnostics[0].code, "K112");
+    assert_eq!(diagnostics[0].severity, Severity::Error);
+    assert_eq!(diagnostics[0].locations[0].line, 5);
+    assert!(!diagnostics[0].fixes.is_empty());
+}
+
+/// 서문 단락은 어떤 rev 해시에도 들어가지 않고 kang show 로도 볼 수 없다 (스펙 3절).
+#[test]
+fn 서문_단락은_에러다() {
+    let source = r#"---
+description: 결제 정책 문서
+---
+
+이 문서는 결제 정책을 설명한다.
+
+## 결제의 방법
+"#;
+
+    let diagnostics = parse::parse_document(문서경로(), source).unwrap_err();
+
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(diagnostics[0].code, "K112");
+    assert_eq!(diagnostics[0].locations[0].line, 5);
+}
+
+/// 첫 `##` 앞의 `###` 이하 헤딩도 topic 을 열지 못하므로 topic 밖 내용이다.
+#[test]
+fn 첫_topic_앞의_삼중샾_헤딩은_에러다() {
+    let source = r#"---
+description: 결제 정책 문서
+---
+
+### 배경
+
+## 결제의 방법
+"#;
+
+    let diagnostics = parse::parse_document(문서경로(), source).unwrap_err();
+
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(diagnostics[0].code, "K112");
+    assert_eq!(diagnostics[0].locations[0].line, 5);
+}
+
+/// import 와 keyword 선언만 있는 파일은 통과해야 한다.
+/// 새 진단이 합법 입력을 거부하는 것이 가장 위험한 회귀다.
+#[test]
+fn import_와_keyword_만_있는_파일은_통과한다() {
+    let source = r#"---
+description: 결제 정책 문서
+---
+
+import `docs`/`A`.`결제` as `A 결제` rev "a3f9c1"
+import `docs`/`A`#`상품의 정보`
+
+keyword `결제일`: 실제 대금이 처리되는 날짜
+keyword `금액`: 청구되는 원화 액수 // iknow `docs`/`B`.`금액`
+"#;
+
+    let doc = parse::parse_document(문서경로(), source).unwrap();
+
+    assert_eq!(doc.imports.len(), 2);
+    assert_eq!(doc.keywords.len(), 2);
+    assert!(doc.topics.is_empty());
+}
+
+/// 빈 줄과 공백만 있는 줄은 topic 밖에서도 내용이 아니다.
+#[test]
+fn 공백_줄은_topic_밖에서도_통과한다() {
+    let source = "---\ndescription: 결제 정책 문서\n---\n\n   \n\t\n\nkeyword `결제`: 대금을 지불하는 행위\n\n## 결제의 방법\n";
+
+    let doc = parse::parse_document(문서경로(), source).unwrap();
+
+    assert_eq!(doc.keywords.len(), 1);
+    assert_eq!(doc.topics.len(), 1);
+}
+
+/// topic **안**의 `###` 이하는 본문 마크다운이다. 내용 규칙이 여기까지 번지면 안 된다.
+#[test]
+fn topic_안의_삼중샾은_본문이다() {
+    let source = r#"---
+description: 결제 정책 문서
+---
+
+## 결제의 방법
+
+### 카드 결제
+
+카드로 결제한다.
+"#;
+
+    let doc = parse::parse_document(문서경로(), source).unwrap();
+
+    assert_eq!(doc.topics.len(), 1);
+    assert!(doc.topics[0].body.contains("### 카드 결제"));
+    assert!(doc.topics[0].body.contains("카드로 결제한다."));
+}
+
+/// 연속된 topic 밖 내용은 한 덩어리로 본다. 서문 열 줄에 진단 열 개는 소음이다.
+#[test]
+fn 연속된_topic_밖_내용은_진단_하나로_묶는다() {
+    let source = r#"---
+description: 결제 정책 문서
+---
+
+# 결제 정책
+이 문서는 결제 정책을 설명한다.
+읽기 전에 배경을 알아 두자.
+
+## 결제의 방법
+"#;
+
+    let diagnostics = parse::parse_document(문서경로(), source).unwrap_err();
+
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(diagnostics[0].code, "K112");
+    // 덩어리의 첫 줄을 가리킨다.
+    assert_eq!(diagnostics[0].locations[0].line, 5);
+}
+
+/// 빈 줄로 나뉘면 서로 다른 덩어리다. 하나로 묶으면 뒤쪽 내용의 위치를 잃는다.
+#[test]
+fn 빈_줄로_나뉜_topic_밖_내용은_각각_걸린다() {
+    let source = r#"---
+description: 결제 정책 문서
+---
+
+# 결제 정책
+
+이 문서는 결제 정책을 설명한다.
+
+## 결제의 방법
+"#;
+
+    let diagnostics = parse::parse_document(문서경로(), source).unwrap_err();
+
+    let 줄: Vec<usize> = diagnostics.iter().map(|d| d.locations[0].line).collect();
+    let codes: Vec<&str> = diagnostics.iter().map(|d| d.code).collect();
+    assert_eq!(codes, vec!["K112", "K112"]);
+    assert_eq!(줄, vec![5, 7]);
+}
+
+/// topic 밖의 코드펜스도 내용이다. 블록 전체가 진단 하나로 묶인다.
+#[test]
+fn topic_밖의_코드펜스는_에러다() {
+    let source = r#"---
+description: 결제 정책 문서
+---
+
+```rust
+fn 결제() {}
+```
+
+## 결제의 방법
+"#;
+
+    let diagnostics = parse::parse_document(문서경로(), source).unwrap_err();
+
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(diagnostics[0].code, "K112");
+    // 펜스를 연 줄을 가리킨다. 안쪽 줄은 그 블록에 딸린 것으로 본다.
+    assert_eq!(diagnostics[0].locations[0].line, 5);
+}
+
+/// topic 밖의 펜스가 닫히지도 않으면 두 사실이 모두 참이다.
+/// 순서는 결정적이어야 한다 — 여는 줄의 K112 가 먼저, 파일 끝의 K106 이 뒤다.
+#[test]
+fn topic_밖의_닫히지_않은_펜스는_내용_진단이_먼저다() {
+    let source = r#"---
+description: 결제 정책 문서
+---
+
+```rust
+fn 결제() {}
+"#;
+
+    let diagnostics = parse::parse_document(문서경로(), source).unwrap_err();
+
+    let codes: Vec<&str> = diagnostics.iter().map(|d| d.code).collect();
+    assert_eq!(codes, vec!["K112", "K106"]);
+    assert_eq!(diagnostics[0].locations[0].line, 5);
+    assert_eq!(diagnostics[1].locations[0].line, 5);
+}
+
+/// topic 밖의 cover 는 K111 이 더 구체적으로 잡는다. K112 를 겹쳐 내면 한 줄에 진단이 둘이다.
+#[test]
+fn topic_밖의_cover_는_진단이_하나다() {
+    let source = r#"---
+description: 결제 정책 문서
+---
+
+cover `무료상품 청구서 예외`
+"#;
+
+    let diagnostics = parse::parse_document(문서경로(), source).unwrap_err();
+
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(diagnostics[0].code, "K111");
     assert_eq!(diagnostics[0].locations[0].line, 5);
 }
 
