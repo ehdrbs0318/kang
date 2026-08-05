@@ -2599,3 +2599,410 @@ fn 이름_여럿_진단도_조각마다_백틱을_두른다() {
     assert!(자리[1].note.contains("`상태별칭`"), "{}", 자리[1].note);
     정리(&root);
 }
+
+// ---------------------------------------------------------------------------
+// exception 상태 기계 (스펙 5.2) — `K030`-`K034`
+// ---------------------------------------------------------------------------
+
+/// 프로젝트를 읽어 exception 상태 기계 검사만 돌린다.
+///
+/// 로드와 심볼 테이블 단계에서 진단이 나오면 픽스처가 잘못된 것이므로 여기서 잡는다 —
+/// 그것을 그대로 두면 상태 기계 진단이 없는 이유를 픽스처 오타에서 찾게 된다.
+///
+/// # 매개변수
+/// - `root`: 프로젝트 루트
+///
+/// # 반환값
+/// [`check::check_exceptions`] 가 낸 진단들
+fn 예외_검사(root: &Path) -> Vec<Diagnostic> {
+    let (project, 로드_진단) = resolve::load(root);
+    assert!(로드_진단.is_empty(), "{로드_진단:?}");
+    let (table, 테이블_진단) = resolve::SymbolTable::build(&project);
+    assert!(테이블_진단.is_empty(), "{테이블_진단:?}");
+    check::check_exceptions(&project, &table)
+}
+
+/// 진리표 (일반, 커버 없음) 칸 — error 다 (스펙 5.2).
+#[test]
+fn 커버되지_않은_exception_은_에러다() {
+    let root = 임시_루트("exc-uncovered");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: A\n---\n\n## 정책\n\n본문이다.\n\nexception `무료 상품`\n",
+    );
+
+    let diagnostics = 예외_검사(&root);
+
+    assert_eq!(코드들(&diagnostics), vec!["K030"]);
+    assert_eq!(diagnostics[0].severity, Severity::Error);
+    // 위치는 예외 선언 한 자리다.
+    assert_eq!(위치들(&diagnostics[0]), vec![("docs/a".to_string(), 9)]);
+    assert!(
+        diagnostics[0].locations[0].note.contains("cover"),
+        "{:?}",
+        diagnostics[0].locations[0].note
+    );
+    // 커버를 붙이는 길과 pending 을 붙이는 길 둘 다 유효하다.
+    assert_eq!(
+        수정_종류(&diagnostics[0]),
+        vec![&FixKind::Edit, &FixKind::Edit]
+    );
+    정리(&root);
+}
+
+/// 진리표 (일반, 커버 있음) 칸 — 통과다 (스펙 5.2).
+#[test]
+fn 커버된_exception_은_통과한다() {
+    let root = 임시_루트("exc-covered");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: A\n---\n\n## 정책\n\n본문이다.\n\nexception `무료 상품`\n\n## 무료 상품 처리\n\n무료는 0원이다.\n\ncover `무료 상품`\n",
+    );
+
+    let diagnostics = 예외_검사(&root);
+
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    정리(&root);
+}
+
+/// 진리표 (pending, 커버 없음) 칸 — warn 이며 통과다 (스펙 5.2).
+#[test]
+fn pending_이고_커버가_없으면_warn_이다() {
+    let root = 임시_루트("exc-pending-bare");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: A\n---\n\n## 정책\n\n본문이다.\n\nexception `해외 결제` pending\n",
+    );
+
+    let diagnostics = 예외_검사(&root);
+
+    assert_eq!(코드들(&diagnostics), vec!["K031"]);
+    // 이 칸만이 error 가 아니다. 빌드의 종료 코드를 1로 만들면 안 된다.
+    assert_eq!(diagnostics[0].severity, Severity::Warn);
+    assert_eq!(위치들(&diagnostics[0]), vec![("docs/a".to_string(), 9)]);
+    assert!(
+        diagnostics[0].locations[0].note.contains("pending"),
+        "{:?}",
+        diagnostics[0].locations[0].note
+    );
+    assert!(!diagnostics[0].fixes.is_empty());
+    정리(&root);
+}
+
+/// 진리표 (pending, 커버 있음) 칸 — error 다 (스펙 5.2).
+#[test]
+fn pending_인데_커버가_있으면_에러다() {
+    let root = 임시_루트("exc-pending-covered");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: A\n---\n\n## 정책\n\n본문이다.\n\nexception `해외 결제` pending\n\n## 해외 결제 처리\n\n해외는 이렇게 한다.\n\ncover `해외 결제`\n",
+    );
+
+    let diagnostics = 예외_검사(&root);
+
+    assert_eq!(코드들(&diagnostics), vec!["K032"]);
+    assert_eq!(diagnostics[0].severity, Severity::Error);
+    // 선언 자리와 커버 자리가 둘 다 관련 위치다 (스펙 5.1.1).
+    assert_eq!(
+        위치들(&diagnostics[0]),
+        vec![("docs/a".to_string(), 9), ("docs/a".to_string(), 15)]
+    );
+    assert!(diagnostics[0].locations[0].note.contains("pending"));
+    // 커버 자리의 note 는 어느 topic 이 커버하는지 말한다.
+    assert!(
+        diagnostics[0].locations[1].note.contains("해외 결제 처리"),
+        "{:?}",
+        diagnostics[0].locations[1].note
+    );
+    // pending 을 떼는 길과 cover 를 지우는 길 둘 다 유효하다.
+    assert_eq!(
+        수정_종류(&diagnostics[0]),
+        vec![&FixKind::Edit, &FixKind::Edit]
+    );
+    정리(&root);
+}
+
+/// 다른 파일이 커버해도 (pending, 커버 있음) 칸이다. 두 파일이 다 관련 위치다.
+#[test]
+fn pending_을_다른_파일이_커버해도_에러다() {
+    let root = 임시_루트("exc-pending-cross");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: A\n---\n\n## 정책\n\n본문이다.\n\nexception `해외 결제` pending\n",
+    );
+    쓰기(
+        &root,
+        "docs/b.kang",
+        "---\ndescription: B\n---\n\nimport `docs`/`a`!`해외 결제`\n\n## 해외 결제 처리\n\n해외는 이렇게 한다.\n\ncover `해외 결제`\n",
+    );
+
+    let diagnostics = 예외_검사(&root);
+
+    assert_eq!(코드들(&diagnostics), vec!["K032"]);
+    assert_eq!(
+        위치들(&diagnostics[0]),
+        vec![("docs/a".to_string(), 9), ("docs/b".to_string(), 11)]
+    );
+    정리(&root);
+}
+
+/// 한 exception 을 둘 이상이 커버하면 error 다 — 예외 하나에 정책 하나 (스펙 5.2).
+#[test]
+fn 한_exception_을_둘이_커버하면_에러다() {
+    let root = 임시_루트("exc-double-cover");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: A\n---\n\n## 정책\n\n본문이다.\n\nexception `무료 상품`\n\n## 처리 하나\n\n하나다.\n\ncover `무료 상품`\n\n## 처리 둘\n\n둘이다.\n\ncover `무료 상품`\n",
+    );
+
+    let diagnostics = 예외_검사(&root);
+
+    assert_eq!(코드들(&diagnostics), vec!["K033"]);
+    // 선언 자리와 커버 두 자리가 모두 관련 위치다.
+    assert_eq!(
+        위치들(&diagnostics[0]),
+        vec![
+            ("docs/a".to_string(), 9),
+            ("docs/a".to_string(), 15),
+            ("docs/a".to_string(), 21)
+        ]
+    );
+    assert!(diagnostics[0].locations[1].note.contains("처리 하나"));
+    assert!(diagnostics[0].locations[2].note.contains("처리 둘"));
+    assert!(!diagnostics[0].fixes.is_empty());
+    정리(&root);
+}
+
+/// 같은 topic 이 같은 예외를 두 번 커버해도 error 다. 중복 선언은 정보가 없고
+/// 스펙 5.2 는 예외 하나에 정책 하나를 강제한다.
+#[test]
+fn 같은_topic_이_두_번_커버해도_에러다() {
+    let root = 임시_루트("exc-same-topic-twice");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: A\n---\n\n## 정책\n\n본문이다.\n\nexception `무료 상품`\n\n## 처리\n\n하나다.\n\ncover `무료 상품`\ncover `무료 상품`\n",
+    );
+
+    let diagnostics = 예외_검사(&root);
+
+    assert_eq!(코드들(&diagnostics), vec!["K033"]);
+    assert_eq!(
+        위치들(&diagnostics[0]),
+        vec![
+            ("docs/a".to_string(), 9),
+            ("docs/a".to_string(), 15),
+            ("docs/a".to_string(), 16)
+        ]
+    );
+    // 메시지가 "둘 이상의 topic" 이라고 말하면 거짓이다 — topic 은 하나뿐이다.
+    assert!(
+        !diagnostics[0].message.contains("topic 이 둘"),
+        "{:?}",
+        diagnostics[0].message
+    );
+    정리(&root);
+}
+
+/// 어떤 exception 도 가리키지 않는 cover 는 error 다.
+/// Task 6 은 `cover` 를 미해결 판정에서 뺐으므로 (`src/check.rs` 의 `참조_해석`)
+/// 여기서 진단하지 않으면 dangling 참조가 아무 진단 없이 통과한다.
+#[test]
+fn 실재하지_않는_예외를_커버하면_에러다() {
+    let root = 임시_루트("exc-dangling-cover");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: A\n---\n\n## 정책\n\n본문이다.\n\ncover `없는 예외`\n",
+    );
+
+    let diagnostics = 예외_검사(&root);
+
+    assert_eq!(코드들(&diagnostics), vec!["K034"]);
+    assert_eq!(diagnostics[0].severity, Severity::Error);
+    assert_eq!(위치들(&diagnostics[0]), vec![("docs/a".to_string(), 9)]);
+    assert!(!diagnostics[0].fixes.is_empty());
+    정리(&root);
+}
+
+/// 다른 파일의 예외를 import 하지 않고 커버하면 error 다.
+/// 그 이름은 이 문서의 스코프에 없으므로 이 문서가 가리킬 수 있는 예외가 아니다.
+/// 진단은 어느 문서에서 import 하면 되는지까지 말해야 고칠 수 있다 (스펙 5.1.1).
+#[test]
+fn import_없이_남의_예외를_커버하면_에러다() {
+    let root = 임시_루트("exc-cover-no-import");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: A\n---\n\n## 정책\n\n본문이다.\n\nexception `무료 상품`\n",
+    );
+    쓰기(
+        &root,
+        "docs/b.kang",
+        "---\ndescription: B\n---\n\n## 처리\n\n하나다.\n\ncover `무료 상품`\n",
+    );
+
+    let diagnostics = 예외_검사(&root);
+
+    // docs/a 의 예외는 커버되지 않았고, docs/b 의 cover 는 대상이 없다.
+    assert_eq!(코드들(&diagnostics), vec!["K030", "K034"]);
+    let k034 = &diagnostics[1];
+    assert_eq!(위치들(k034), vec![("docs/b".to_string(), 9)]);
+    // 대상이 어디 있는지 알므로 fix 가 그 import 줄을 그대로 준다.
+    assert!(
+        k034.fixes[0].action.contains("`docs`/`a`!`무료 상품`"),
+        "{:?}",
+        k034.fixes[0].action
+    );
+    정리(&root);
+}
+
+/// alias 로 import 한 예외를 그 alias 이름으로 커버하는 것은 합법이다.
+/// 스펙 4.6 의 정본 예시가 정확히 이 모양이다 — 선언 이름과 cover 이름이 다르고
+/// 그 둘은 alias import 로만 이어진다. 이름만으로 짝을 맞추면 이 문서가 거부된다.
+#[test]
+fn alias_로_커버해도_통과한다() {
+    let root = 임시_루트("exc-alias-cover");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: 청구\n---\n\n## 청구서와 결제의 관계\n\n모든 청구서는 결제로 생겨난다.\n\nexception `무료 상품에 대한 청구서`\n",
+    );
+    쓰기(
+        &root,
+        "docs/b.kang",
+        "---\ndescription: 무료상품\n---\n\nimport `docs`/`a`!`무료 상품에 대한 청구서` as `무료상품 청구서 예외`\n\n## 무료상품 결제일 때 청구서\n\n무료상품은 0원 기록만 남긴다.\n\ncover `무료상품 청구서 예외`\n",
+    );
+
+    let diagnostics = 예외_검사(&root);
+
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    정리(&root);
+}
+
+/// exception 도 cover 도 없는 문서는 아무 진단을 받지 않는다.
+#[test]
+fn exception_이_없는_문서는_진단이_없다() {
+    let root = 임시_루트("exc-none");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: A\n---\n\n## 정책\n\n본문이다.\n",
+    );
+
+    let diagnostics = 예외_검사(&root);
+
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    정리(&root);
+}
+
+/// 진단 순서는 문서 경로 순이어야 실행마다 같다.
+#[test]
+fn 진단_순서가_문서_경로_순이다() {
+    let root = 임시_루트("exc-order");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/b.kang",
+        "---\ndescription: B\n---\n\n## 정책\n\n본문이다.\n\nexception `둘`\n",
+    );
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: A\n---\n\n## 정책\n\n본문이다.\n\nexception `하나`\n",
+    );
+
+    let diagnostics = 예외_검사(&root);
+
+    assert_eq!(코드들(&diagnostics), vec!["K030", "K030"]);
+    assert_eq!(diagnostics[0].locations[0].doc, 문서경로(&["docs", "a"]));
+    assert_eq!(diagnostics[1].locations[0].doc, 문서경로(&["docs", "b"]));
+    정리(&root);
+}
+
+/// warn 은 error 와 다른 낱말로 찍혀야 한다. `pending` + 커버 없음 칸이
+/// [`kang::ast::Severity::Warn`] 의 첫 소비자다.
+#[test]
+fn warn_은_report_에서_warning_으로_찍힌다() {
+    let root = 임시_루트("exc-warn-report");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: A\n---\n\n## 정책\n\n본문이다.\n\nexception `해외 결제` pending\n",
+    );
+
+    let 출력 = check::report(&예외_검사(&root));
+
+    assert!(출력.starts_with("warning[K031]:"), "{출력}");
+    assert!(!출력.contains("error["), "{출력}");
+    정리(&root);
+}
+
+/// `K034` 의 import 수정을 그대로 적용하면 진단이 사라져야 한다 (스펙 V0001:417).
+/// exception 검사뿐 아니라 심볼 검사도 깨끗해야 한다 — 새로 넣은 import 가
+/// `K003`(미사용 import) 을 만들면 수정이 새 진단을 낳은 것이다.
+#[test]
+fn k034_의_import_수정을_적용하면_진단이_사라진다() {
+    let root = 임시_루트("exc-fix-applies");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: A\n---\n\n## 정책\n\n본문이다.\n\nexception `무료 상품`\n",
+    );
+    // `import_없이_남의_예외를_커버하면_에러다` 의 docs/b 에 fix 가 준 import 줄만 넣은 것이다.
+    쓰기(
+        &root,
+        "docs/b.kang",
+        "---\ndescription: B\n---\n\nimport `docs`/`a`!`무료 상품`\n\n## 처리\n\n하나다.\n\ncover `무료 상품`\n",
+    );
+
+    assert!(예외_검사(&root).is_empty(), "{:?}", 예외_검사(&root));
+    assert!(심볼_검사(&root).is_empty(), "{:?}", 심볼_검사(&root));
+    정리(&root);
+}
+
+/// 스코프에 이름은 있으나 그것이 exception 이 아니면 다른 사실이다.
+/// "선언하지도 import 하지도 않았다" 고 말하면 진단이 거짓이 된다.
+#[test]
+fn 예외가_아닌_이름을_커버하면_다른_이유를_말한다() {
+    let root = 임시_루트("exc-cover-keyword");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: A\n---\n\nkeyword `결제`: 대금을 지불하는 행위\n\n## 정책\n\n`결제` 를 한다.\n\ncover `결제`\n",
+    );
+
+    let diagnostics = 예외_검사(&root);
+
+    assert_eq!(코드들(&diagnostics), vec!["K034"]);
+    assert_eq!(위치들(&diagnostics[0]), vec![("docs/a".to_string(), 11)]);
+    assert!(
+        diagnostics[0].message.contains("exception 이 아닙니다"),
+        "{:?}",
+        diagnostics[0].message
+    );
+    // 스코프에 이미 있으므로 import 를 권하면 거짓이다. 수정은 하나뿐이다.
+    assert_eq!(diagnostics[0].fixes.len(), 1);
+    assert!(!diagnostics[0].fixes[0].action.contains("import"));
+    정리(&root);
+}

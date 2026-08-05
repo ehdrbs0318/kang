@@ -1,10 +1,12 @@
-//! 심볼 규칙과 import 그래프의 순환을 검사하고, 진단을 사람과 LLM 이 읽을 형태로 찍는 층.
+//! 심볼 규칙과 exception 상태 기계와 import 그래프의 순환을 검사하고, 진단을 사람과 LLM 이
+//! 읽을 형태로 찍는 층.
 //!
-//! [`crate::resolve`] 가 문서를 다 읽어 온 뒤, 이름이 실제로 해석되는지와 문서들이
-//! 서로를 전제로 삼아 고리를 이루는지 본다 (스펙 5.1·5.3).
+//! [`crate::resolve`] 가 문서를 다 읽어 온 뒤, 이름이 실제로 해석되는지와 예외마다 그것을
+//! 다루는 정책이 있는지와 문서들이 서로를 전제로 삼아 고리를 이루는지 본다
+//! (스펙 5.1·5.2·5.3).
 //!
 //! 이 모듈이 내는 진단 코드는 심볼 해석 대역 `K001`-`K009`, iknow·이름 충돌 대역
-//! `K010`-`K019`, 순환 대역 `K040`-`K049` 를 쓴다.
+//! `K010`-`K019`, exception 상태 기계 대역 `K030`-`K039`, 순환 대역 `K040`-`K049` 를 쓴다.
 //!
 //! | 코드 | 규칙 |
 //! |---|---|
@@ -15,9 +17,17 @@
 //! | `K005` | 계층 keyword 의 상위가 같은 파일에 keyword 로 선언되지도 import 되지도 않음 |
 //! | `K010` | iknow 대상 문서나 심볼이 존재하지 않음 |
 //! | `K012` | 여러 문서가 같은 이름을 선언했는데 iknow 상호 명시가 완전하지 않음 |
+//! | `K030` | 일반 exception 을 커버하는 topic 이 없음 |
+//! | `K031` | `pending` exception 을 커버하는 topic 이 아직 없음 (**warn**) |
+//! | `K032` | `pending` 이라고 선언했으나 커버하는 topic 이 있음 |
+//! | `K033` | 한 exception 을 커버하는 cover 선언이 둘 이상임 |
+//! | `K034` | cover 가 가리키는 exception 이 그 문서의 스코프에 없음 |
 //! | `K040` | import 그래프에 순환이 있음 |
 //!
 //! `K001` 과 `K012` 는 스펙 5.1.1 이 번호까지 못박은 코드다. 나머지는 대역 안에서 정했다.
+//!
+//! `K031` 만이 [`crate::ast::Severity::Warn`] 이다. 스펙 5.2 가 그 칸을 "통과" 로 정했으므로
+//! 종료 코드를 1 로 만들면 안 된다.
 //!
 //! **노드는 파일이다** (스펙 5.3). 파일 그래프가 DAG 면 topic 그래프도 DAG 다 —
 //! topic 간선 T→U 는 반드시 file(T)→file(U) 를 동반하므로 파일 단위 금지가 더 강하다.
@@ -45,8 +55,8 @@
 //! 한 번에 전부 열거하려면 강한 연결 요소를 세는 순회로 올린다.
 
 use crate::ast::{
-    Diagnostic, DocPath, Document, Fix, FixKind, Import, Keyword, Location, Severity, SymbolKind,
-    SymbolRef,
+    Diagnostic, DocPath, Document, Exception, Fix, FixKind, Import, Keyword, Location, Severity,
+    SymbolKind, SymbolRef,
 };
 use crate::resolve::{Project, SymbolId, SymbolTable, 셸_인용};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -292,6 +302,321 @@ pub fn check_symbols(project: &Project, table: &SymbolTable) -> Vec<Diagnostic> 
     }
 
     이름_충돌_검사(&선언들, &mut diagnostics);
+    diagnostics
+}
+
+/// `cover` 선언 하나와 그것이 그 문서에서 가리키는 심볼.
+///
+/// **`cover` 이름은 로컬 이름이다.** 스펙 4.6 의 정본 예시는 exception 을 alias 로 import 한
+/// 뒤 그 alias 로 커버한다 — 선언 이름 `무료 상품에 대한 청구서` 와 cover 이름
+/// `무료상품 청구서 예외` 는 다르고 둘을 잇는 것은 import 뿐이다. 그래서 짝은 이름 비교가
+/// 아니라 [`SymbolTable::scope`] 로 맞춘다. 이름으로 맞추면 스펙의 정본 예시가 거부된다.
+struct 커버<'a> {
+    /// 이 문서의 스코프에서 cover 이름이 해석된 심볼. 해석되지 않으면 `None`.
+    대상: Option<SymbolId>,
+    /// cover 가 적힌 문서.
+    doc: &'a DocPath,
+    /// cover 가 적힌 topic 의 이름.
+    topic: &'a str,
+    /// cover 줄에 적힌 이름. 로컬 이름이므로 alias 일 수 있다.
+    이름: &'a str,
+    /// 선언이 등장한 줄 번호. 1-based 다.
+    line: usize,
+}
+
+/// 스펙 5.2 의 exception 상태 기계를 검사한다.
+///
+/// | exception 상태 | cover 있음 | cover 없음 |
+/// |---|---|---|
+/// | 일반 | 통과 | `K030` error |
+/// | `pending` | `K032` error | `K031` warn |
+///
+/// 한 예외를 커버하는 cover 선언이 둘 이상이면 `K033` error 다 — 예외 하나에 정책 하나를
+/// 강제한다. 어떤 예외도 가리키지 않는 cover 는 `K034` error 다.
+///
+/// **다섯 규칙에 다섯 코드를 준다.** 원인마다 고쳐야 할 자리와 고치는 방법이 다르고,
+/// 스펙 5.1.1 은 "에이전트가 코드로 분기할 수 있어야 한다" 고 못박는다. 같은 코드로 묶으면
+/// 분기가 불가능해진다.
+///
+/// **`K034` 는 이 층의 몫이다.** [`참조_해석`] 이 cover 를 미해결 판정에서 뺐으므로
+/// (짝 맞추기가 상태 기계의 일이기 때문이다) 여기서 보지 않으면 아무도 보지 않는다.
+///
+/// 진단 순서는 **문서 경로 순**이고, `K034` 는 그 뒤에 다시 문서 경로 순으로 붙는다.
+/// 대상을 찾지 못한 cover 는 어느 예외에도 속하지 않아 진리표 순회에 끼워 넣을 자리가 없다.
+///
+/// ponytail: `pending` 이면서 커버가 둘 이상이면 `K032` 만 내고 `K033` 은 내지 않는다.
+/// 선언이 스스로와 모순되는 것이 먼저 풀려야 할 사실이고, `pending` 을 떼면 다음 실행에서
+/// `K033` 이 드러난다. 한 예외에 두 진단을 겹쳐 내려면 진리표를 규칙 목록으로 바꿔야 한다.
+///
+/// # 매개변수
+/// - `project`: 파싱을 마친 프로젝트
+/// - `table`: [`SymbolTable::build`] 가 만든 전역 심볼 테이블. cover 이름을 그 문서의
+///   스코프로 해석하는 데 쓴다
+///
+/// # 반환값
+/// 상태 기계를 어긴 자리마다 만들어진 진단들. 어긴 것이 없으면 빈 벡터
+pub fn check_exceptions(project: &Project, table: &SymbolTable) -> Vec<Diagnostic> {
+    // HashMap 의 나열 순서는 보장되지 않는다. 정렬해야 진단 순서가 실행마다 같다.
+    let mut 순서: Vec<&DocPath> = project.docs.keys().collect();
+    순서.sort_by(|a, b| a.0.cmp(&b.0));
+
+    // cover 를 프로젝트 전체에서 먼저 모은다. 진리표는 "이 예외를 커버하는 것이 몇 개인가"
+    // 를 묻는데 커버는 다른 파일에 있을 수 있어, 한 문서만 보고는 답할 수 없다.
+    let mut 커버_전부: Vec<커버> = Vec::new();
+    for doc in &순서 {
+        // 스코프를 문서마다 한 번만 뜬다. `scope` 는 매 호출 매핑을 복제한다.
+        let scope = table.scope(doc);
+        // 한 문서의 topic 을 돌며 그 topic 이 선언한 cover 를 모은다.
+        for topic in &project.docs[*doc].topics {
+            // 한 topic 이 여러 예외를 커버할 수 있다.
+            for (이름, line) in &topic.covers {
+                커버_전부.push(커버 {
+                    대상: scope.get(이름).copied(),
+                    doc,
+                    topic: &topic.name,
+                    이름,
+                    line: *line,
+                });
+            }
+        }
+    }
+
+    // 예외의 식별자와 그 이름을 선언한 문서. 앞은 cover 가 예외를 가리키는지 판정하는 데,
+    // 뒤는 import 하지 않은 cover 에게 어디서 가져오면 되는지 말하는 데 쓴다.
+    let mut 예외_전부: Vec<(SymbolId, &DocPath, &Exception)> = Vec::new();
+    let mut 예외_소유자: BTreeMap<&str, &DocPath> = BTreeMap::new();
+    for doc in &순서 {
+        // exception 은 topic 안에서만 선언된다 (파서가 강제한다).
+        for topic in &project.docs[*doc].topics {
+            for exception in &topic.exceptions {
+                // 같은 이름이 여러 문서에 있으면 문서 경로 순으로 첫 번째만 안내한다.
+                // 어느 쪽이 맞는지는 컴파일러가 알 수 없고 `K012` 가 그 충돌을 따로 진단한다.
+                예외_소유자.entry(&exception.name).or_insert(doc);
+                // [`SymbolTable::build`] 가 모든 exception 을 넣으므로 해석은 성공한다.
+                // 그래도 단정하지 않는 것은, 실패했을 때 패닉이 아니라 침묵이 맞기 때문이다.
+                let Some(id) = table.resolve(&SymbolRef {
+                    doc: (*doc).clone(),
+                    kind: SymbolKind::Exception,
+                    name: vec![exception.name.clone()],
+                }) else {
+                    continue;
+                };
+                예외_전부.push((id, doc, exception));
+            }
+        }
+    }
+
+    let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+    // 진리표. 예외 하나가 한 칸을 고른다.
+    for (id, doc, exception) in &예외_전부 {
+        let 짝: Vec<&커버> = 커버_전부.iter().filter(|c| c.대상 == Some(*id)).collect();
+        let 이름 = &exception.name;
+        // Edit 수정은 문서 문법이므로 주소를 백틱으로 적는다 (스펙 5.1.1).
+        let 주소 = 심볼_주소(doc, &SymbolKind::Exception, 이름, true);
+        // 커버 자리들. 어느 topic 이 커버하는지가 note 다.
+        let 커버_위치 = || -> Vec<Location> {
+            짝.iter()
+                .map(|c| Location {
+                    doc: c.doc.clone(),
+                    line: c.line,
+                    note: format!("topic `{}` 이 여기서 이 예외를 커버합니다.", c.topic),
+                })
+                .collect()
+        };
+        // 지울 cover 줄을 줄 번호 없이 지목한다 (ADR-0003). cover 에 적힌 이름은 alias 일 수
+        // 있으므로 예외의 정본 이름이 아니라 **그 줄에 적힌 이름**을 그대로 적는다.
+        let 커버_설명 = 짝
+            .iter()
+            .map(|c| {
+                format!(
+                    "{} 의 cover `{}` 줄",
+                    심볼_주소(c.doc, &SymbolKind::Topic, c.topic, true),
+                    c.이름
+                )
+            })
+            .collect::<Vec<String>>()
+            .join(", ");
+
+        let diagnostic = match (exception.pending, 짝.len()) {
+            // (일반, 커버 하나) — 통과다. 유일하게 진단이 없는 칸이다.
+            (false, 1) => continue,
+            // (일반, 커버 없음) — 예외를 선언했으나 그것을 다루는 정책이 없다.
+            (false, 0) => Diagnostic {
+                severity: Severity::Error,
+                code: "K030",
+                message: format!(
+                    "이 예외를 커버하는 정책이 없습니다 — `{이름}`. 예외를 선언했으면 그것을 다루는 topic 이 있어야 합니다 (스펙 5.2)."
+                ),
+                locations: vec![Location {
+                    doc: (*doc).clone(),
+                    line: exception.line,
+                    note: "여기서 선언된 예외 — 이 예외를 cover 하는 topic 이 프로젝트에 없습니다."
+                        .to_string(),
+                }],
+                fixes: vec![
+                    Fix {
+                        kind: FixKind::Edit,
+                        // 어느 문서의 어느 topic 이 이 예외의 정책인지는 사람이 정한다.
+                        doc: None,
+                        action: format!(
+                            "이 예외를 다루는 정책 topic 을 정해 그 본문 끝에 다음 줄을 추가하세요: cover `{이름}`. 그 topic 이 다른 문서에 있다면 그 문서의 import 블록에 다음 줄을 먼저 추가하세요: import {주소}"
+                        ),
+                    },
+                    Fix {
+                        kind: FixKind::Edit,
+                        doc: Some((*doc).clone()),
+                        action: format!(
+                            "정책이 아직 결정되지 않은 것이라면 이 exception 선언 줄 끝에 pending 을 붙이세요. 그러면 `{이름}` 은 error 가 아니라 `K031` 알림이 되고 빌드는 통과합니다."
+                        ),
+                    },
+                ],
+            },
+            // (일반, 커버 둘 이상) — 예외 하나에 정책 하나를 강제한다.
+            //
+            // **세는 것은 cover 선언이지 topic 이 아니다.** 같은 topic 이 같은 예외를 두 번
+            // 커버해도 중복이고, 그때 "둘 이상의 topic" 이라고 말하면 진단이 거짓이 된다.
+            (false, _) => Diagnostic {
+                severity: Severity::Error,
+                code: "K033",
+                message: format!(
+                    "한 예외를 커버하는 cover 선언이 {}개입니다 — `{이름}`. 예외 하나에 정책 하나를 강제합니다 (스펙 5.2).",
+                    짝.len()
+                ),
+                locations: {
+                    let mut locations = vec![Location {
+                        doc: (*doc).clone(),
+                        line: exception.line,
+                        note: "여기서 선언된 예외 — 아래 자리들이 모두 이 예외를 커버합니다."
+                            .to_string(),
+                    }];
+                    locations.extend(커버_위치());
+                    locations
+                },
+                fixes: vec![Fix {
+                    kind: FixKind::Edit,
+                    // 어느 것을 남길지는 사람이 정한다. 문서를 하나 고를 근거가 없다.
+                    doc: None,
+                    action: format!(
+                        "이 예외를 실제로 다루는 정책 하나만 남기고 나머지 cover 줄을 지우세요. 지금 커버하는 것은 {커버_설명} 입니다."
+                    ),
+                }],
+            },
+            // (pending, 커버 없음) — 통과이되 알린다. `Severity::Warn` 을 내는 유일한 칸이다.
+            (true, 0) => Diagnostic {
+                severity: Severity::Warn,
+                code: "K031",
+                message: format!(
+                    "정책이 아직 결정되지 않은 예외입니다 — `{이름}`. 알림이며 빌드를 실패시키지 않습니다 (스펙 5.2)."
+                ),
+                locations: vec![Location {
+                    doc: (*doc).clone(),
+                    line: exception.line,
+                    note: "여기서 pending 으로 선언된 예외 — 이 예외를 cover 하는 topic 이 아직 없습니다."
+                        .to_string(),
+                }],
+                fixes: vec![Fix {
+                    kind: FixKind::Edit,
+                    doc: Some((*doc).clone()),
+                    action: format!(
+                        "정책이 정해지면 그것을 다루는 topic 에 cover `{이름}` 을 추가하고, 이 선언에서 pending 을 지우세요."
+                    ),
+                }],
+            },
+            // (pending, 커버 있음) — 선언과 문서가 서로 어긋난다.
+            (true, _) => Diagnostic {
+                severity: Severity::Error,
+                code: "K032",
+                message: format!(
+                    "pending 으로 선언된 예외를 커버하는 topic 이 있습니다 — `{이름}`. pending 은 이 예외를 다루는 정책이 아직 결정되지 않았다는 뜻인데 커버하는 topic 이 실제로 있어, 선언과 문서가 서로 어긋납니다 (스펙 5.2)."
+                ),
+                locations: {
+                    let mut locations = vec![Location {
+                        doc: (*doc).clone(),
+                        line: exception.line,
+                        note: "여기서 pending 으로 선언된 예외 — 정책이 미결정이라고 말합니다."
+                            .to_string(),
+                    }];
+                    locations.extend(커버_위치());
+                    locations
+                },
+                // 둘 다 유효한 길이므로 각 수정이 자기 조건을 안고 있다.
+                fixes: vec![
+                    Fix {
+                        kind: FixKind::Edit,
+                        doc: Some((*doc).clone()),
+                        action: format!(
+                            "정책이 이미 결정된 것이라면(커버하는 topic 이 그 정책입니다) 이 exception 선언에서 pending 을 지우세요. 그러면 `{이름}` 은 커버된 일반 예외가 되어 통과합니다."
+                        ),
+                    },
+                    Fix {
+                        kind: FixKind::Edit,
+                        // 커버가 여러 문서에 흩어질 수 있어 문서를 하나로 고를 수 없다.
+                        doc: None,
+                        action: format!(
+                            "정책이 아직 결정되지 않은 것이라면 {커버_설명} 을 지우세요. 그러면 `{이름}` 은 `K031` 알림이 되고 빌드는 통과합니다."
+                        ),
+                    },
+                ],
+            },
+        };
+        diagnostics.push(diagnostic);
+    }
+
+    // 어떤 예외도 가리키지 않는 cover. `커버_전부` 가 이미 문서 경로 순이다.
+    for c in &커버_전부 {
+        // 스코프에서 해석되고 그것이 예외이면 짝이 맞은 것이다.
+        if c.대상
+            .is_some_and(|id| 예외_전부.iter().any(|(예외_id, _, _)| *예외_id == id))
+        {
+            continue;
+        }
+        let 이름 = c.이름;
+        // 스코프에 이름이 아예 없는 것과, 있으나 예외가 아닌 것은 다른 사실이다.
+        // 뭉뚱그리면 둘 중 하나에 대해 진단이 거짓을 말한다.
+        let 이유 = if c.대상.is_some() {
+            "이 문서에서 그 이름은 exception 이 아닙니다. cover 는 exception 만 가리킬 수 있습니다 (스펙 4.6)."
+        } else {
+            "이 문서는 그 이름을 선언하지도 import 하지도 않았습니다."
+        };
+
+        let mut fixes: Vec<Fix> = Vec::new();
+        // 그 이름의 예외가 다른 문서에 있고 이 문서가 그것을 들여오지 않았다면,
+        // 고칠 것은 빠진 import 줄이므로 그것을 그대로 준다 (스펙 5.1.1).
+        if c.대상.is_none()
+            && let Some(owner) = 예외_소유자.get(이름)
+        {
+            fixes.push(Fix {
+                kind: FixKind::Edit,
+                doc: Some(c.doc.clone()),
+                action: format!(
+                    "import 블록에 다음 줄을 추가하세요: import {}",
+                    심볼_주소(owner, &SymbolKind::Exception, 이름, true)
+                ),
+            });
+        }
+        fixes.push(Fix {
+            kind: FixKind::Edit,
+            doc: Some(c.doc.clone()),
+            action: "cover 대상을 이 문서에서 쓸 수 있는 exception 이름으로 고치세요. 가리킬 예외가 없다면 이 cover 줄을 지우세요.".to_string(),
+        });
+
+        diagnostics.push(Diagnostic {
+            severity: Severity::Error,
+            code: "K034",
+            message: format!("cover 대상 예외를 찾지 못했습니다 — `{이름}`. {이유}"),
+            locations: vec![Location {
+                doc: c.doc.clone(),
+                line: c.line,
+                note: format!(
+                    "topic `{}` 이 여기서 커버하려는 대상을 찾지 못했습니다.",
+                    c.topic
+                ),
+            }],
+            fixes,
+        });
+    }
+
     diagnostics
 }
 
