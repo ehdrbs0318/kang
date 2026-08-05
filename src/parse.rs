@@ -57,8 +57,10 @@ pub fn parse_document(path: DocPath, source: &str) -> Result<Document, Vec<Diagn
     let mut topics: Vec<Topic> = Vec::new();
     // 열려 있는 코드 펜스의 (시작 줄, 백틱 개수). 닫히면 None 으로 돌아간다.
     let mut fence_open: Option<(usize, usize)> = None;
-    // 직전에 걸린 topic 밖 내용의 줄 번호. 연속된 줄을 한 덩어리로 묶는 데 쓴다.
-    let mut topic_밖_직전: Option<usize> = None;
+    // topic 밖 내용 진단이 `diagnostics` 안에서 차지한 자리. 위반 줄을 전부 그 하나의
+    // `locations` 에 모은다 — 빈 줄 유무로 진단 개수가 달라지면 사용자가 보기에 같은
+    // 서문인데 개수가 다르다.
+    let mut topic_밖_진단: Option<usize> = None;
 
     // frontmatter 다음 줄부터 끝까지 순회하며 keyword 선언과 topic 을 모은다.
     for (index, raw) in lines.iter().enumerate().skip(body_start) {
@@ -70,11 +72,17 @@ pub fn parse_document(path: DocPath, source: &str) -> Result<Document, Vec<Diagn
         // 펜스·헤딩·선언의 기존 처리는 그대로 이어진다.
         // 펜스 갱신 **전에** 보므로 여는 줄만 걸리고 안쪽 줄은 그 블록에 딸린 것으로 본다.
         if topics.is_empty() && fence_open.is_none() && !topic_밖_허용(trimmed) {
-            // 연속된 줄은 한 덩어리로 본다. 서문 열 줄에 진단 열 개는 소음이다.
-            if topic_밖_직전.map(|prev| prev + 1) != Some(line_no) {
-                diagnostics.push(topic_밖_내용(&path, line_no));
+            match topic_밖_진단 {
+                // 두 번째부터는 같은 진단에 위치만 보탠다. 서문 열 줄에 진단 열 개는 소음이고,
+                // 첫 줄만 가리키면 어디서 끝나는지 알 수 없다.
+                Some(index) => diagnostics[index]
+                    .locations
+                    .push(topic_밖_위치(&path, line_no, false)),
+                None => {
+                    topic_밖_진단 = Some(diagnostics.len());
+                    diagnostics.push(topic_밖_내용(&path, line_no));
+                }
             }
-            topic_밖_직전 = Some(line_no);
         }
 
         // 코드 펜스 경계와 그 안쪽은 심볼 해석도 topic 분할도 하지 않는다 (스펙 4.2).
@@ -658,7 +666,6 @@ fn parse_modifier(
             parse_symbol_ref(piece)
                 .map_err(|message| modifier_문법_오류(path, line_no, message))?,
         );
-
         match next {
             Some(next) => rest = next,
             None => break,
@@ -1269,6 +1276,27 @@ fn 선언_오류(path: &DocPath, line: usize, message: String, action: String) -
     }
 }
 
+/// topic 밖 내용 진단이 가리키는 위치 하나를 만든다.
+///
+/// # 매개변수
+/// - `path`: 대상 문서 경로
+/// - `line`: 위반한 줄 번호
+/// - `first`: 이 진단의 첫 위치인지
+///
+/// # 반환값
+/// 줄과 역할 설명을 담은 [`Location`]
+fn topic_밖_위치(path: &DocPath, line: usize, first: bool) -> Location {
+    Location {
+        doc: path.clone(),
+        line,
+        note: if first {
+            "여기서부터 어떤 topic 에도 속하지 않는 내용이 시작합니다".to_string()
+        } else {
+            "이 줄도 어떤 topic 에도 속하지 않습니다".to_string()
+        },
+    }
+}
+
 /// topic 밖에 내용이 있다는 진단을 만든다 (스펙 3절).
 ///
 /// 연속된 줄은 한 덩어리로 보고 첫 줄에서 한 번만 낸다.
@@ -1285,11 +1313,7 @@ fn topic_밖_내용(path: &DocPath, line: usize) -> Diagnostic {
         code: "K112",
         message: "topic 밖에는 내용을 둘 수 없습니다. 이 내용은 어떤 rev 해시에도 들어가지 않고 kang show 로도 볼 수 없습니다."
             .to_string(),
-        locations: vec![Location {
-            doc: path.clone(),
-            line,
-            note: "여기서부터 어떤 topic 에도 속하지 않는 내용이 시작합니다".to_string(),
-        }],
+        locations: vec![topic_밖_위치(path, line, true)],
         fixes: vec![Fix {
             kind: FixKind::Edit,
             doc: Some(path.clone()),
