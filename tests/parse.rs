@@ -109,6 +109,26 @@ keyword `환불`: `결제` 를 되돌리는 행위 #`환불의 상세`
     assert_eq!(doc.keywords[0].refs, vec![("결제".to_string(), 5)]);
     assert_eq!(doc.keywords[0].name.0, vec!["환불".to_string()]);
     assert_eq!(doc.keywords[0].detail, Some("환불의 상세".to_string()));
+    // iknow 는 Task 3 의 몫이다. 침범하면 여기서 깨진다.
+    assert!(doc.keywords[0].iknow.is_empty());
+}
+
+/// 심볼 이름이 ` #` 로 끝나면 마커 뒤가 심볼로 파싱되지 않는다.
+/// 그때 K104 를 내면 짝이 맞는 줄에 "닫히지 않았다" 고 거짓말하게 되므로,
+/// 마커가 아니었던 것으로 보고 정의 전체를 그대로 읽는다.
+#[test]
+fn 샾으로_끝나는_심볼_이름을_그대로_읽는다() {
+    let source = r#"---
+description: 결제 정책 문서
+---
+
+keyword `a`: `b #`
+"#;
+
+    let doc = parse::parse_document(문서경로(), source).unwrap();
+
+    assert_eq!(doc.keywords[0].refs, vec![("b #".to_string(), 5)]);
+    assert_eq!(doc.keywords[0].detail, None);
 }
 
 /// 심볼 이름 안의 `#` 는 상세 마커가 아니다. `C#`·`F#` 같은 이름이 현실적이다.
