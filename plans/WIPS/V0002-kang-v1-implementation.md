@@ -499,6 +499,14 @@ pub fn check_exceptions(project: &Project, table: &SymbolTable) -> Vec<Diagnosti
 
 추가로 **한 exception 을 둘 이상의 topic 이 cover 하면 error** 다.
 
+**컨트롤러 이월 (Task 6 에서 나옴 — 반드시 처리)**
+
+**`cover` 대상이 존재하지 않으면 error 다.** Task 6 은 `Topic.covers` 를 **사용 여부 판정에만** 썼고 대상의 실재는 검사하지 않는다 — 그 층이 침묵하기로 한 것이므로 **여기서 진단하지 않으면 아무도 안 한다.**
+
+`` cover `없는 예외` `` 처럼 어떤 topic 도 선언하지 않은 이름을 cover 하면, 진리표는 그것을 그냥 매칭 실패로 흘려보내고 문서는 통과한다. kang 이 막으려는 dangling 참조가 정확히 이 모양이다.
+
+당신은 진리표를 위해 exception↔cover 매핑을 이미 만든다. 거기에 "매칭되지 않은 cover" 분기를 더하는 것이 Task 6 이 그 매핑을 다시 만드는 것보다 짧다.
+
 - [ ] **Step 1: 실패하는 테스트 작성** — 시나리오 5개
   - `커버되지_않은_exception_은_에러다`
   - `커버된_exception_은_통과한다`
