@@ -3497,8 +3497,48 @@ fn 세_종류_모두_핀이_필요하다() {
     정리(&root);
 }
 
+/// keyword 의 해시 입력은 **한 줄 정의**다 (스펙 4.8). 정의가 바뀌면 참조처가 깨진다.
+#[test]
+fn keyword_정의가_바뀌면_에러다() {
+    let root = 임시_루트("rev-keyword-changed");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: A\n---\n\nkeyword `결제`: 대금을 지불하는 행위\n",
+    );
+    let 옛_핀 = 현재_핀(&root, &참조(&["docs", "a"], SymbolKind::Keyword, "결제"));
+    쓰기(
+        &root,
+        "docs/b.kang",
+        &format!("---\ndescription: B\n---\n\nimport `docs`/`a`.`결제` rev \"{옛_핀}\"\n"),
+    );
+    // 정의를 고치기 전에는 통과해야 한다. 이 단언이 없으면 해시 입력이 정의가 아닌
+    // 무엇이어도 아래의 불일치가 그대로 나서, 테스트가 스펙 4.8 을 검증하지 못한다.
+    assert!(rev_검사(&root).is_empty(), "{:?}", rev_검사(&root));
+
+    // 이름은 그대로이고 한 줄 정의만 바뀐다.
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: A\n---\n\nkeyword `결제`: 대금을 지불하기로 약속하는 행위\n",
+    );
+
+    let diagnostics = rev_검사(&root);
+
+    assert_eq!(코드들(&diagnostics), vec!["K021"], "{diagnostics:?}");
+    assert_eq!(위치들(&diagnostics[0]), vec![("docs/b".to_string(), 5)]);
+    assert!(
+        diagnostics[0].locations[0].note.contains(&옛_핀),
+        "{:?}",
+        diagnostics[0].locations[0].note
+    );
+    정리(&root);
+}
+
 /// 대상이 해석되지 않는 import 는 `K002` 의 몫이다. 여기서 함께 진단하면
-/// 같은 사실이 두 번 보고된다.
+/// 같은 사실이 두 번 보고된다. **핀이 있든 없든** 마찬가지다 — 대상이 없으면
+/// 물을 현재 해시가 없으므로 불일치를 판정할 근거도 없다.
 #[test]
 fn 해석되지_않는_import_는_건드리지_않는다() {
     let root = 임시_루트("rev-unresolved-import");
@@ -3506,12 +3546,14 @@ fn 해석되지_않는_import_는_건드리지_않는다() {
     쓰기(
         &root,
         "docs/b.kang",
-        "---\ndescription: B\n---\n\nimport `docs`/`nope`#`없는 토픽` as `없는 것`\n",
+        "---\ndescription: B\n---\n\nimport `docs`/`nope`#`없는 토픽` as `없는 것`\nimport `docs`/`nope`#`또 없는 토픽` as `또 없는 것` rev \"a3f9c1\"\n",
     );
 
     let diagnostics = rev_검사(&root);
 
     assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    // 그 사실은 `K002` 가 줄마다 말한다.
+    assert_eq!(코드들(&심볼_검사(&root)), vec!["K002", "K002"]);
     정리(&root);
 }
 
