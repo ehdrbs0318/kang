@@ -8,7 +8,7 @@
 // 않았을 때 그것을 잡는 것이 이 파일의 목적이므로, 단위 호출로 대신하면 의미가 없다.
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 /// 테스트 하나가 독점하는 임시 디렉토리를 만든다.
 ///
@@ -464,6 +464,43 @@ fn 백틱_없는_인자를_파싱한다() {
     정리(&root);
 }
 
+/// 진단을 내는 층과 조회 층이 같은 문장을 다르게 읽으면, 빌드가 통과하는 문서에서
+/// 조회가 있는 참조를 놓치고 없는 참조를 만든다. 둘 다 성공 종료라 신호가 없다.
+///
+/// 이 픽스처의 스코프는 `결제`·`결제.수단`·`수단`·`수단.카드` 이고 본문은
+/// `` `결제`.`수단`.`카드` `` 다. 전부 해석되는 분할은 `결제` + `수단`.`카드` 하나뿐이며
+/// 왼쪽부터 탐욕으로 끊으면 `결제`.`수단` 을 잡아 `카드` 를 고아로 만든다.
+/// 계층 선언이 상위를 요구하므로(스펙 4.3) 넷이 한 스코프에 있는 것은 합법이다.
+#[test]
+fn refs_가_진단_층과_같은_분할로_참조를_읽는다() {
+    let root = 임시_루트("refs-split");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: A\n---\n\nkeyword `결제`: 대금을 지불하는 행위\nkeyword `결제`.`수단`: 대금을 내는 방법\nkeyword `수단`: 무언가를 이루는 방법\nkeyword `수단`.`카드`: 카드를 쓰는 방법\n\n## 문장\n\n`결제` 는 `수단`.`카드` 로 한다.\n",
+    );
+
+    // 합법 문서여야 이 시나리오가 성립한다. 빌드가 실패하면 분할 이전에 틀린 것이다.
+    let (_, stderr, 코드) = 실행(&root, &["build"]);
+    assert_eq!(코드, 0, "{stderr}");
+
+    // 분할이 낸 두 이름은 나와야 한다.
+    let (stdout, stderr, 코드) = 실행(&root, &["refs", "docs/a.결제"]);
+    assert_eq!(코드, 0, "{stderr}");
+    assert_eq!(stdout, "docs/a#문장\n", "있는 참조를 놓치면 안 된다");
+
+    let (stdout, stderr, 코드) = 실행(&root, &["refs", "docs/a.수단.카드"]);
+    assert_eq!(코드, 0, "{stderr}");
+    assert_eq!(stdout, "docs/a#문장\n", "있는 참조를 놓치면 안 된다");
+
+    // 분할이 내지 않은 이름은 나오면 안 된다.
+    let (stdout, stderr, 코드) = 실행(&root, &["refs", "docs/a.결제.수단"]);
+    assert_eq!(코드, 0, "{stderr}");
+    assert_eq!(stdout, "", "없는 참조를 만들면 안 된다");
+    정리(&root);
+}
+
 /// 인자가 가리키는 키워드가 없으면 빈 결과와 구분되어야 한다.
 /// 명령줄의 **모양**은 맞으므로 `--help` 는 내지 않는다.
 #[test]
@@ -480,6 +517,94 @@ fn refs_는_없는_키워드에_help_없이_종료코드_2_다() {
         !stderr.contains("종료 코드"),
         "사용법을 내면 안 된다: {stderr}"
     );
+    정리(&root);
+}
+
+/// 주소의 **모양**이 틀린 것은 사용법 오류다. 도움말이 첫 접점이라는 규약이
+/// 이 분기에서만 깨지면 안 된다.
+#[test]
+fn refs_는_주소_모양이_틀리면_사용법을_출력한다() {
+    let root = 임시_루트("refs-shape");
+    git_저장소로(&root);
+    정상_문서(&root);
+
+    let (도움말, _, _) = 실행(&root, &["--help"]);
+    let (stdout, stderr, 코드) = 실행(&root, &["refs", "docsA"]);
+
+    assert_eq!(코드, 2, "{stderr}");
+    assert_eq!(stdout, "");
+    assert!(stderr.contains(&도움말), "{stderr}");
+    정리(&root);
+}
+
+// ---------------------------------------------------------------------------
+// 신뢰 경계 — 인자와 출력이 프로세스 밖에서 오는 자리
+// ---------------------------------------------------------------------------
+
+/// `kang list | head -20` 은 에이전트의 관용구다. 읽는 쪽이 먼저 끝나면 `println!` 이
+/// **패닉**해 종료 코드 101 과 Rust 런타임 트레이스가 나온다 — 문서화된 종료 코드 밖이고,
+/// 코드도 `fix` 도 없는 글이 진단 채널에 섞인다.
+///
+/// 출력이 파이프 버퍼(64KB)를 넘겨야 재현되므로 description 을 길게 잡는다.
+#[test]
+fn 읽는_쪽이_파이프를_닫아도_패닉하지_않는다() {
+    let root = 임시_루트("broken-pipe");
+    git_저장소로(&root);
+    // 한 글자가 3바이트이므로 문서 하나가 90KB 다. 두 개면 버퍼를 확실히 넘긴다.
+    let 긴_설명 = "가".repeat(30_000);
+    쓰기(
+        &root,
+        "docs/a.kang",
+        &format!("---\ndescription: {긴_설명}\n---\n"),
+    );
+    쓰기(
+        &root,
+        "docs/b.kang",
+        &format!("---\ndescription: {긴_설명}\n---\n"),
+    );
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_kang"))
+        .arg("list")
+        .current_dir(&root)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("kang 바이너리를 실행할 수 있어야 한다");
+    // 읽는 쪽이 아무것도 읽지 않고 닫는다 — `| head -0` 과 같은 상황이다.
+    drop(child.stdout.take());
+    let 결과 = child
+        .wait_with_output()
+        .expect("자식을 기다릴 수 있어야 한다");
+    let stderr = String::from_utf8_lossy(&결과.stderr);
+
+    assert_eq!(결과.status.code(), Some(0), "stderr: {stderr}");
+    assert!(!stderr.contains("panicked"), "{stderr}");
+    정리(&root);
+}
+
+/// `std::env::args()` 는 잘못된 유니코드에 패닉한다. 인자 파싱은 도구의 최외곽
+/// 신뢰 경계이고 그 위에 아무것도 없다.
+#[cfg(unix)]
+#[test]
+fn 비_utf8_인자는_사용법_오류로_끝난다() {
+    use std::os::unix::ffi::OsStrExt;
+
+    let root = 임시_루트("bad-utf8-arg");
+    git_저장소로(&root);
+    정상_문서(&root);
+
+    let 결과 = Command::new(env!("CARGO_BIN_EXE_kang"))
+        .arg("refs")
+        .arg(std::ffi::OsStr::from_bytes(&[0xff, 0xfe]))
+        .current_dir(&root)
+        .output()
+        .expect("kang 바이너리를 실행할 수 있어야 한다");
+    let stderr = String::from_utf8_lossy(&결과.stderr);
+
+    assert_eq!(결과.status.code(), Some(2), "stderr: {stderr}");
+    assert!(!stderr.contains("panicked"), "{stderr}");
+    // 사용법 오류이므로 도움말이 함께 나온다.
+    assert!(stderr.contains("종료 코드"), "{stderr}");
     정리(&root);
 }
 
@@ -516,6 +641,18 @@ fn help_이_명령과_인자_형식과_종료코드를_전부_보여준다() {
     assert!(stdout.contains("종료 코드"), "{stdout}");
     for 코드값 in ["0", "1", "2", "3"] {
         assert!(stdout.contains(코드값), "{stdout}");
+    }
+    // 아직 구현되지 않은 명령을 조건 없이 나열하면, 그것을 치고 종료 코드 3 을 받은
+    // 에이전트가 표에 없는 상황을 만나 재시도할 곳이 없다.
+    let 미구현_절 = stdout
+        .split_once("아직 구현되지 않은 명령")
+        .expect("미구현 명령을 따로 알려야 한다")
+        .1;
+    for 명령 in ["kang init", "kang bless", "kang show", "kang inspect"] {
+        assert!(
+            미구현_절.contains(명령),
+            "{명령} 이 미구현으로 표시되지 않았다: {stdout}"
+        );
     }
     정리(&root);
 }

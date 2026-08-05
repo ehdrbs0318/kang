@@ -12,8 +12,8 @@
 
 use kang::ast::{Diagnostic, DocPath, Severity, SymbolKind, SymbolRef};
 use kang::check;
-use kang::resolve::{self, Project, SymbolId, SymbolTable};
-use std::collections::HashMap;
+use kang::resolve::{self, Project, SymbolTable};
+use std::io::Write;
 
 /// `--help` 와 사용법 오류가 함께 쓰는 도움말.
 ///
@@ -22,15 +22,17 @@ use std::collections::HashMap;
 const 사용법: &str = "kang — 문서 컴파일러
 
 명령:
-  kang init                            에이전트 진입점과 첫 문서 생성
   kang build                           컴파일 및 검증
-  kang bless <문서> --import <심볼>    rev 핀 갱신·삽입
   kang list [경로]                     문서 목록과 description
   kang keywords [경로]                 키워드 목록
   kang refs <키워드>                   키워드를 참조하는 topic
+  kang --help                          이 도움말
+
+아직 구현되지 않은 명령 (부르면 종료 코드 3 이며, 다른 방법이 없습니다):
+  kang init                            에이전트 진입점과 첫 문서 생성
+  kang bless <문서> --import <심볼>    rev 핀 갱신·삽입
   kang show <문서|토픽>                문서/토픽 조회 (YAML)
   kang inspect                         코드 대조 (v2)
-  kang --help                          이 도움말
 
 인자 문법:
   인자에 백틱을 쓰지 않습니다. 경로는 / , 키워드는 . , topic 은 # , exception 은 ! 로 잇습니다.
@@ -44,11 +46,24 @@ const 사용법: &str = "kang — 문서 컴파일러
   0  성공
   1  컴파일 error 존재
   2  사용법 오류, 또는 환경 오류 (git 저장소가 아님)
-  3  아직 구현되지 않은 기능 (kang inspect 는 v2)";
+  3  아직 구현되지 않은 기능 (위 목록의 네 명령)";
 
 /// 인자를 서브커맨드로 갈라 실행하고 그 종료 코드로 프로세스를 끝낸다.
 fn main() {
-    let 인자: Vec<String> = std::env::args().skip(1).collect();
+    // `std::env::args()` 는 잘못된 유니코드 인자에 **패닉**한다. 인자 파싱은 도구의
+    // 최외곽 신뢰 경계이고 그 위에 아무것도 없으므로, 여기서 죽으면 진단도 종료 코드도
+    // 남지 않는다. 로더가 비 UTF-8 파일 이름을 견디는데(`resolve::문서경로`) 그 앞의
+    // 인자 파서가 죽으면 안 된다.
+    let Ok(인자) = std::env::args_os()
+        .skip(1)
+        .map(std::ffi::OsString::into_string)
+        .collect::<Result<Vec<String>, _>>()
+    else {
+        // 어떤 명령 이름도 심볼 주소도 UTF-8 이 아닐 수 없다. 답은 사용법 오류다.
+        eprintln!("인자가 UTF-8 이 아닙니다.");
+        eprintln!("{사용법}");
+        std::process::exit(2);
+    };
     let 조각: Vec<&str> = 인자.iter().map(String::as_str).collect();
 
     let 코드 = match 조각.as_slice() {
@@ -93,7 +108,12 @@ fn main() {
     std::process::exit(코드);
 }
 
-/// 프로젝트 루트를 찾아 문서를 전부 읽고 파싱한다. 진단 규칙은 돌리지 않는다.
+/// 프로젝트 루트를 찾아 문서를 전부 읽고 파싱하고 심볼 테이블을 세운다.
+/// [`kang::check`] 의 규칙(순환·심볼·예외·rev 핀)은 돌리지 않는다.
+///
+/// **진단이 없다는 뜻은 아니다.** 루트를 못 찾거나(`K050`) 파일을 읽지 못하거나(`K051`)
+/// 문법이 틀리거나(`K1xx`) 한 문서가 같은 로컬 이름을 두 번 묶으면(`K052`) 여기서 이미
+/// error 로 끝난다. 그 넷은 전부 "문서를 읽을 수 없다" 이지 "문서가 규칙을 어겼다" 가 아니다.
 ///
 /// `bless` 처럼 **error 상태에서 실행되어야 하는 명령**이 쓴다. `bless` 가 필요한
 /// 상황은 정의상 전부 error 이므로(핀 없음도 error, 핀 불일치도 error),
@@ -244,13 +264,19 @@ fn 목록(스코프: Option<&str>) -> i32 {
     };
 
     let 조각 = 경로_조각(스코프);
+    let mut out = std::io::stdout().lock();
     // 문서를 경로 순으로 훑는다. 경로는 계층 축약 없이 전체 경로로 찍는다.
     for path in 정렬된_경로(&project) {
         // 스코프 밖의 문서는 건너뛴다.
         if !path.0.starts_with(&조각) {
             continue;
         }
-        println!("{path}: {}", project.docs[path].description);
+        if let Some(코드) = 찍기(
+            &mut out,
+            &format!("{path}: {}", project.docs[path].description),
+        ) {
+            return 코드;
+        }
     }
 
     0
@@ -272,6 +298,7 @@ fn 키워드들(스코프: Option<&str>) -> i32 {
     };
 
     let 조각 = 경로_조각(스코프);
+    let mut out = std::io::stdout().lock();
     // 문서를 경로 순으로 훑는다.
     for path in 정렬된_경로(&project) {
         // 스코프 밖의 문서는 건너뛴다.
@@ -280,11 +307,14 @@ fn 키워드들(스코프: Option<&str>) -> i32 {
         }
         // 한 문서 안의 키워드는 선언 순서 그대로 낸다.
         for keyword in &project.docs[path].keywords {
-            println!(
+            let 줄 = format!(
                 "{path}.{}: {}",
                 keyword.name.0.join("."),
                 keyword.definition
             );
+            if let Some(코드) = 찍기(&mut out, &줄) {
+                return 코드;
+            }
         }
     }
 
@@ -308,8 +338,11 @@ fn 참조들(주소: &str) -> i32 {
     // 남은 `.` 은 키워드의 계층이다.
     let (디렉토리, 마지막) = 주소.rsplit_once('/').unwrap_or(("", 주소));
     let Some((문서명, 이름)) = 마지막.split_once('.') else {
+        // 인자의 **모양**이 틀린 것이므로 사용법 오류다. 도움말이 에이전트의 첫 접점이라는
+        // 규약이 이 분기에서만 깨지면 안 된다.
         eprintln!("키워드 주소가 아닙니다: {주소}");
         eprintln!("문서 경로와 키워드를 점으로 이어 적으세요. 예: kang refs docs/A.결제");
+        eprintln!("{사용법}");
         return 2;
     };
     let mut 조각 = 경로_조각(Some(디렉토리));
@@ -328,12 +361,22 @@ fn 참조들(주소: &str) -> i32 {
     };
 
     // 문서를 경로 순으로, 그 안의 topic 은 선언 순서로 훑는다.
+    let mut out = std::io::stdout().lock();
     for path in 정렬된_경로(&project) {
         let scope = table.scope(path);
         for topic in &project.docs[path].topics {
+            // 분할은 진단을 내는 층과 **같은 함수**를 쓴다. 두 층이 같은 문장을 다르게
+            // 읽으면 빌드가 통과하는 문서에서 조회가 조용히 틀린 답을 낸다.
             // 참조는 alias 를 거칠 수 있으므로 이름이 아니라 심볼로 맞춘다.
-            if 가리키는가(&topic.refs, &scope, 대상) {
-                println!("{path}#{}", topic.name);
+            let 가리킨다 = check::이름_분할(&topic.refs, &scope)
+                .iter()
+                .any(|(이름, _)| scope.get(이름) == Some(&대상));
+            // 이 topic 이 대상을 가리키지 않으면 찍을 것이 없다.
+            if !가리킨다 {
+                continue;
+            }
+            if let Some(코드) = 찍기(&mut out, &format!("{path}#{}", topic.name)) {
+                return 코드;
             }
         }
     }
@@ -341,58 +384,30 @@ fn 참조들(주소: &str) -> i32 {
     0
 }
 
-/// topic 본문의 백틱 조각들이 대상 심볼을 가리키는지 본다.
+/// 표준 출력에 한 줄을 쓴다.
 ///
-/// [`kang::ast::Topic::refs`] 는 백틱 쌍 하나가 조각 하나이므로 계층 이름
-/// `` `결제수단`.`카드` `` 는 두 항목으로 들어온다. 같은 줄에서 이어지는 조각만 하나의
-/// 이름이 될 수 있고(줄이 바뀌면 원문에서 `.` 로 이어져 있을 수 없다), 긴 이름부터
-/// 맞춰야 `` `결제수단`.`카드` `` 가 `결제수단` 으로 끊기지 않는다.
-///
-/// ponytail: 탐욕 최장 일치다. 긴 이름을 잡은 탓에 남은 조각이 해석되지 않는 분할
-/// (스코프에 `A`·`A.B`·`B.C` 가 함께 있고 본문이 `` `A`.`B`.`C` `` 인 경우)에서는
-/// [`kang::check`] 의 분할과 갈려 그 topic 을 놓치거나 더 낸다. 그 형태가 실제로
-/// 나타나면 check 층과 같은 표를 채우는 분할로 올린다.
+/// `println!` 은 쓰기에 실패하면 **패닉**한다. `kang list | head -20` 은 에이전트의
+/// 관용구인데, 파이프를 닫은 쪽이 먼저 끝나면 그 패닉이 종료 코드 101 과 함께 Rust
+/// 런타임 트레이스를 남긴다 — 문서화된 종료 코드 4종 밖이고, 코드도 `fix` 도 없는
+/// 글이 `error[Kxxx]` 진단 채널에 섞인다.
 ///
 /// # 매개변수
-/// - `조각들`: topic 이 언급한 백틱 조각과 등장 줄
-/// - `scope`: 그 문서에서 쓸 수 있는 로컬 이름들
-/// - `대상`: 찾는 심볼
+/// - `out`: 잠근 표준 출력
+/// - `줄`: 쓸 한 줄
 ///
 /// # 반환값
-/// 하나라도 대상을 가리키면 `true`
-fn 가리키는가(
-    조각들: &[(String, usize)],
-    scope: &HashMap<String, SymbolId>,
-    대상: SymbolId,
-) -> bool {
-    let 이음 = |구간: &[(String, usize)]| {
-        구간
-            .iter()
-            .map(|(이름, _)| 이름.as_str())
-            .collect::<Vec<&str>>()
-            .join(".")
-    };
-
-    let mut 자 = 0;
-    // 조각을 앞에서부터 이름 단위로 끊어 가며 대상을 만나는지 본다.
-    while 자 < 조각들.len() {
-        let 줄 = 조각들[자].1;
-        let 끝 = 자
-            + 조각들[자..]
-                .iter()
-                .take_while(|(_, 그_줄)| *그_줄 == 줄)
-                .count();
-        let 길이 = (1..=끝 - 자)
-            .rev()
-            .find(|&길이| scope.contains_key(&이음(&조각들[자..자 + 길이])))
-            .unwrap_or(1);
-        if scope.get(&이음(&조각들[자..자 + 길이])) == Some(&대상) {
-            return true;
+/// 계속 써도 되면 `None`, 멈춰야 하면 그때의 종료 코드
+fn 찍기(out: &mut std::io::StdoutLock<'_>, 줄: &str) -> Option<i32> {
+    match writeln!(out, "{줄}") {
+        Ok(()) => None,
+        // 파이프를 닫은 쪽은 원하는 만큼 읽었다. 그것이 곧 성공이다.
+        Err(오류) if 오류.kind() == std::io::ErrorKind::BrokenPipe => Some(0),
+        // 그 밖의 실패는 출력이 잘린 것이다. 0 을 주면 잘린 목록을 전부라고 말하게 된다.
+        Err(오류) => {
+            eprintln!("표준 출력에 쓰지 못했습니다 — {오류}");
+            Some(1)
         }
-        자 += 길이;
     }
-
-    false
 }
 
 /// 경로 스코프 인자를 경로 조각들로 나눈다.
