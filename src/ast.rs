@@ -28,7 +28,7 @@ pub struct Location {
 
 /// 수정의 종류. 문법 규약이 갈리므로 판별자가 필요하다.
 /// Edit 은 문서 문법(백틱 사용, 스펙 4.2), Shell 은 CLI 문법(백틱 금지·인용, 스펙 6.0).
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum FixKind {
     /// 문서를 직접 고치는 수정. 백틱을 쓰는 문서 문법으로 기술한다.
     Edit,
@@ -82,11 +82,11 @@ impl fmt::Display for DocPath {
 }
 
 /// 키워드 이름. 계층 키워드 `결제수단`.`카드` 는 ["결제수단", "카드"] 이다.
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct KeywordName(pub Vec<String>);
 
 /// 파일 밖으로 노출되는 심볼의 종류.
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum SymbolKind {
     /// 도메인 특수 용어 선언.
     Keyword,
