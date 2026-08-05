@@ -928,19 +928,27 @@ fn 계층_상위_검사(
             continue;
         }
 
-        // 여기까지 왔으면 keyword import 는 없다. 이름만 같은 import 가 있으면 그 종류를
-        // 진단에 실어 보낸다 — "import 되지 않았다" 고 하면 거짓이기 때문이다.
-        // 위에서 keyword 가 없음이 확정되었으므로 어느 줄을 집어도 참인 종류다.
-        let 잘못된_종류 = document
+        // 여기까지 왔으면 상위 keyword 는 없다. 그래도 **같은 이름이 이 문서에 이미
+        // 묶여 있을** 수 있다 — 다른 종류의 import 이거나 이 파일의 topic·exception 이다.
+        // 그때 "찾을 수 없습니다" 는 거짓이고, 수정이 그 이름을 또 묶으면 `K052` 가 난다.
+        // 위에서 keyword 가 없음이 확정되었으므로 어느 것을 집어도 참인 종류다.
+        let 이름 = 상위.join(".");
+        let 다른_종류 = document
             .imports
             .iter()
             .find(|import| import.target.name[..] == *상위)
-            .map(|import| &import.target.kind);
+            .map(|import| 종류_낱말(&import.target.kind))
+            .or_else(|| {
+                선언_훑기(document)
+                    .into_iter()
+                    .find(|하나| 하나.name == 이름)
+                    .map(|하나| 종류_낱말(&하나.kind))
+            });
         diagnostics.push(계층_상위_없음(
             document,
             keyword,
             상위,
-            잘못된_종류,
+            다른_종류,
             선언들,
         ));
     }
@@ -1089,9 +1097,10 @@ fn 미해결_심볼(
 /// - `document`: 그 선언이 있는 문서
 /// - `keyword`: 상위를 갖추지 못한 계층 keyword 선언
 /// - `상위`: 요구되는 직접 상위의 이름 조각들. 최소 1개
-/// - `잘못된_종류`: 그 이름이 이 문서에 import 되어 있으나 keyword 가 아닐 때 그 종류.
-///   아예 없으면 `None` — "import 되지 않았다" 와 "종류가 다르다" 는 다른 사실이고
-///   뭉뚱그리면 진단이 둘 중 하나에 대해 거짓을 말한다
+/// - `다른_종류`: 그 이름이 이 문서에 이미 묶여 있으나 keyword 가 아닐 때 그 종류의 낱말.
+///   아예 없으면 `None` — "이 문서에 없다" 와 "종류가 다르다" 는 다른 사실이고
+///   뭉뚱그리면 진단이 둘 중 하나에 대해 거짓을 말한다. 이 값이 `Some` 이면 수정이
+///   그 이름을 **또 묶지 않도록** 문구가 갈린다 (그러면 `K052` 가 난다)
 /// - `선언들`: 이름별 선언 색인. 그 이름을 keyword 로 선언한 문서를 찾는 데 쓴다
 ///
 /// # 반환값
@@ -1100,7 +1109,7 @@ fn 계층_상위_없음(
     document: &Document,
     keyword: &Keyword,
     상위: &[String],
-    잘못된_종류: Option<&SymbolKind>,
+    다른_종류: Option<&'static str>,
     선언들: &BTreeMap<String, Vec<선언>>,
 ) -> Diagnostic {
     // 문서 문법으로는 조각마다 백틱을 두른다 (스펙 4.1).
@@ -1140,11 +1149,10 @@ fn 계층_상위_없음(
     Diagnostic {
         severity: Severity::Error,
         code: "K005",
-        message: match 잘못된_종류 {
+        message: match 다른_종류 {
             // 이름은 있다. 없다고 하면 거짓이다.
-            Some(kind) => format!(
-                "계층 keyword 의 상위가 keyword 가 아닙니다 — {상위_표기}. 이 이름은 이 문서에 import 되어 있지만 종류가 {} 입니다. `.` 는 키워드 계층이므로 상위는 keyword 여야 합니다 (스펙 4.1·4.3). {안내}",
-                종류_낱말(kind)
+            Some(낱말) => format!(
+                "계층 keyword 의 상위가 keyword 가 아닙니다 — {상위_표기}. 이 이름은 이 문서에 이미 묶여 있지만 종류가 {낱말} 입니다. `.` 는 키워드 계층이므로 상위는 keyword 여야 합니다 (스펙 4.1·4.3). {안내}"
             ),
             None => format!(
                 "계층 keyword 의 상위를 이 문서에서 찾을 수 없습니다 — {상위_표기}. 스펙 4.3 은 상위 키워드가 같은 파일에서 정의했거나 import 한 것이어야 한다고 정합니다. {안내}"
@@ -1164,9 +1172,16 @@ fn 계층_상위_없음(
             Fix {
                 kind: FixKind::Edit,
                 doc: Some(document.path.clone()),
-                action: format!(
-                    "이 개념이 이 문서의 것이라면, 상위를 여기서 선언하세요: keyword {상위_표기}: <한 줄 정의>"
-                ),
+                // 같은 이름이 이미 묶여 있으면 선언만 더하는 것은 `K052` 를 만든다.
+                // 스펙 V0001:417 은 에이전트가 fix 를 **그대로 적용**한다고 정한다.
+                action: match 다른_종류 {
+                    Some(낱말) => format!(
+                        "이 개념이 이 문서의 것이라면, 같은 이름을 묶고 있는 그 {낱말} 줄을 먼저 지운 뒤 상위를 여기서 선언하세요: keyword {상위_표기}: <한 줄 정의>"
+                    ),
+                    None => format!(
+                        "이 개념이 이 문서의 것이라면, 상위를 여기서 선언하세요: keyword {상위_표기}: <한 줄 정의>"
+                    ),
+                },
             },
             Fix {
                 kind: FixKind::Edit,
@@ -1174,7 +1189,7 @@ fn 계층_상위_없음(
                 action: match 후보.first() {
                     // 이름을 이미 다른 종류로 import 했다면 그 줄을 바꾸라고 말해야 한다.
                     // "추가하세요" 라고만 하면 같은 이름이 두 번 묶여 `K052` 가 난다.
-                    Some(하나) if 잘못된_종류.is_some() => format!(
+                    Some(하나) if 다른_종류.is_some() => format!(
                         "상위 keyword 가 {} 의 것이라면, 지금의 import 줄을 그 keyword 로 바꾸세요: import {}",
                         하나.doc,
                         심볼_주소(하나.doc, &하나.kind, &상위.join("."), true)
@@ -1184,6 +1199,8 @@ fn 계층_상위_없음(
                         하나.doc,
                         심볼_주소(하나.doc, &하나.kind, &상위.join("."), true)
                     ),
+                    None if 다른_종류.is_some() => "상위가 다른 문서의 것이라면, 그 문서에서 그것을 keyword 로 선언한 뒤, 같은 이름을 묶고 있는 이 문서의 줄을 그 import 로 바꾸세요."
+                        .to_string(),
                     None => "상위가 다른 문서의 것이라면, 그 문서에서 그것을 keyword 로 선언한 뒤 이 문서의 import 블록에서 가져오세요."
                         .to_string(),
                 },
