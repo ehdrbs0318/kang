@@ -6,7 +6,8 @@
 //! (스펙 5.1·5.2·5.3).
 //!
 //! 이 모듈이 내는 진단 코드는 심볼 해석 대역 `K001`-`K009`, iknow·이름 충돌 대역
-//! `K010`-`K019`, exception 상태 기계 대역 `K030`-`K039`, 순환 대역 `K040`-`K049` 를 쓴다.
+//! `K010`-`K019`, rev 핀 대역 `K020`-`K029`, exception 상태 기계 대역 `K030`-`K039`,
+//! 순환 대역 `K040`-`K049` 를 쓴다.
 //!
 //! | 코드 | 규칙 |
 //! |---|---|
@@ -17,6 +18,8 @@
 //! | `K005` | 계층 keyword 의 상위가 같은 파일에 keyword 로 선언되지도 import 되지도 않음 |
 //! | `K010` | iknow 대상 문서나 심볼이 존재하지 않음 |
 //! | `K012` | 여러 문서가 같은 이름을 선언했는데 iknow 상호 명시가 완전하지 않음 |
+//! | `K020` | import 에 rev 핀이 없음 |
+//! | `K021` | import 의 rev 핀이 대상의 현재 해시와 불일치 |
 //! | `K030` | 일반 exception 을 커버하는 topic 이 없음 |
 //! | `K031` | `pending` exception 을 커버하는 topic 이 아직 없음 (**warn**) |
 //! | `K032` | `pending` 이라고 선언했으나 커버하는 topic 이 있음 |
@@ -24,7 +27,8 @@
 //! | `K034` | cover 가 가리키는 exception 이 그 문서의 스코프에 없음 |
 //! | `K040` | import 그래프에 순환이 있음 |
 //!
-//! `K001` 과 `K012` 는 스펙 5.1.1 이 번호까지 못박은 코드다. 나머지는 대역 안에서 정했다.
+//! `K001` 과 `K012` 와 `K021` 은 스펙 5.1.1 이 번호까지 못박은 코드다. 나머지는 대역 안에서
+//! 정했다.
 //!
 //! `K031` 만이 [`crate::ast::Severity::Warn`] 이다. 스펙 5.2 가 그 칸을 "통과" 로 정했으므로
 //! 종료 코드를 1 로 만들면 안 된다.
@@ -668,6 +672,138 @@ pub fn check_exceptions(project: &Project, table: &SymbolTable) -> Vec<Diagnosti
             }],
             fixes,
         });
+    }
+
+    diagnostics
+}
+
+/// 스펙 4.8 의 rev 핀을 검사한다.
+///
+/// | 상황 | 결과 |
+/// |---|---|
+/// | 핀 없음 | `K020` error — `bless` 가 삽입한다 |
+/// | 핀이 대상의 현재 해시와 다름 | `K021` error — 대상을 다시 읽고 갱신한다 |
+///
+/// **두 규칙에 두 코드를 준다.** 처방은 둘 다 `kang bless` 지만 원인이 다르고, 스펙 5.1.1 은
+/// "에이전트가 코드로 분기할 수 있어야 한다" 고 못박는다. 하나로 묶으면 "대상이 바뀌었으니
+/// 다시 읽어라" 와 "아직 한 번도 핀을 박지 않았다" 가 같은 코드가 되어, 진단이 둘 중 하나에
+/// 대해 거짓을 말하게 된다. `K021` 은 스펙 5.1.1 이 번호까지 못박은 코드다.
+///
+/// **해시는 [`SymbolTable::hash_source`] 에서 온다.** keyword 는 한 줄 정의, topic 은 본문,
+/// exception 은 **그것을 선언한 topic 의 본문**이다 (스펙 4.8). 한 topic 이 예외를 여럿
+/// 선언하면 전부 같은 해시를 갖는다 — 맥락이 바뀌었으니 커버 문서가 전부 다시 봐야 한다는
+/// 것이 그 규칙의 의도다.
+///
+/// **대상이 해석되지 않는 import 는 보지 않는다.** 그것은 미해결 import 이고 `K002` 의
+/// 몫이다. 여기서 함께 진단하면 같은 사실이 두 번 보고된다.
+///
+/// **줄마다 진단 하나다.** 핀은 import 줄마다 따로 붙으므로, 한 문서가 같은 대상을 두 번
+/// import 하면 한 줄은 핀이 없고 다른 줄은 핀이 틀릴 수 있다. 묶으면 코드를 하나로 골라야
+/// 하고 그러면 한쪽에 대해 거짓이 된다. 같은 대상을 여러 번 import 하는 것 자체는
+/// `K004`·`K052` 가 따로 잡는다.
+///
+/// 진단 순서는 **문서 경로 순**이고 한 문서 안에서는 import 줄 순서다.
+///
+/// # 매개변수
+/// - `project`: 파싱을 마친 프로젝트
+/// - `table`: [`SymbolTable::build`] 가 만든 전역 심볼 테이블. 대상의 해시 입력을 여기서 얻는다
+///
+/// # 반환값
+/// 핀이 없거나 어긋난 import 줄마다 만들어진 진단들. 어긴 것이 없으면 빈 벡터
+pub fn check_revs(project: &Project, table: &SymbolTable) -> Vec<Diagnostic> {
+    // HashMap 의 나열 순서는 보장되지 않는다. 정렬해야 진단 순서가 실행마다 같다.
+    let mut 순서: Vec<&DocPath> = project.docs.keys().collect();
+    순서.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let mut diagnostics: Vec<Diagnostic> = Vec::new();
+    for doc in 순서 {
+        // 한 문서의 import 를 파일 순서대로 본다.
+        for import in &project.docs[doc].imports {
+            // 대상이 없으면 물을 해시가 없다. 미해결 import 는 `K002` 의 몫이다.
+            // **핀이 없는 줄도 여기서 걸러진다** — 대상이 없는 import 에 "핀을 붙여라" 고
+            // 하면 bless 가 할 수 없는 일을 시키게 되고, `K002` 와 같은 사실을 두 번 말한다.
+            let Some(id) = table.resolve(&import.target) else {
+                continue;
+            };
+
+            let 대상 = &import.target;
+            let 이름 = 대상.name.join(".");
+            let 문서_문법 = 심볼_주소(&대상.doc, &대상.kind, &이름, true);
+            // `bless` 는 CLI 이므로 백틱 없는 주소에 인용을 붙인다 (스펙 5.1.1·6.0).
+            // 심볼 이름에는 공백이 들어가므로 인용을 빠뜨리면 셸이 인자를 쪼갠다.
+            // **alias 가 아니라 대상의 정본 이름**을 넘긴다 — alias 로는 bless 가 그 import
+            // 줄을 찾지 못한다.
+            let 명령 = || {
+                format!(
+                    "kang bless {} --import {}",
+                    셸_인용(&doc.to_string()),
+                    셸_인용(&심볼_주소(&대상.doc, &대상.kind, &이름, false))
+                )
+            };
+
+            let diagnostic = match &import.rev {
+                // 핀이 없다. 손으로 계산할 수 없으므로 `bless` 가 삽입한다 (스펙 4.8).
+                // 이것이 스펙 4.8 정본 3단계 레시피의 2단계다 — `K001`·`K030` 의 처방이
+                // 만든 핀 없는 import 줄을 여기서 이어받는다.
+                None => Diagnostic {
+                    severity: Severity::Error,
+                    code: "K020",
+                    message: format!(
+                        "import 에 rev 핀이 없습니다 — {문서_문법}. keyword·topic·exception 세 종류 모두 핀이 필수입니다 (스펙 4.7). 핀은 손으로 계산할 수 없으므로 kang bless 가 삽입합니다 (스펙 4.8)."
+                    ),
+                    locations: vec![Location {
+                        doc: doc.clone(),
+                        line: import.line,
+                        note: "여기서 import 했습니다 — 이 줄에 rev 핀이 없습니다.".to_string(),
+                    }],
+                    fixes: vec![Fix {
+                        kind: FixKind::Shell,
+                        doc: None,
+                        action: format!("이 import 에 rev 핀을 붙이세요: {}", 명령()),
+                    }],
+                },
+                Some(핀) => {
+                    // ponytail: 같은 대상을 여러 줄이 import 하면 해시를 줄마다 다시
+                    // 계산한다. 입력이 한 줄 정의나 topic 본문 하나라 비용이 작아 캐시를
+                    // 두지 않는다. 문서가 아주 커지거나 import 가 아주 많아지면
+                    // `SymbolId` 별로 한 번만 계산해 재사용하는 형태로 올린다.
+                    let 현재 = crate::hash::rev(table.hash_source(id));
+                    // 핀이 현재 해시와 같으면 이 import 는 통과다.
+                    if *핀 == 현재 {
+                        continue;
+                    }
+                    Diagnostic {
+                        severity: Severity::Error,
+                        code: "K021",
+                        // **"대상이 바뀌었다" 고 단정하지 않는다.** kang 은 이전 본문을
+                        // 저장하지 않아 그것을 확인할 수 없고, 핀을 손으로 잘못 적은
+                        // 문서에 대해서는 거짓이 된다. 검증되는 사실은 두 해시가 다르다는
+                        // 것뿐이므로 그것만 말하고, 나머지는 지시로 적는다.
+                        //
+                        // diff 를 출력하지 않는다 — 이전 본문이 없으므로 만들 수 없다.
+                        // 무엇이 바뀌었는지는 git 이 안다.
+                        message: format!(
+                            "rev 핀이 대상의 현재 내용과 다릅니다 — {문서_문법}. 핀은 참조 시점의 내용을 가리킵니다 (스펙 4.8). 무엇이 달라졌는지는 프로젝트 루트에서 git diff {} 로 확인하고, 이 문서가 지금의 대상에도 여전히 맞는지 확인한 뒤 핀을 갱신하세요.",
+                            셸_인용(&format!("{}.kang", 대상.doc))
+                        ),
+                        locations: vec![Location {
+                            doc: doc.clone(),
+                            line: import.line,
+                            note: format!("여기서 import 했습니다 — 핀 {핀}, 현재 {현재}."),
+                        }],
+                        fixes: vec![Fix {
+                            kind: FixKind::Shell,
+                            doc: None,
+                            action: format!(
+                                "대상을 다시 읽고 이 문서가 여전히 맞는다면 핀을 갱신하세요: {}",
+                                명령()
+                            ),
+                        }],
+                    }
+                }
+            };
+            diagnostics.push(diagnostic);
+        }
     }
 
     diagnostics

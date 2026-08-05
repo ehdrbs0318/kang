@@ -3177,3 +3177,608 @@ fn k034_는_후보가_하나면_조건절을_붙이지_않는다() {
     );
     정리(&root);
 }
+
+// ---------------------------------------------------------------------------
+// rev 핀 (스펙 4.8) — `K020`·`K021`
+// ---------------------------------------------------------------------------
+
+/// 프로젝트를 읽어 rev 핀 검사만 돌린다.
+///
+/// 로드와 심볼 테이블 단계에서 진단이 나오면 픽스처가 잘못된 것이므로 여기서 잡는다 —
+/// 그것을 그대로 두면 핀 진단이 없는 이유를 픽스처 오타에서 찾게 된다.
+///
+/// # 매개변수
+/// - `root`: 프로젝트 루트
+///
+/// # 반환값
+/// [`check::check_revs`] 가 낸 진단들
+fn rev_검사(root: &Path) -> Vec<Diagnostic> {
+    let (project, 로드_진단) = resolve::load(root);
+    assert!(로드_진단.is_empty(), "{로드_진단:?}");
+    let (table, 테이블_진단) = resolve::SymbolTable::build(&project);
+    assert!(테이블_진단.is_empty(), "{테이블_진단:?}");
+    check::check_revs(&project, &table)
+}
+
+/// 대상 심볼의 **현재** 해시를 컴파일러와 같은 방법으로 계산한다.
+///
+/// 해시 값을 테스트에 하드코딩하지 않는다 — 하드코딩하면 정규화 규칙이 바뀔 때
+/// 테스트가 컴파일러와 함께 틀린 값으로 옮겨 가고, 검증하는 것이 없어진다.
+///
+/// # 매개변수
+/// - `root`: 프로젝트 루트
+/// - `대상`: 해시를 물을 심볼 참조
+///
+/// # 반환값
+/// 그 심볼의 현재 rev 핀 값
+fn 현재_핀(root: &Path, 대상: &SymbolRef) -> String {
+    let (project, _) = resolve::load(root);
+    let (table, _) = resolve::SymbolTable::build(&project);
+    let id = table.resolve(대상).expect("대상 심볼이 있어야 한다");
+    kang::hash::rev(table.hash_source(id))
+}
+
+/// 심볼 참조를 만든다.
+///
+/// # 매개변수
+/// - `조각들`: 대상 문서의 경로 조각들
+/// - `kind`: 심볼 종류
+/// - `이름`: 심볼의 전체 이름
+///
+/// # 반환값
+/// 만들어진 [`SymbolRef`]
+fn 참조(조각들: &[&str], kind: SymbolKind, 이름: &str) -> SymbolRef {
+    SymbolRef {
+        doc: 문서경로(조각들),
+        kind,
+        name: vec![이름.to_string()],
+    }
+}
+
+/// 스펙 4.7·4.8: import 에 rev 핀이 없으면 error 다.
+#[test]
+fn rev_핀이_없으면_에러다() {
+    let root = 임시_루트("rev-missing-pin");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: A\n---\n\n## 결제의 방법\n\n카드로 낸다.\n",
+    );
+    쓰기(
+        &root,
+        "docs/b.kang",
+        "---\ndescription: B\n---\n\nimport `docs`/`a`#`결제의 방법` as `A 결제 방법`\n",
+    );
+
+    let diagnostics = rev_검사(&root);
+
+    assert_eq!(코드들(&diagnostics), vec!["K020"], "{diagnostics:?}");
+    assert_eq!(diagnostics[0].severity, Severity::Error);
+    // 위치는 핀이 빠진 import 줄 하나다.
+    assert_eq!(위치들(&diagnostics[0]), vec![("docs/b".to_string(), 5)]);
+    assert!(
+        diagnostics[0].locations[0].note.contains("rev"),
+        "{:?}",
+        diagnostics[0].locations[0].note
+    );
+    // 핀은 손으로 계산할 수 없으므로 처방은 bless 셸 명령 하나다 (스펙 4.8).
+    assert_eq!(수정_종류(&diagnostics[0]), vec![&FixKind::Shell]);
+    정리(&root);
+}
+
+/// 핀이 대상의 현재 해시와 같으면 진단이 없다.
+#[test]
+fn rev_핀이_일치하면_통과한다() {
+    let root = 임시_루트("rev-pin-matches");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: A\n---\n\n## 결제의 방법\n\n카드로 낸다.\n",
+    );
+    let 핀 = 현재_핀(
+        &root,
+        &참조(&["docs", "a"], SymbolKind::Topic, "결제의 방법"),
+    );
+    쓰기(
+        &root,
+        "docs/b.kang",
+        &format!(
+            "---\ndescription: B\n---\n\nimport `docs`/`a`#`결제의 방법` as `A 결제 방법` rev \"{핀}\"\n"
+        ),
+    );
+
+    let diagnostics = rev_검사(&root);
+
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    정리(&root);
+}
+
+/// 스펙 4.8 의 존재 이유 — 대상 본문이 바뀌면 참조처가 깨진다.
+#[test]
+fn 대상_본문이_바뀌면_에러다() {
+    let root = 임시_루트("rev-target-changed");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: A\n---\n\n## 결제의 방법\n\n카드로 낸다.\n",
+    );
+    let 옛_핀 = 현재_핀(
+        &root,
+        &참조(&["docs", "a"], SymbolKind::Topic, "결제의 방법"),
+    );
+    쓰기(
+        &root,
+        "docs/b.kang",
+        &format!(
+            "---\ndescription: B\n---\n\nimport `docs`/`a`#`결제의 방법` as `A 결제 방법` rev \"{옛_핀}\"\n"
+        ),
+    );
+    // 참조한 뒤 대상 본문이 바뀐다.
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: A\n---\n\n## 결제의 방법\n\n계좌 이체로 낸다.\n",
+    );
+    let 새_핀 = 현재_핀(
+        &root,
+        &참조(&["docs", "a"], SymbolKind::Topic, "결제의 방법"),
+    );
+    assert_ne!(옛_핀, 새_핀);
+
+    let diagnostics = rev_검사(&root);
+
+    assert_eq!(코드들(&diagnostics), vec!["K021"], "{diagnostics:?}");
+    assert_eq!(diagnostics[0].severity, Severity::Error);
+    assert_eq!(위치들(&diagnostics[0]), vec![("docs/b".to_string(), 5)]);
+    // 두 해시를 그대로 보여 준다 (스펙 5.1.1 의 `K021` 예시).
+    let note = &diagnostics[0].locations[0].note;
+    assert!(note.contains(&옛_핀), "{note}");
+    assert!(note.contains(&새_핀), "{note}");
+    // 무엇이 바뀌었는지는 git diff 가 보여준다는 안내만 넣는다.
+    assert!(
+        diagnostics[0].message.contains("git diff"),
+        "{diagnostics:?}"
+    );
+    assert_eq!(수정_종류(&diagnostics[0]), vec![&FixKind::Shell]);
+    정리(&root);
+}
+
+/// 스펙 4.8: exception 의 해시 입력은 **그 예외를 선언한 topic 의 본문**이다.
+#[test]
+fn exception_핀은_선언_topic_본문의_해시다() {
+    let root = 임시_루트("rev-exception-hash");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: A\n---\n\n## 결제의 방법\n\n카드로 낸다.\n\nexception `무료 상품`\n",
+    );
+    // topic 의 핀을 exception import 에 그대로 박아도 통과해야 한다 — 같은 해시이기 때문이다.
+    let topic_핀 = 현재_핀(
+        &root,
+        &참조(&["docs", "a"], SymbolKind::Topic, "결제의 방법"),
+    );
+    let 예외_핀 = 현재_핀(
+        &root,
+        &참조(&["docs", "a"], SymbolKind::Exception, "무료 상품"),
+    );
+    assert_eq!(topic_핀, 예외_핀);
+
+    쓰기(
+        &root,
+        "docs/b.kang",
+        &format!(
+            "---\ndescription: B\n---\n\nimport `docs`/`a`!`무료 상품` as `무료 상품 예외` rev \"{예외_핀}\"\n"
+        ),
+    );
+
+    let diagnostics = rev_검사(&root);
+
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    정리(&root);
+}
+
+/// 스펙 4.8 이 exception 을 선언 topic 에 묶은 이유 —
+/// 이름을 유지한 채 선언 topic 을 바꿔도 커버 문서가 깨져야 한다.
+#[test]
+fn 이름을_유지한_채_선언_topic_을_바꾸면_커버_문서가_깨진다() {
+    let root = 임시_루트("rev-exception-context-changed");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: A\n---\n\n## 결제의 방법\n\n카드로 낸다.\n\nexception `무료 상품`\n",
+    );
+    let 옛_핀 = 현재_핀(
+        &root,
+        &참조(&["docs", "a"], SymbolKind::Exception, "무료 상품"),
+    );
+    쓰기(
+        &root,
+        "docs/b.kang",
+        &format!(
+            "---\ndescription: B\n---\n\nimport `docs`/`a`!`무료 상품` as `무료 상품 예외` rev \"{옛_핀}\"\n\n## 무료 상품 처리\n\n0원으로 남긴다.\n\ncover `무료 상품 예외`\n"
+        ),
+    );
+    // 예외 **이름은 그대로**이고 선언 topic 의 본문만 바뀐다.
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: A\n---\n\n## 결제의 방법\n\n계좌 이체로 낸다.\n\nexception `무료 상품`\n",
+    );
+
+    let diagnostics = rev_검사(&root);
+
+    // 이름은 그대로여서 미해결 심볼은 나지 않는다. 깨뜨리는 것은 핀뿐이다.
+    assert_eq!(코드들(&diagnostics), vec!["K021"], "{diagnostics:?}");
+    assert_eq!(위치들(&diagnostics[0]), vec![("docs/b".to_string(), 5)]);
+    정리(&root);
+}
+
+/// 스펙 5.1.1: `[shell]` 은 CLI 문법이다 — 백틱을 쓰지 않고 인용한다.
+#[test]
+fn 진단_fix_가_bless_심볼_주소_형식이다() {
+    let root = 임시_루트("rev-fix-bless-address");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/core/payment.kang",
+        "---\ndescription: 결제\n---\n\n## 결제의 방법\n\n카드로 낸다.\n",
+    );
+    쓰기(
+        &root,
+        "docs/billing/invoice.kang",
+        "---\ndescription: 청구서\n---\n\nimport `docs`/`core`/`payment`#`결제의 방법` as `결제 방법`\n",
+    );
+
+    let diagnostics = rev_검사(&root);
+
+    assert_eq!(코드들(&diagnostics), vec!["K020"], "{diagnostics:?}");
+    let action = &diagnostics[0].fixes[0].action;
+    // 스펙 5.1.1 의 `K021` 예시와 같은 명령 형태다.
+    assert!(
+        action
+            .contains("kang bless 'docs/billing/invoice' --import 'docs/core/payment#결제의 방법'"),
+        "{action}"
+    );
+    // CLI 문법에는 백틱이 없다 (스펙 6.0). 섞으면 셸에서 명령 치환으로 터진다.
+    assert!(!action.contains('`'), "{action}");
+    // 줄 번호를 좌표로 쓰지 않는다 (ADR-0003).
+    assert!(!action.contains(":5"), "{action}");
+    정리(&root);
+}
+
+/// 스펙 4.7: keyword·topic·exception 세 종류 모두 핀이 필수다.
+#[test]
+fn 세_종류_모두_핀이_필요하다() {
+    let root = 임시_루트("rev-three-kinds");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: A\n---\n\nkeyword `결제`: 대금을 지불하는 행위\n\n## 결제의 방법\n\n`결제` 는 카드로 한다.\n\nexception `무료 상품`\n",
+    );
+    쓰기(
+        &root,
+        "docs/b.kang",
+        "---\ndescription: B\n---\n\nimport `docs`/`a`.`결제`\nimport `docs`/`a`#`결제의 방법` as `A 결제 방법`\nimport `docs`/`a`!`무료 상품` as `무료 상품 예외`\n",
+    );
+
+    let diagnostics = rev_검사(&root);
+
+    assert_eq!(코드들(&diagnostics), vec!["K020", "K020", "K020"]);
+    // 줄 순서대로 세 종류를 각각 가리킨다.
+    assert_eq!(위치들(&diagnostics[0]), vec![("docs/b".to_string(), 5)]);
+    assert_eq!(위치들(&diagnostics[1]), vec![("docs/b".to_string(), 6)]);
+    assert_eq!(위치들(&diagnostics[2]), vec![("docs/b".to_string(), 7)]);
+    // 종류마다 CLI 주소의 구분 기호가 다르다 (스펙 4.1).
+    assert!(
+        diagnostics[0].fixes[0].action.contains("'docs/a.결제'"),
+        "{:?}",
+        diagnostics[0].fixes[0].action
+    );
+    assert!(
+        diagnostics[1].fixes[0]
+            .action
+            .contains("'docs/a#결제의 방법'"),
+        "{:?}",
+        diagnostics[1].fixes[0].action
+    );
+    assert!(
+        diagnostics[2].fixes[0]
+            .action
+            .contains("'docs/a!무료 상품'"),
+        "{:?}",
+        diagnostics[2].fixes[0].action
+    );
+    정리(&root);
+}
+
+/// 대상이 해석되지 않는 import 는 `K002` 의 몫이다. 여기서 함께 진단하면
+/// 같은 사실이 두 번 보고된다.
+#[test]
+fn 해석되지_않는_import_는_건드리지_않는다() {
+    let root = 임시_루트("rev-unresolved-import");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/b.kang",
+        "---\ndescription: B\n---\n\nimport `docs`/`nope`#`없는 토픽` as `없는 것`\n",
+    );
+
+    let diagnostics = rev_검사(&root);
+
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    정리(&root);
+}
+
+/// import 가 하나도 없는 문서는 핀 진단이 없다.
+#[test]
+fn import_이_없으면_핀_진단이_없다() {
+    let root = 임시_루트("rev-no-imports");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: A\n---\n\n## 결제의 방법\n\n카드로 낸다.\n",
+    );
+
+    let diagnostics = rev_검사(&root);
+
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    정리(&root);
+}
+
+/// `bless` 가 받는 주소는 **대상의 정본 이름**이지 alias 가 아니다.
+/// alias 를 넘기면 bless 가 그 import 줄을 찾지 못한다.
+#[test]
+fn alias_가_있어도_주소는_대상_이름이다() {
+    let root = 임시_루트("rev-alias-address");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: A\n---\n\n## 결제의 방법\n\n카드로 낸다.\n",
+    );
+    쓰기(
+        &root,
+        "docs/b.kang",
+        "---\ndescription: B\n---\n\nimport `docs`/`a`#`결제의 방법` as `아주 다른 이름`\n",
+    );
+
+    let diagnostics = rev_검사(&root);
+
+    let action = &diagnostics[0].fixes[0].action;
+    assert!(action.contains("'docs/a#결제의 방법'"), "{action}");
+    assert!(!action.contains("아주 다른 이름"), "{action}");
+    정리(&root);
+}
+
+/// 한 문서가 같은 대상을 여러 번 import 하면 **줄마다** 진단이다.
+/// 핀은 줄마다 따로 붙으므로 원인도 줄마다 다르다.
+#[test]
+fn 같은_대상을_여러_번_import_하면_줄마다_진단이다() {
+    let root = 임시_루트("rev-duplicate-import");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: A\n---\n\n## 결제의 방법\n\n카드로 낸다.\n",
+    );
+    쓰기(
+        &root,
+        "docs/b.kang",
+        "---\ndescription: B\n---\n\nimport `docs`/`a`#`결제의 방법` as `갑`\nimport `docs`/`a`#`결제의 방법` as `을` rev \"000000\"\n",
+    );
+
+    let diagnostics = rev_검사(&root);
+
+    // 한 줄은 핀이 없고 다른 줄은 핀이 틀렸다 — 서로 다른 사실이므로 코드도 갈린다.
+    assert_eq!(
+        코드들(&diagnostics),
+        vec!["K020", "K021"],
+        "{diagnostics:?}"
+    );
+    assert_eq!(위치들(&diagnostics[0]), vec![("docs/b".to_string(), 5)]);
+    assert_eq!(위치들(&diagnostics[1]), vec![("docs/b".to_string(), 6)]);
+    // 같은 대상을 두 번 import 한 것 자체는 `K004` 가 따로 잡는다 — `check_revs` 의
+    // rustdoc 이 그렇게 말하므로 여기서 확인한다. 핀 검사가 그 사실을 또 말하면 안 된다.
+    assert!(
+        코드들(&심볼_검사(&root)).contains(&"K004"),
+        "{:?}",
+        심볼_검사(&root)
+    );
+    정리(&root);
+}
+
+/// 한 topic 이 예외를 여러 개 선언하면 전부 같은 해시를 갖는다 (스펙 4.8).
+#[test]
+fn 한_topic_의_예외들은_같은_핀을_공유한다() {
+    let root = 임시_루트("rev-sibling-exceptions");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: A\n---\n\n## 결제의 방법\n\n카드로 낸다.\n\nexception `무료 상품`\nexception `해외 결제`\n",
+    );
+    let 첫째 = 현재_핀(
+        &root,
+        &참조(&["docs", "a"], SymbolKind::Exception, "무료 상품"),
+    );
+    let 둘째 = 현재_핀(
+        &root,
+        &참조(&["docs", "a"], SymbolKind::Exception, "해외 결제"),
+    );
+    assert_eq!(첫째, 둘째);
+
+    // 한쪽 핀을 다른 쪽 import 에 그대로 써도 통과한다 — 같은 해시이기 때문이다.
+    쓰기(
+        &root,
+        "docs/b.kang",
+        &format!(
+            "---\ndescription: B\n---\n\nimport `docs`/`a`!`무료 상품` as `갑` rev \"{첫째}\"\nimport `docs`/`a`!`해외 결제` as `을` rev \"{첫째}\"\n"
+        ),
+    );
+
+    let diagnostics = rev_검사(&root);
+
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    정리(&root);
+}
+
+/// 파서는 핀 값의 모양을 강제하지 않는다. 6자리 hex 가 아닌 핀도 현재 해시와
+/// 다르다는 사실은 그대로이므로 `K021` 로 잡힌다.
+#[test]
+fn 여섯_자리가_아닌_핀도_불일치로_잡는다() {
+    let root = 임시_루트("rev-malformed-pin");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: A\n---\n\n## 결제의 방법\n\n카드로 낸다.\n",
+    );
+    쓰기(
+        &root,
+        "docs/b.kang",
+        "---\ndescription: B\n---\n\nimport `docs`/`a`#`결제의 방법` as `갑` rev \"zz\"\n",
+    );
+
+    let diagnostics = rev_검사(&root);
+
+    assert_eq!(코드들(&diagnostics), vec!["K021"], "{diagnostics:?}");
+    // 파일에 적힌 값을 그대로 보여 준다.
+    assert!(
+        diagnostics[0].locations[0].note.contains("zz"),
+        "{:?}",
+        diagnostics[0].locations[0].note
+    );
+    정리(&root);
+}
+
+/// 스펙 V0001:417 — fix 를 그대로 적용하면 새 진단이 나지 않아야 한다.
+/// `K020` 세 개의 처방(`bless`)을 그대로 적용한 결과를 네 검사 전부로 확인한다.
+#[test]
+fn 핀을_박으면_새_진단이_나지_않는다() {
+    let root = 임시_루트("rev-fix-is-terminal");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: A\n---\n\nkeyword `결제`: 대금을 지불하는 행위\n\n## 결제의 방법\n\n`결제` 는 카드로 한다.\n\nexception `무료 상품`\n",
+    );
+    쓰기(
+        &root,
+        "docs/b.kang",
+        "---\ndescription: B\n---\n\nimport `docs`/`a`.`결제`\nimport `docs`/`a`#`결제의 방법` as `A 결제 방법`\nimport `docs`/`a`!`무료 상품` as `무료 상품 예외`\n\n## 무료 상품 처리\n\n`결제` 와 `A 결제 방법` 을 따르되 0원이다.\n\ncover `무료 상품 예외`\n",
+    );
+
+    assert_eq!(코드들(&rev_검사(&root)), vec!["K020", "K020", "K020"]);
+
+    // `kang bless` 가 하는 일 — 핀이 없으면 삽입한다 (스펙 4.8).
+    let keyword_핀 = 현재_핀(&root, &참조(&["docs", "a"], SymbolKind::Keyword, "결제"));
+    let topic_핀 = 현재_핀(
+        &root,
+        &참조(&["docs", "a"], SymbolKind::Topic, "결제의 방법"),
+    );
+    let 예외_핀 = 현재_핀(
+        &root,
+        &참조(&["docs", "a"], SymbolKind::Exception, "무료 상품"),
+    );
+    쓰기(
+        &root,
+        "docs/b.kang",
+        &format!(
+            "---\ndescription: B\n---\n\nimport `docs`/`a`.`결제` rev \"{keyword_핀}\"\nimport `docs`/`a`#`결제의 방법` as `A 결제 방법` rev \"{topic_핀}\"\nimport `docs`/`a`!`무료 상품` as `무료 상품 예외` rev \"{예외_핀}\"\n\n## 무료 상품 처리\n\n`결제` 와 `A 결제 방법` 을 따르되 0원이다.\n\ncover `무료 상품 예외`\n"
+        ),
+    );
+
+    // 네 검사 전부가 조용해야 한다. 하나라도 울리면 처방이 새 진단을 낳은 것이다.
+    let (project, 로드_진단) = resolve::load(&root);
+    assert!(로드_진단.is_empty(), "{로드_진단:?}");
+    let (table, 테이블_진단) = resolve::SymbolTable::build(&project);
+    assert!(테이블_진단.is_empty(), "{테이블_진단:?}");
+    assert!(
+        check::check_symbols(&project, &table).is_empty(),
+        "{:?}",
+        check::check_symbols(&project, &table)
+    );
+    assert!(
+        check::check_exceptions(&project, &table).is_empty(),
+        "{:?}",
+        check::check_exceptions(&project, &table)
+    );
+    assert!(check::check_cycles(&project).is_empty());
+    assert!(
+        check::check_revs(&project, &table).is_empty(),
+        "{:?}",
+        check::check_revs(&project, &table)
+    );
+    정리(&root);
+}
+
+/// 스펙 4.8 의 정본 3단계 레시피 — `K030` 의 처방이 핀 없는 import 줄을 만들고,
+/// 그 줄을 `K020` 이 이어받아 `bless` 로 보낸다. 두 진단의 fix 가 서로 이어져야 한다.
+#[test]
+fn k030_의_수정_뒤에_k020_이_이어받는다() {
+    let root = 임시_루트("rev-k030-handoff");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: A\n---\n\n## 결제의 방법\n\n카드로 낸다.\n\nexception `무료 상품`\n",
+    );
+    쓰기(
+        &root,
+        "docs/b.kang",
+        "---\ndescription: B\n---\n\n## 무료 상품 처리\n\n0원으로 남긴다.\n",
+    );
+
+    // 1단계: 커버가 없어 `K030` 이 난다. 그 처방은 import 줄과 cover 줄을 넣으라고 한다.
+    let 예외_진단 = 예외_검사(&root);
+    assert_eq!(코드들(&예외_진단), vec!["K030"]);
+    assert!(
+        예외_진단[0].fixes[0]
+            .action
+            .contains("import `docs`/`a`!`무료 상품`"),
+        "{:?}",
+        예외_진단[0].fixes[0].action
+    );
+
+    // 2단계: 처방대로 고친다 — 핀 없이 쓴다 (스펙 4.8).
+    쓰기(
+        &root,
+        "docs/b.kang",
+        "---\ndescription: B\n---\n\nimport `docs`/`a`!`무료 상품`\n\n## 무료 상품 처리\n\n0원으로 남긴다.\n\ncover `무료 상품`\n",
+    );
+    assert!(예외_검사(&root).is_empty(), "{:?}", 예외_검사(&root));
+
+    let 핀_진단 = rev_검사(&root);
+    assert_eq!(코드들(&핀_진단), vec!["K020"], "{핀_진단:?}");
+    assert!(
+        핀_진단[0].fixes[0]
+            .action
+            .contains("kang bless 'docs/b' --import 'docs/a!무료 상품'"),
+        "{:?}",
+        핀_진단[0].fixes[0].action
+    );
+
+    // 3단계: bless 가 핀을 삽입한다. 그러면 아무 진단도 남지 않는다.
+    let 핀 = 현재_핀(
+        &root,
+        &참조(&["docs", "a"], SymbolKind::Exception, "무료 상품"),
+    );
+    쓰기(
+        &root,
+        "docs/b.kang",
+        &format!(
+            "---\ndescription: B\n---\n\nimport `docs`/`a`!`무료 상품` rev \"{핀}\"\n\n## 무료 상품 처리\n\n0원으로 남긴다.\n\ncover `무료 상품`\n"
+        ),
+    );
+    assert!(rev_검사(&root).is_empty(), "{:?}", rev_검사(&root));
+    assert!(심볼_검사(&root).is_empty(), "{:?}", 심볼_검사(&root));
+    assert!(예외_검사(&root).is_empty(), "{:?}", 예외_검사(&root));
+    정리(&root);
+}
