@@ -15,6 +15,7 @@
 use kang::ast::{Diagnostic, DocPath, Severity, SymbolKind, SymbolRef};
 use kang::check;
 use kang::resolve::{self, Project, SymbolTable};
+use kang::show::{self, ShowTarget};
 use std::io::Write;
 
 /// `--help` 와 사용법 오류가 함께 쓰는 도움말.
@@ -28,12 +29,12 @@ const 사용법: &str = "kang — 문서 컴파일러
   kang list [경로]                     문서 목록과 description
   kang keywords [경로]                 키워드 목록
   kang refs <키워드>                   키워드를 참조하는 topic
+  kang show <문서|토픽>                문서/토픽 조회 (YAML)
   kang --help                          이 도움말
 
 아직 구현되지 않은 명령 (부르면 종료 코드 3 이며, 다른 방법이 없습니다):
   kang init                            에이전트 진입점과 첫 문서 생성
   kang bless <문서> --import <심볼>    rev 핀 갱신·삽입
-  kang show <문서|토픽>                문서/토픽 조회 (YAML)
   kang inspect                         코드 대조 (v2)
 
 인자 문법:
@@ -48,7 +49,7 @@ const 사용법: &str = "kang — 문서 컴파일러
   0  성공
   1  컴파일 error 존재
   2  사용법 오류, 또는 환경 오류 (git 저장소가 아님)
-  3  아직 구현되지 않은 기능 (위 목록의 네 명령)";
+  3  아직 구현되지 않은 기능 (위 목록의 세 명령)";
 
 /// 인자를 서브커맨드로 갈라 실행하고 그 종료 코드로 프로세스를 끝낸다.
 fn main() {
@@ -83,13 +84,13 @@ fn main() {
         ["keywords"] => 키워드들(None),
         ["keywords", 스코프] => 키워드들(Some(스코프)),
         ["refs", 키워드] => 참조들(키워드),
-        // 아래 셋은 Task 10·11·14 가 본체를 채운다. 지금 사용법 오류로 흘려보내면
+        ["show", 대상] => 조회(대상),
+        // 아래 둘은 Task 11·14 가 본체를 채운다. 지금 사용법 오류로 흘려보내면
         // 에이전트가 있는 명령을 없다고 배운다.
         ["init"] => 미구현("kang init", "이 빌드에는 아직 없습니다."),
         ["bless", _문서, "--import", _심볼] => {
             미구현("kang bless", "이 빌드에는 아직 없습니다.")
         }
-        ["show", _대상] => 미구현("kang show", "이 빌드에는 아직 없습니다."),
         // v1 에 없는 것과 **v1 이 만들지 않기로 한 것**은 다르다. 앞의 셋은 다음 빌드를
         // 기다리면 되지만 이것은 기다려도 오지 않는다 (스펙 6절).
         ["inspect"] => 미구현("kang inspect", "v2 기능이며 아직 구현되지 않았습니다."),
@@ -428,6 +429,62 @@ fn 참조들(주소: &str) -> i32 {
         }
     }
 
+    0
+}
+
+/// 문서나 topic 을 관계 정보까지 펼친 YAML 로 찍는다 (스펙 6.4).
+///
+/// **`show` 가 `cat` 보다 쓸모 있어야 kang 의 원칙이 성립한다.** 원본 `.kang` 은 import
+/// 간접 참조 때문에 마크다운보다 읽기 나쁘므로, 여기서 평탄화된 완결 뷰를 주지 못하면
+/// 도구를 도입하고 오히려 나빠진다 (스펙 6.1).
+///
+/// # 매개변수
+/// - `주소`: `docs/A` 또는 `docs/A#결제의 방법` 꼴의 주소. 백틱을 쓰지 않는다 (스펙 6.0)
+///
+/// # 반환값
+/// 프로세스 종료 코드
+fn 조회(주소: &str) -> i32 {
+    let (project, table) = match compile() {
+        Ok(결과) => 결과,
+        Err(진단들) => return 종료_코드(&진단들),
+    };
+
+    // 문서 경로와 topic 은 `#` 로 갈린다 (스펙 6.0). 키워드의 `.` 과 달리 `#` 는 문서
+    // 이름에 흔치 않으므로, `kang refs` 가 문서 이름의 `.` 에서 만나는 갈림([`참조들`] 의
+    // 주석)이 여기서는 `docs/a.b` 를 그대로 받는다.
+    //
+    // ponytail: 그래도 같은 천장이 남는다 — 문서 이름에 `#` 이 있으면 첫 `#` 분할이
+    // 틀린다. 스펙 6.0 이 문서 이름에 구분자를 허용할지 정하면 세 명령을 함께 올린다.
+    let (문서, 토픽) = match 주소.split_once('#') {
+        Some((문서, 토픽)) => (문서, Some(토픽)),
+        None => (주소, None),
+    };
+
+    let path = DocPath(경로_조각(Some(문서)));
+    // 없는 주소를 빈 출력으로 돌려주면 "그런 문서가 없다" 와 "내용이 없다" 를 구분할 수 없다.
+    let Some(document) = project.docs.get(&path) else {
+        eprintln!("그런 문서가 없습니다: {주소}");
+        eprintln!("kang list 로 문서 경로를 확인하세요.");
+        return 2;
+    };
+
+    let target = match 토픽 {
+        Some(이름) => {
+            if !document.topics.iter().any(|topic| topic.name == 이름) {
+                eprintln!("그 문서에 그런 topic 이 없습니다: {주소}");
+                eprintln!("문서 전체를 조회하면 topic 목록이 함께 나옵니다.");
+                return 2;
+            }
+            ShowTarget::Topic(path, 이름.to_string())
+        }
+        None => ShowTarget::Document(path),
+    };
+
+    // 한 번에 쓴다. 뷰는 하나의 YAML 문서이므로 중간에 끊기면 파싱되지 않는다.
+    let mut out = std::io::stdout().lock();
+    if let Some(코드) = 찍기(&mut out, &show::show(&project, &table, &target)) {
+        return 코드;
+    }
     0
 }
 

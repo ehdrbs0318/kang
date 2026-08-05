@@ -6,6 +6,7 @@
 //
 // **라이브러리를 부르지 않고 바이너리를 부른다.** 진단 함수가 `compile()` 에 연결되지
 // 않았을 때 그것을 잡는 것이 이 파일의 목적이므로, 단위 호출로 대신하면 의미가 없다.
+use kang::ast::{DocPath, SymbolKind, SymbolRef};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -108,6 +109,33 @@ fn 에러_문서(root: &Path) {
         "docs/a.kang",
         "---\ndescription: 결제 정책\n---\n\n## 정책\n\n여기서 `없는 심볼` 을 쓴다.\n",
     );
+}
+
+/// 픽스처의 rev 핀을 컴파일러와 같은 방법으로 계산한다.
+///
+/// **테스트 대상이 아니라 픽스처 준비다.** import 는 핀이 필수이므로(스펙 4.7) 여러
+/// 문서를 엮는 픽스처는 올바른 핀 없이는 컴파일되지 않는데, `kang bless` 는 아직 없다.
+/// 값을 하드코딩하면 정규화 규칙이 바뀔 때 `show` 와 무관한 이유로 테스트가 죽는다.
+///
+/// # 매개변수
+/// - `root`: 프로젝트 루트
+/// - `조각들`: 대상 문서의 경로 조각들
+/// - `kind`: 대상 심볼의 종류
+/// - `이름`: 대상 심볼의 전체 이름
+///
+/// # 반환값
+/// 그 심볼의 현재 rev 핀 값
+fn 핀(root: &Path, 조각들: &[&str], kind: SymbolKind, 이름: &str) -> String {
+    let (project, _) = kang::resolve::load(root);
+    let (table, _) = kang::resolve::SymbolTable::build(&project);
+    let id = table
+        .resolve(&SymbolRef {
+            doc: DocPath(조각들.iter().map(|조각| (*조각).to_string()).collect()),
+            kind,
+            name: vec![이름.to_string()],
+        })
+        .expect("픽스처의 대상 심볼이 있어야 한다");
+    kang::hash::rev(table.hash_source(id))
 }
 
 // ---------------------------------------------------------------------------
@@ -689,12 +717,17 @@ fn help_이_명령과_인자_형식과_종료코드를_전부_보여준다() {
         .split_once("아직 구현되지 않은 명령")
         .expect("미구현 명령을 따로 알려야 한다")
         .1;
-    for 명령 in ["kang init", "kang bless", "kang show", "kang inspect"] {
+    for 명령 in ["kang init", "kang bless", "kang inspect"] {
         assert!(
             미구현_절.contains(명령),
             "{명령} 이 미구현으로 표시되지 않았다: {stdout}"
         );
     }
+    // 구현된 명령이 미구현 목록에 남아 있으면 에이전트가 쓸 수 있는 명령을 쓰지 않는다.
+    assert!(
+        !미구현_절.contains("kang show <"),
+        "kang show 가 아직 미구현으로 표시되어 있다: {stdout}"
+    );
     정리(&root);
 }
 
@@ -787,6 +820,430 @@ fn git_저장소가_아니면_help_대신_git_init_지시만_출력한다() {
     assert!(
         !stderr.contains("종료 코드"),
         "사용법을 내면 에이전트가 철자를 의심한다: {stderr}"
+    );
+    정리(&root);
+}
+
+// ---------------------------------------------------------------------------
+// show — 평탄화된 완결 뷰 (스펙 6.4)
+// ---------------------------------------------------------------------------
+
+/// 스펙 6.4: 문서 뷰는 정의 키워드와 그 키워드를 참조하는 topic 을 담는다.
+/// 자기 문서가 정의한 키워드는 최상위에서 펼치므로, 그것을 가리키는 본문 참조는
+/// 경로 하나로 줄어든다.
+#[test]
+fn show_가_정의_키워드와_참조_topic_을_출력한다() {
+    let root = 임시_루트("show-doc");
+    git_저장소로(&root);
+    정상_문서(&root);
+
+    let (stdout, stderr, 코드) = 실행(&root, &["show", "docs/a"]);
+
+    assert_eq!(코드, 0, "{stderr}");
+    assert_eq!(
+        stdout,
+        r#"path: docs/a
+keywords:
+  - name: 결제
+    path: docs/a
+    description: 대금을 지불하는 행위
+    referencedBy:
+      - docs/a#결제의 방법
+topics:
+  - name: 결제의 방법
+    uncoded: false
+    topic: |2-
+      ## 결제의 방법
+
+      사용자는 `결제` 를 한다.
+    references:
+      keywords:
+        - docs/a.결제
+"#
+    );
+    정리(&root);
+}
+
+/// 스펙 6.4: 정의한 예외에는 그것을 커버하는 topic 의 본문이, 커버하는 예외에는
+/// 그 예외가 선언된 topic 의 본문이 임베드된다. 두 방향 모두 원본을 열지 않고 읽힌다.
+#[test]
+fn show_가_예외와_커버_본문을_임베드한다() {
+    let root = 임시_루트("show-exception");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: A\n---\n\n## 청구서 정책\n\n모든 청구서는 결제에서 나온다.\n\nexception `무료 상품 청구서`\n",
+    );
+    let 예외_핀 = 핀(
+        &root,
+        &["docs", "a"],
+        SymbolKind::Exception,
+        "무료 상품 청구서",
+    );
+    쓰기(
+        &root,
+        "docs/c.kang",
+        &format!(
+            "---\ndescription: C\n---\n\nimport `docs`/`a`!`무료 상품 청구서` as `무료 청구서` rev \"{예외_핀}\"\n\n## 무료결제의 구성요소\n\n무료상품은 청구서 없이 기록만 남긴다.\n\ncover `무료 청구서`\n"
+        ),
+    );
+
+    // 정의한 쪽 — 예외에 커버 topic 의 주소와 본문이 붙는다.
+    let (stdout, stderr, 코드) = 실행(&root, &["show", "docs/a"]);
+    assert_eq!(코드, 0, "{stderr}");
+    assert_eq!(
+        stdout,
+        r#"path: docs/a
+exceptions:
+  - name: 무료 상품 청구서
+    pending: false
+    coveredBy: docs/c#무료결제의 구성요소
+    topic: |2
+      ## 무료결제의 구성요소
+
+      무료상품은 청구서 없이 기록만 남긴다.
+topics:
+  - name: 청구서 정책
+    uncoded: false
+    topic: |2
+      ## 청구서 정책
+
+      모든 청구서는 결제에서 나온다.
+"#
+    );
+
+    // 커버하는 쪽 — 예외가 선언된 topic 의 본문이 맥락으로 붙는다 (스펙 4.8).
+    let (stdout, stderr, 코드) = 실행(&root, &["show", "docs/c"]);
+    assert_eq!(코드, 0, "{stderr}");
+    assert_eq!(
+        stdout,
+        r#"path: docs/c
+covers:
+  - name: 무료 상품 청구서
+    path: docs/a
+    topic: |2
+      ## 청구서 정책
+
+      모든 청구서는 결제에서 나온다.
+topics:
+  - name: 무료결제의 구성요소
+    uncoded: false
+    topic: |2
+      ## 무료결제의 구성요소
+
+      무료상품은 청구서 없이 기록만 남긴다.
+"#
+    );
+    정리(&root);
+}
+
+/// 스펙 6.4: 참조한 topic 은 재귀적으로 임베드된다. 사슬이 길어도 링크를 따라갈
+/// 필요가 없어야 `show` 가 `cat` 보다 쓸모 있다.
+#[test]
+fn show_가_참조_topic_을_재귀적으로_임베드한다() {
+    let root = 임시_루트("show-recursive");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/base.kang",
+        "---\ndescription: 기초\n---\n\n## 기초 정책\n\n모든 정책의 바탕이다.\n",
+    );
+    let 기초_핀 = 핀(&root, &["docs", "base"], SymbolKind::Topic, "기초 정책");
+    쓰기(
+        &root,
+        "docs/mid.kang",
+        &format!(
+            "---\ndescription: 중간\n---\n\nimport `docs`/`base`#`기초 정책` as `기초` rev \"{기초_핀}\"\n\n## 중간 정책\n\n`기초` 를 따른다.\n"
+        ),
+    );
+    let 중간_핀 = 핀(&root, &["docs", "mid"], SymbolKind::Topic, "중간 정책");
+    쓰기(
+        &root,
+        "docs/top.kang",
+        &format!(
+            "---\ndescription: 꼭대기\n---\n\nimport `docs`/`mid`#`중간 정책` as `중간` rev \"{중간_핀}\"\n\n## 꼭대기 정책\n\n`중간` 을 따른다.\n"
+        ),
+    );
+
+    let (stdout, stderr, 코드) = 실행(&root, &["show", "docs/top"]);
+
+    assert_eq!(코드, 0, "{stderr}");
+    assert_eq!(
+        stdout,
+        r#"path: docs/top
+topics:
+  - name: 꼭대기 정책
+    uncoded: false
+    topic: |2-
+      ## 꼭대기 정책
+
+      `중간` 을 따른다.
+    references:
+      topics:
+        - name: docs/mid#중간 정책
+          uncoded: false
+          topic: |2-
+            ## 중간 정책
+
+            `기초` 를 따른다.
+          references:
+            topics:
+              - name: docs/base#기초 정책
+                uncoded: false
+                topic: |2-
+                  ## 기초 정책
+
+                  모든 정책의 바탕이다.
+"#
+    );
+    정리(&root);
+}
+
+/// 스펙 6.4: 같은 topic 이 여러 경로로 도달되면 최초 1회만 전개하고 이후에는
+/// 경로 참조로 대체한다. 다이아몬드에서 본문이 두 번 나오면 출력이 지수로 커진다.
+#[test]
+fn 다이아몬드_의존에서_같은_topic_이_한_번만_전개된다() {
+    let root = 임시_루트("show-diamond");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/base.kang",
+        "---\ndescription: 기초\n---\n\n## 기초 정책\n\n모든 정책의 바탕이다.\n",
+    );
+    let 기초_핀 = 핀(&root, &["docs", "base"], SymbolKind::Topic, "기초 정책");
+    for (파일, 이름, 서술) in [
+        ("docs/left.kang", "왼쪽 정책", "왼쪽에서"),
+        ("docs/right.kang", "오른쪽 정책", "오른쪽에서"),
+    ] {
+        쓰기(
+            &root,
+            파일,
+            &format!(
+                "---\ndescription: {이름}\n---\n\nimport `docs`/`base`#`기초 정책` as `기초` rev \"{기초_핀}\"\n\n## {이름}\n\n`기초` 를 {서술} 따른다.\n"
+            ),
+        );
+    }
+    let 왼쪽_핀 = 핀(&root, &["docs", "left"], SymbolKind::Topic, "왼쪽 정책");
+    let 오른쪽_핀 = 핀(&root, &["docs", "right"], SymbolKind::Topic, "오른쪽 정책");
+    쓰기(
+        &root,
+        "docs/top.kang",
+        &format!(
+            "---\ndescription: 꼭대기\n---\n\nimport `docs`/`left`#`왼쪽 정책` as `왼쪽` rev \"{왼쪽_핀}\"\nimport `docs`/`right`#`오른쪽 정책` as `오른쪽` rev \"{오른쪽_핀}\"\n\n## 꼭대기 정책\n\n`왼쪽` 과 `오른쪽` 을 합친다.\n"
+        ),
+    );
+
+    let (stdout, stderr, 코드) = 실행(&root, &["show", "docs/top"]);
+
+    assert_eq!(코드, 0, "{stderr}");
+    // 두 갈래 모두 기초 정책에 닿지만 본문은 한 번만 나온다.
+    assert_eq!(
+        stdout.matches("## 기초 정책").count(),
+        1,
+        "본문이 두 번 전개되었다: {stdout}"
+    );
+    assert_eq!(
+        stdout.matches("모든 정책의 바탕이다.").count(),
+        1,
+        "본문이 두 번 전개되었다: {stdout}"
+    );
+    // 두 번째 도달은 경로 문자열 하나로 대체된다.
+    assert_eq!(
+        stdout.matches("- docs/base#기초 정책\n").count(),
+        1,
+        "경로 참조가 없다: {stdout}"
+    );
+    // 왼쪽·오른쪽은 각각 한 번씩 전개된다 — 중복 제거가 과하게 걸리면 안 된다.
+    assert_eq!(stdout.matches("## 왼쪽 정책").count(), 1, "{stdout}");
+    assert_eq!(stdout.matches("## 오른쪽 정책").count(), 1, "{stdout}");
+    정리(&root);
+}
+
+/// topic 뷰는 그 topic 하나로 좁힌 뷰다. 문서 뷰와 달리 자기 문서의 키워드를
+/// 최상위에 펼치지 않으므로, 참조한 키워드가 참조 자리에서 전개된다.
+#[test]
+fn show_가_topic_하나로_좁힌_뷰를_출력한다() {
+    let root = 임시_루트("show-topic");
+    git_저장소로(&root);
+    정상_문서(&root);
+
+    let (stdout, stderr, 코드) = 실행(&root, &["show", "docs/a#결제의 방법"]);
+
+    assert_eq!(코드, 0, "{stderr}");
+    assert_eq!(
+        stdout,
+        r#"path: docs/a#결제의 방법
+topics:
+  - name: 결제의 방법
+    uncoded: false
+    topic: |2-
+      ## 결제의 방법
+
+      사용자는 `결제` 를 한다.
+    references:
+      keywords:
+        - name: 결제
+          path: docs/a
+          description: 대금을 지불하는 행위
+          referencedBy:
+            - docs/a#결제의 방법
+"#
+    );
+    정리(&root);
+}
+
+/// keyword 의 `#` 상세 topic 은 파싱만 하고 버리지 않는다. 그 topic 의 전체 경로를
+/// `detail` 로 담아야 조회한 쪽이 이어서 읽을 수 있다.
+#[test]
+fn show_가_키워드의_상세_topic_경로를_담는다() {
+    let root = 임시_루트("show-detail");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: A\n---\n\nkeyword `결제`: 대금을 지불하는 행위 #`결제의 상세`\n\n## 결제의 상세\n\n자세한 설명이다.\n",
+    );
+
+    let (stdout, stderr, 코드) = 실행(&root, &["show", "docs/a"]);
+
+    assert_eq!(코드, 0, "{stderr}");
+    assert!(
+        stdout.contains("    detail: docs/a#결제의 상세\n"),
+        "상세 topic 경로가 없다: {stdout}"
+    );
+    정리(&root);
+}
+
+/// error 가 있으면 아무것도 출력하지 않는다 (스펙 5·6절). 통과하지 못한 문서는
+/// 어떤 CLI 명령으로도 출력되지 않는다.
+#[test]
+fn show_는_에러가_있으면_아무것도_출력하지_않는다() {
+    let root = 임시_루트("show-err");
+    git_저장소로(&root);
+    에러_문서(&root);
+
+    let (stdout, stderr, 코드) = 실행(&root, &["show", "docs/a"]);
+
+    assert_eq!(코드, 1, "stderr: {stderr}");
+    assert_eq!(stdout, "", "error 상태에서 표준 출력은 비어 있어야 한다");
+    assert!(stderr.contains("K001"), "{stderr}");
+    정리(&root);
+}
+
+/// 없는 주소를 빈 출력으로 돌려주면 "그런 문서가 없다" 와 "내용이 없다" 를 구분할 수 없다.
+#[test]
+fn show_는_없는_문서와_topic_을_거절한다() {
+    let root = 임시_루트("show-missing");
+    git_저장소로(&root);
+    정상_문서(&root);
+
+    let (stdout, stderr, 코드) = 실행(&root, &["show", "docs/zzz"]);
+    assert_eq!(코드, 2, "{stderr}");
+    assert_eq!(stdout, "");
+    assert!(stderr.contains("docs/zzz"), "{stderr}");
+
+    let (stdout, stderr, 코드) = 실행(&root, &["show", "docs/a#없는 토픽"]);
+    assert_eq!(코드, 2, "{stderr}");
+    assert_eq!(stdout, "");
+    assert!(stderr.contains("없는 토픽"), "{stderr}");
+    정리(&root);
+}
+
+/// 자기 자신을 참조하는 topic 이 무한 재귀가 되면 안 된다. 방문 집합이 유일한
+/// 방어선이다 — 같은 파일 안의 참조는 import 간선을 만들지 않아 순환 검사가 보지 않는다.
+#[test]
+fn show_는_자기_자신을_참조하는_topic_에서_멈춘다() {
+    let root = 임시_루트("show-self");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: A\n---\n\n## 되돌이 정책\n\n이 정책은 `되돌이 정책` 자신을 가리킨다.\n",
+    );
+
+    let (stdout, stderr, 코드) = 실행(&root, &["show", "docs/a#되돌이 정책"]);
+
+    assert_eq!(코드, 0, "{stderr}");
+    // 자기 자신은 이미 전개되었으므로 경로 하나로 대체된다.
+    assert_eq!(stdout.matches("## 되돌이 정책").count(), 1, "{stdout}");
+    assert!(stdout.contains("- docs/a#되돌이 정책\n"), "{stdout}");
+    정리(&root);
+}
+
+/// `kang show ... | head` 는 에이전트의 관용구다. 읽는 쪽이 먼저 끝나도 패닉하면 안 된다.
+#[test]
+fn show_는_읽는_쪽이_파이프를_닫아도_패닉하지_않는다() {
+    let root = 임시_루트("show-broken-pipe");
+    git_저장소로(&root);
+    // 한 글자가 3바이트이므로 본문 하나가 90KB 다. 파이프 버퍼(64KB)를 넘긴다.
+    let 긴_본문 = "가".repeat(30_000);
+    쓰기(
+        &root,
+        "docs/a.kang",
+        &format!("---\ndescription: A\n---\n\n## 긴 정책\n\n{긴_본문}\n"),
+    );
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_kang"))
+        .args(["show", "docs/a"])
+        .current_dir(&root)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("kang 바이너리를 실행할 수 있어야 한다");
+    drop(child.stdout.take());
+    let 결과 = child
+        .wait_with_output()
+        .expect("자식을 기다릴 수 있어야 한다");
+    let stderr = String::from_utf8_lossy(&결과.stderr);
+
+    assert_eq!(결과.status.code(), Some(0), "stderr: {stderr}");
+    assert!(!stderr.contains("panicked"), "{stderr}");
+    정리(&root);
+}
+
+/// 계층 keyword 참조는 **한 이름**으로 묶여야 한다 (스펙 4.3).
+///
+/// 파서는 `` `결제수단`.`카드` `` 를 두 조각으로 넣으므로, 조각을 그대로 조회하면
+/// 참조가 상위 키워드에 붙고 하위 키워드는 아무도 참조하지 않는 것이 된다.
+/// 진단을 내는 층과 **같은 분할 함수**를 쓰는지가 여기서 갈린다 — 빌드가 통과하는
+/// 문서에서 조회만 조용히 틀리므로 신호가 없다.
+#[test]
+fn show_가_계층_키워드_참조를_한_이름으로_묶는다() {
+    let root = 임시_루트("show-hierarchy");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: A\n---\n\nkeyword `결제수단`: 대금을 내는 방법\nkeyword `결제수단`.`카드`: 카드를 사용한 결제\n\n## 카드 결제\n\n`결제수단`.`카드` 로 낸다.\n",
+    );
+
+    let (stdout, stderr, 코드) = 실행(&root, &["show", "docs/a"]);
+
+    assert_eq!(코드, 0, "{stderr}");
+    assert_eq!(
+        stdout,
+        r#"path: docs/a
+keywords:
+  - name: 결제수단
+    path: docs/a
+    description: 대금을 내는 방법
+  - name: 결제수단.카드
+    path: docs/a
+    description: 카드를 사용한 결제
+    referencedBy:
+      - docs/a#카드 결제
+topics:
+  - name: 카드 결제
+    uncoded: false
+    topic: |2-
+      ## 카드 결제
+
+      `결제수단`.`카드` 로 낸다.
+    references:
+      keywords:
+        - docs/a.결제수단.카드
+"#
     );
     정리(&root);
 }

@@ -6,3 +6,5 @@ pub mod check;
 pub mod hash;
 pub mod parse;
 pub mod resolve;
+pub mod show;
+pub mod yaml;
