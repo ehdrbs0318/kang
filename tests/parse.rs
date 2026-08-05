@@ -1009,7 +1009,7 @@ description: 결제 정책 문서
 
 /// 문서의 식별자는 파일 경로 하나뿐이다 (스펙 3절). `#` 제목 줄은 topic 밖 내용이다.
 #[test]
-fn 문서_제목_줄은_에러다() {
+fn 문서_제목이_topic_밖에_있으면_에러다() {
     let source = r#"---
 description: 결제 정책 문서
 ---
@@ -1090,7 +1090,7 @@ keyword `금액`: 청구되는 원화 액수 // iknow `docs`/`B`.`금액`
 
 /// 빈 줄과 공백만 있는 줄은 topic 밖에서도 내용이 아니다.
 #[test]
-fn 공백_줄은_topic_밖에서도_통과한다() {
+fn 빈_줄과_공백만_있는_줄은_통과한다() {
     let source = "---\ndescription: 결제 정책 문서\n---\n\n   \n\t\n\nkeyword `결제`: 대금을 지불하는 행위\n\n## 결제의 방법\n";
 
     let doc = parse::parse_document(문서경로(), source).unwrap();
@@ -1101,7 +1101,7 @@ fn 공백_줄은_topic_밖에서도_통과한다() {
 
 /// topic **안**의 `###` 이하는 본문 마크다운이다. 내용 규칙이 여기까지 번지면 안 된다.
 #[test]
-fn topic_안의_삼중샾은_본문이다() {
+fn topic_안의_소제목은_통과한다() {
     let source = r#"---
 description: 결제 정책 문서
 ---
@@ -1122,7 +1122,7 @@ description: 결제 정책 문서
 
 /// 연속된 topic 밖 내용은 한 덩어리로 본다. 서문 열 줄에 진단 열 개는 소음이다.
 #[test]
-fn 연속된_topic_밖_내용은_진단_하나로_묶는다() {
+fn 연속된_topic_밖_줄은_진단_하나로_모인다() {
     let source = r#"---
 description: 결제 정책 문서
 ---
@@ -1189,7 +1189,7 @@ fn 결제() {}
 /// topic 밖의 펜스가 닫히지도 않으면 두 사실이 모두 참이다.
 /// 순서는 결정적이어야 한다 — 여는 줄의 K112 가 먼저, 파일 끝의 K106 이 뒤다.
 #[test]
-fn topic_밖의_닫히지_않은_펜스는_내용_진단이_먼저다() {
+fn topic_밖_코드펜스의_진단_우선순위가_결정적이다() {
     let source = r#"---
 description: 결제 정책 문서
 ---
