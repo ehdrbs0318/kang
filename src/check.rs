@@ -447,6 +447,8 @@ fn 선언_훑기(document: &Document) -> Vec<선언<'_>> {
 ///   상위 이름이 사라지고, 조각을 세지 않으면 그 import 가 미사용으로 오인된다.
 ///   `cover` 대상과 keyword 상세 마커도 선언부의 백틱이므로 함께 센다 — 스펙 4.6·4.7 의
 ///   정본 예시가 exception 을 import 해 `cover` 로만 쓴다
+///
+/// keyword 상세 마커는 **참조 목록에도** 들어간다. `cover` 만 빠진다 — 이유는 아래 주석에.
 fn 참조_해석(
     document: &Document,
     scope: &HashMap<String, SymbolId>,
@@ -501,21 +503,33 @@ fn 참조_해석(
     }
 
     // `cover` 대상과 keyword 상세 마커는 `refs` 에 담기지 않지만 선언부의 백틱이므로
-    // 심볼 참조다 (스펙 4.2). 미사용 판정에만 쓰고 미해결 판정에는 넣지 않는다 —
-    // `cover` 가 가리키는 exception 의 짝 맞추기는 상태 기계의 몫이라 여기서 함께 보면
-    // 같은 사실이 두 번 나오고, 상세 마커에 무엇을 쓸 수 있는지는 스펙 4.3 이 정하지
-    // 않아 미해결로 판정하면 합법일 수도 있는 문서를 거부하게 된다.
+    // 심볼 참조다 (스펙 4.2). 둘 다 사용으로 세되, 미해결 판정은 상세 마커만 받는다.
+    //
+    // `cover` 를 미해결로 보지 않는 것은 그것이 가리키는 exception 의 짝 맞추기가
+    // 상태 기계의 몫이기 때문이다. 여기서 함께 보면 같은 사실이 두 번 보고된다.
     for topic in &document.topics {
         // 한 topic 이 여러 예외를 커버할 수 있다.
         for (이름, _) in &topic.covers {
             사용.insert(이름.clone());
         }
     }
-    // 상세 topic 은 선택이므로 없는 keyword 가 많다.
+
+    // 상세 마커는 미해결 판정을 받는다. 스펙 4.3 은 상위 키워드가 "같은 파일에서
+    // 정의했거나 import 한 것" 이어야 한다고 하고 그 둘이 정확히 스코프의 내용이므로,
+    // 스코프로 검사하는 것은 합법 입력을 거부할 수 없다. 검사하지 않으면
+    // `` #`없는 상세` `` 가 아무 진단 없이 통과한다.
+    //
+    // **종류는 보지 않는다.** `#` 는 topic 시글이지만 스펙은 "상세 대상이 반드시 topic"
+    // 을 명시하지 않았다. 스펙이 정하지 않은 것을 강제하면 그것이 합법 입력 거부가 된다.
+    // 스코프 키에는 종류가 없으므로 실재만 본다.
     for keyword in &document.keywords {
-        if let Some(detail) = &keyword.detail {
-            사용.insert(detail.clone());
-        }
+        // 상세 topic 은 선택이므로 없는 keyword 가 많다.
+        let Some(detail) = &keyword.detail else {
+            continue;
+        };
+        // 상세 마커는 백틱 이름 **하나**다 (파서가 강제한다). 합칠 조각이 없다.
+        사용.insert(detail.clone());
+        참조.push((detail.clone(), keyword.line, "keyword 상세 마커"));
     }
 
     (참조, 사용)

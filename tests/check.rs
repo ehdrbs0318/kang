@@ -1947,3 +1947,53 @@ fn 빈_프로젝트에는_심볼_진단이_없다() {
     assert_eq!(check::report(&진단), "");
     정리(&root);
 }
+
+/// 스펙 4.2: "본문과 **선언부**의 모든 백틱은 심볼 참조다." keyword 의 상세 마커도
+/// 선언부의 백틱이므로 대상이 스코프에 없으면 미해결 심볼이다.
+/// 이것을 검사하지 않으면 `` #`없는 상세` `` 가 아무 진단 없이 통과한다.
+#[test]
+fn 없는_상세_대상은_에러다() {
+    let root = 임시_루트("detail-missing");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: 결제\n---\n\nkeyword `결제`: 대금을 지불하는 행위 #`없는 상세`\n",
+    );
+
+    let 진단 = 심볼_검사(&root);
+
+    assert_eq!(코드들(&진단), vec!["K001"], "{진단:?}");
+    // 가리킬 자리는 그 keyword 선언 줄이다.
+    assert_eq!(위치들(&진단[0]), vec![("docs/a".to_string(), 5)]);
+    assert!(!진단[0].locations[0].note.is_empty(), "{진단:?}");
+    assert!(진단[0].message.contains("없는 상세"), "{}", 진단[0].message);
+    정리(&root);
+}
+
+/// **합법 문서를 거부하지 않는다.** 스펙 4.3:91 은 상위 키워드가 "같은 파일에서
+/// 정의했거나 import 한 것" 이어야 한다고 하고, 그 둘이 정확히 스코프의 내용이다.
+/// 상세 마커도 같은 두 자리를 가리킬 수 있어야 한다.
+///
+/// 종류는 보지 않는다 — 스펙이 "상세 대상은 반드시 topic" 을 명시하지 않았으므로
+/// 종류를 강제하면 그것이 합법 입력 거부가 된다.
+#[test]
+fn 같은_파일_topic_과_import_한_alias_는_상세_대상이_된다() {
+    let root = 임시_루트("detail-resolves");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: 상세\n---\n\n## 결제의 상세\n\n결제를 자세히 설명한다.\n",
+    );
+    쓰기(
+        &root,
+        "docs/b.kang",
+        "---\ndescription: 결제\n---\n\nimport `docs`/`a`#`결제의 상세` as `A 결제 상세`\n\nkeyword `결제`: 대금을 지불하는 행위 #`A 결제 상세`\nkeyword `환불`: 대금을 되돌려 주는 행위 #`환불의 상세`\n\n## 환불의 상세\n\n환불을 자세히 설명한다.\n",
+    );
+
+    let 진단 = 심볼_검사(&root);
+
+    assert!(진단.is_empty(), "{진단:?}");
+    정리(&root);
+}
