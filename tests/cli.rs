@@ -2428,13 +2428,30 @@ fn 진단_3종의_구조가_스펙_5_1_1_과_일치한다() {
             .iter()
             .find(|블록| 블록.starts_with(&format!("error[{코드이름}]: ")))
             .unwrap_or_else(|| panic!("{코드이름} 블록이 없다: {stderr}"));
-        // 왜 문제인지 한 문장 — 머리글 줄이 곧 그것이다.
-        assert!(
-            블록.lines().next().is_some_and(|줄| 줄.ends_with('.')),
-            "{블록}"
-        );
-        // 관련 위치 전부 — 최소 하나, 그리고 문서:줄 꼴이다.
-        assert!(블록.contains(".kang:"), "{블록}");
+        // 왜 문제인지 **한 문장** — 머리글 줄이 곧 그것이다. 마침표만 보면 한 낱말도
+        // 통과하므로 길이 하한을 함께 둔다. 규칙을 모르는 에이전트가 판단할 수 있어야 한다.
+        let 머리글 = 블록.lines().next().expect("머리글 줄이 있어야 한다");
+        assert!(머리글.ends_with('.'), "{머리글}");
+        assert!(머리글.chars().count() > 40, "머리글이 너무 짧다: {머리글}");
+
+        // **관련 위치 전부.** 존재만 보면 note 를 빈 문자열로 바꿔도 통과한다.
+        // `  <문서>.kang:<줄>` + 공백 + 비어 있지 않은 note 를 줄마다 확인한다.
+        let 위치_줄: Vec<&str> = 블록.lines().filter(|줄| 줄.contains(".kang:")).collect();
+        assert!(!위치_줄.is_empty(), "{블록}");
+        for 줄 in &위치_줄 {
+            let (자리, note) = 줄
+                .trim_start()
+                .split_once("  ")
+                .unwrap_or_else(|| panic!("위치와 note 를 가르는 공백이 없다: {줄}"));
+            assert!(
+                자리
+                    .rsplit_once(':')
+                    .is_some_and(|(_, 번호)| 번호.parse::<usize>().is_ok_and(|번호| 번호 > 0)),
+                "줄 번호가 아니다: {줄}"
+            );
+            assert!(!note.trim().is_empty(), "note 가 비었다: {줄}");
+        }
+
         // 그대로 적용 가능한 fix.
         assert!(블록.contains("\n  fix:\n"), "{블록}");
     }
@@ -2478,11 +2495,8 @@ fn bom_과_crlf_문서에서도_지정한_줄에만_핀이_박힌다() {
         "---\ndescription: 기초\n---\n\n## 기초 정책\n\n기초를 적는다.\n",
     );
     // `\u{feff}` 는 UTF-8 로 EF BB BF 세 바이트다.
-    쓰기(
-        &root,
-        "docs/top.kang",
-        "\u{feff}---\r\ndescription: 꼭대기\r\n---\r\n\r\nimport `docs`/`base`#`기초 정책` as `기초`\r\n\r\n## 꼭대기 정책\r\n\r\n`기초` 를 따른다.\r\n",
-    );
+    let 원본 = "\u{feff}---\r\ndescription: 꼭대기\r\n---\r\n\r\nimport `docs`/`base`#`기초 정책` as `기초`\r\n\r\n## 꼭대기 정책\r\n\r\n`기초` 를 따른다.\r\n";
+    쓰기(&root, "docs/top.kang", 원본);
 
     let (_, stderr, 코드) = 실행(&root, &["build"]);
     assert_eq!(코드, 1, "{stderr}");
@@ -2491,19 +2505,21 @@ fn bom_과_crlf_문서에서도_지정한_줄에만_핀이_박힌다() {
     fix_적용(&root, &stderr);
 
     let 결과 = 읽기(&root, "docs/top.kang");
-    // BOM 이 살아 있어야 한다 — 되쓰기가 원문을 쓴다는 계약이다.
-    assert!(결과.starts_with('\u{feff}'), "BOM 이 사라졌다");
-    let 줄들: Vec<&str> = 결과.split_inclusive('\n').collect();
     // 핀은 다섯째 줄에만 들어가고, 삽입 위치는 `\r` **앞**이다.
+    let 새_줄 = 결과
+        .split_inclusive('\n')
+        .nth(4)
+        .expect("다섯째 줄이 있어야 한다");
     assert!(
-        줄들[4].starts_with("import `docs`/`base`#`기초 정책` as `기초` rev \"")
-            && 줄들[4].ends_with("\"\r\n"),
-        "{:?}",
-        줄들[4]
+        새_줄.starts_with("import `docs`/`base`#`기초 정책` as `기초` rev \"")
+            && 새_줄.ends_with("\"\r\n"),
+        "{새_줄:?}"
     );
-    // 나머지 줄은 한 바이트도 바뀌지 않았다.
-    assert_eq!(줄들[0], "\u{feff}---\r\n");
-    assert_eq!(줄들[8], "`기초` 를 따른다.\r\n");
+    // **나머지 줄은 한 바이트도 바뀌지 않았다.** 몇 줄만 골라 보면 나머지가 망가져도
+    // 통과하므로, 원본의 다섯째 줄만 갈아 끼운 기대값과 파일 전체를 비교한다.
+    // BOM 도 여기서 함께 지켜진다 — 원본의 첫 바이트가 기대값에 들어 있다.
+    let 기대 = 원본.replace("import `docs`/`base`#`기초 정책` as `기초`\r\n", 새_줄);
+    assert_eq!(결과, 기대);
 
     let (_, stderr, 코드) = 실행(&root, &["build"]);
     assert_eq!(코드, 0, "{stderr}");

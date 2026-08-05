@@ -2817,6 +2817,15 @@ fn 같은_topic_이_두_번_커버해도_에러다() {
         "{:?}",
         diagnostics[0].message
     );
+    // **fix 가 같은 주소를 두 번 나열하면 "하나만 남기세요" 가 어느 것도 가리키지 못한다.**
+    // 겹치는 것은 개수로 말하고, 지울 줄의 자리는 locations 가 준다 (ADR-0003).
+    let action = &diagnostics[0].fixes[0].action;
+    assert_eq!(
+        action.matches("의 cover `무료 상품` 줄").count(),
+        1,
+        "{action}"
+    );
+    assert!(action.contains("줄 2개"), "{action}");
     정리(&root);
 }
 

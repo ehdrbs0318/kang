@@ -452,14 +452,33 @@ pub fn check_exceptions(project: &Project, table: &SymbolTable) -> Vec<Diagnosti
         // 있으므로 예외의 정본 이름이 아니라 **그 줄에 적힌 이름**을 그대로 적는다.
         //
         // 각 항목이 "줄" 로 끝나므로 뒤에 붙는 "을"·"입니다" 는 끝소리가 고정이다.
+        // 같은 topic 이 같은 예외를 두 번 커버하면 두 설명이 글자까지 같아진다 — 스펙 5.2 가
+        // 세는 단위는 선언이므로 그것도 error 다. 같은 문장을 두 번 나열하면 "하나만
+        // 남기세요" 가 어느 것도 가리키지 못하므로, 겹치는 것은 **개수로** 말한다.
         let 커버_설명 = || -> String {
-            짝.iter()
-                .map(|c| {
-                    format!(
-                        "{} 의 cover `{}` 줄",
-                        심볼_주소(c.doc, &SymbolKind::Topic, c.topic, true),
-                        c.이름
-                    )
+            let mut 목록: Vec<(String, usize)> = Vec::new();
+            // 짝을 돌며 같은 설명을 합치고 개수를 센다.
+            for c in &짝 {
+                let 하나 = format!(
+                    "{} 의 cover `{}` 줄",
+                    심볼_주소(c.doc, &SymbolKind::Topic, c.topic, true),
+                    c.이름
+                );
+                match 목록.iter_mut().find(|(이미, _)| *이미 == 하나) {
+                    // 이미 같은 설명이 있으면 개수만 올린다.
+                    Some((_, 개수)) => *개수 += 1,
+                    None => 목록.push((하나, 1)),
+                }
+            }
+            목록
+                .into_iter()
+                // 하나뿐이면 개수를 붙이지 않는다 — "줄 1개" 는 군더더기다.
+                .map(|(설명, 개수)| {
+                    if 개수 > 1 {
+                        format!("{설명} {개수}개")
+                    } else {
+                        설명
+                    }
                 })
                 .collect::<Vec<String>>()
                 .join(", ")
@@ -527,8 +546,10 @@ pub fn check_exceptions(project: &Project, table: &SymbolTable) -> Vec<Diagnosti
                     kind: FixKind::Edit,
                     // 어느 것을 남길지는 사람이 정한다. 문서를 하나 고를 근거가 없다.
                     doc: None,
+                    // 지울 줄의 좌표는 위 위치 목록이 준다 — fix 는 줄 번호를 쓰지 않는다
+                    // (ADR-0003). 겹치는 설명이 개수로 접히므로 그 안내가 필요하다.
                     action: format!(
-                        "이 예외를 실제로 다루는 정책 하나만 남기고 나머지 cover 줄을 지우세요. 지금 커버하는 것은 {}입니다.",
+                        "이 예외를 실제로 다루는 정책 하나만 남기고 나머지 cover 줄을 지우세요. 지금 커버하는 것은 {}입니다. 지울 줄의 자리는 위 위치 목록에 있습니다.",
                         커버_설명()
                     ),
                 }],
