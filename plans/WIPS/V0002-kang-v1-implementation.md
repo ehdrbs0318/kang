@@ -633,6 +633,24 @@ fn parse_project() -> Result<(Project, SymbolTable), Vec<Diagnostic>>;
 fn compile() -> Result<(Project, SymbolTable), Vec<Diagnostic>>;
 ```
 
+**컨트롤러 이월 (Task 5 리뷰에서 나옴 — 최우선 연결점)**
+
+**`compile()` 이 진단 함수를 하나라도 빠뜨리면 그 규칙은 조용히 발화하지 않는다.** Task 5 시점에 `check_cycles` 를 부르는 곳이 `src` 안에 없었다 — 함수와 테스트는 완성됐지만 프로덕션 경로에 연결되지 않은 상태다. 이후 태스크가 만드는 진단 함수도 같은 위험을 갖는다.
+
+`compile()` 은 **다음 전부**를 돌리고 진단을 모은다. 하나라도 빠지면 그 스펙 규칙이 죽는다.
+
+| 함수 | 모듈 | 태스크 | 스펙 |
+|---|---|---|---|
+| `parse_document` (파일마다) | `parse` | 2·3 | 4절 문법 |
+| `find_root` · `load` | `resolve` | 4 | 3절 |
+| `SymbolTable::build` | `resolve` | 4 | 4.3 |
+| `check_cycles` | `check` | 5 | 5.3 |
+| `check_symbols` | `check` | 6 | 5.1 |
+| `check_exceptions` | `check` | 7 | 5.2 |
+| `check_revs` | `check` | 8 | 4.8 |
+
+**연결 자체를 테스트로 못박아라.** 각 규칙이 위반되는 최소 프로젝트를 만들고 `compile()` 이 그 진단을 내는지 확인한다 — 함수를 직접 부르는 단위 테스트만으로는 연결 누락을 잡지 못한다.
+
 경계는 이렇다. **파싱이 실패하면 `bless` 도 실패한다** — 대상 import 줄을 찾을 수 없기 때문이다. 파싱이 성공하면 진단이 몇 개든 `bless` 는 진행한다.
 
 **`--help` 는 에이전트의 첫 접점이다.** 인자를 틀린 에이전트가 다음에 하는 일이 `kang --help` 다. 여기서 명령·인자 형식·종료 코드를 전부 보여줘야 재시도가 성공한다. 사용법 오류 시에도 같은 텍스트를 출력한다.
