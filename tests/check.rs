@@ -2015,3 +2015,78 @@ fn import_한_alias_를_상세로_쓰면_통과한다() {
     assert!(진단.is_empty(), "{진단:?}");
     정리(&root);
 }
+
+/// **합법 문서를 거부하지 않는다.** 어떤 이름이 최상위이면서 동시에 다른 이름의
+/// 하위일 수 있다 (스펙 4.3). `` `주문` 은 `상태`.`전이` 를 따른다 `` 에서 왼쪽부터
+/// 최장 접두를 확정하고 조각을 소비하면 `주문`.`상태` 를 잡아 `전이` 가 고아가 된다.
+/// 조각 전부가 해석되는 분할이 있으면 그것을 택해야 한다.
+#[test]
+fn 계층_이름이_서로의_접두사여도_전부_해석한다() {
+    let root = 임시_루트("segmentation-backtrack");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: 주문\n---\n\nkeyword `주문`: 손님이 상품을 사겠다는 의사표시\nkeyword `주문`.`상태`: 주문이 놓인 단계\nkeyword `상태`: 어떤 것이 놓인 단계\nkeyword `상태`.`전이`: 상태가 바뀌는 일\n\n## 주문의 흐름\n\n`주문` 은 `상태`.`전이` 를 따른다.\n",
+    );
+
+    let 진단 = 심볼_검사(&root);
+
+    assert!(진단.is_empty(), "{진단:?}");
+    정리(&root);
+}
+
+/// **합법 문서를 거부하지 않는다.** 스펙 4.3:91 은 하위 키워드를 선언하려면 상위를
+/// "같은 파일에서 정의했거나 import" 하라고 **의무로** 못박는다. 그 import 를 미사용이라
+/// 하면 처방("이 import 줄을 지우세요")대로 고친 문서가 위법이 된다.
+/// 본문이 상위 이름을 백틱으로 언급하지 않아도 하위 선언 자체가 상위를 쓴다.
+#[test]
+fn 상위_import_는_본문_언급이_없어도_하위_선언이_쓴다() {
+    let root = 임시_루트("parent-import-by-decl");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/x.kang",
+        "---\ndescription: 결제\n---\n\nkeyword `결제수단`: 대금을 내는 방법\n",
+    );
+    쓰기(
+        &root,
+        "docs/d.kang",
+        "---\ndescription: 카드\n---\n\nimport `docs`/`x`.`결제수단`\n\nkeyword `결제수단`.`카드`: 카드를 사용한 결제\n",
+    );
+
+    let 진단 = 심볼_검사(&root);
+
+    assert!(진단.is_empty(), "{진단:?}");
+    정리(&root);
+}
+
+/// 계층 참조에 조각으로 묻어 들어간다고 해서 **무관한** import 가 사용으로 세어지면
+/// 안 된다. `` `결제수단`.`카드` `` 는 심볼 하나를 가리키지 `카드` 를 따로 쓰지 않는다.
+#[test]
+fn 무관한_import_는_계층_조각에_묻어_통과하지_않는다() {
+    let root = 임시_루트("fragment-leak");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/x.kang",
+        "---\ndescription: 결제\n---\n\nkeyword `결제수단`: 대금을 내는 방법\n",
+    );
+    쓰기(
+        &root,
+        "docs/y.kang",
+        "---\ndescription: 카드\n---\n\nkeyword `카드`: 플라스틱 지불 수단\n",
+    );
+    쓰기(
+        &root,
+        "docs/d.kang",
+        "---\ndescription: 카드 결제\n---\n\nimport `docs`/`x`.`결제수단`\nimport `docs`/`y`.`카드`\n\nkeyword `결제수단`.`카드`: 카드를 사용한 결제\n\n## 카드 결제\n\n사용자는 `결제수단`.`카드` 로 결제한다.\n",
+    );
+
+    let 진단 = 심볼_검사(&root);
+
+    // 상위 `결제수단` 은 하위 선언이 쓰지만, `카드` 는 아무도 쓰지 않는다.
+    assert_eq!(코드들(&진단), vec!["K003"], "{진단:?}");
+    assert!(진단[0].message.contains("카드"), "{}", 진단[0].message);
+    정리(&root);
+}
