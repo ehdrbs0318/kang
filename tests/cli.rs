@@ -2157,6 +2157,185 @@ fn show_는_구분자가_든_디렉토리_이름을_그대로_받는다() {
     정리(&root);
 }
 
+/// 자리가 틀린 import 선언은 **참인 진단 하나**로 잡히고, 그 fix 를 적용하면 빌드가 통과한다.
+///
+/// 오늘은 그 줄이 산문이 되어 `K001` 이 셋 난다. 그중 둘은 문서 경로 조각(`docs`·`pay`)에
+/// 대한 것이고 fix 가 그것을 keyword 로 선언하라고 안내한다 — 그대로 하면 빌드는 통과하되
+/// 스펙 4.3 이 선언하지 말라고 못박은 일반 명사가 SoT 에 박힌다. 셋째는 9행이 정확히 그
+/// 이름으로 import 하는데도 "import 하지 않았다" 고 말한다.
+#[test]
+fn 첫_topic_뒤_import_는_진단_하나로_잡히고_옮기면_통과한다() {
+    let root = 임시_루트("import-자리");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/pay.kang",
+        "---\ndescription: 결제 정책\n---\n\nkeyword `결제`: 대금을 지불하는 행위\n\n## 결제의 방법\n\n사용자는 `결제` 를 한다.\n",
+    );
+    쓰기(
+        &root,
+        "docs/card.kang",
+        "---\ndescription: 카드 정책\n---\n\nimport `docs`/`pay`.`결제`\n\n## 카드 결제\n\n`결제` 를 카드로 한다.\n",
+    );
+
+    // **핀을 하드코딩하지 않는다.** 통과하는 상태를 `bless` 로 먼저 만들고 그 줄을 옮긴다 —
+    // 그래야 아래의 진단이 자리 때문이라는 것이 증명되고, 정규화 규칙이 바뀌어도 죽지 않는다.
+    let (_, stderr, 코드) = 실행(&root, &["build"]);
+    assert_eq!(코드, 1, "{stderr}");
+    assert_eq!(fix_적용(&root, &stderr), 1, "{stderr}");
+    let 통과본 = 읽기(&root, "docs/card.kang");
+    let import_줄 = 통과본
+        .lines()
+        .find(|줄| 줄.starts_with("import "))
+        .expect("bless 가 핀을 넣은 import 줄이 있어야 한다")
+        .to_string();
+    let (stdout, stderr, 코드) = 실행(&root, &["build"]);
+    assert_eq!(코드, 0, "{stderr}");
+    assert_eq!(stdout, "");
+
+    // 같은 줄을 첫 topic **뒤**로 옮긴다. 그 밖의 문법은 전부 합법이며 핀도 그대로다.
+    let 옮긴본 = format!(
+        "---\ndescription: 카드 정책\n---\n\n## 카드 결제\n\n{import_줄}\n\n`결제` 를 카드로 한다.\n"
+    );
+    쓰기(&root, "docs/card.kang", &옮긴본);
+
+    let (stdout, stderr, 코드) = 실행(&root, &["build"]);
+
+    assert_eq!(코드, 1, "{stderr}");
+    assert_eq!(stdout, "");
+    assert_eq!(stderr.matches("error[").count(), 1, "{stderr}");
+    assert!(stderr.contains("K114"), "{stderr}");
+    // 거짓 진단 셋이 사라져야 한다 — 특히 일반 명사를 선언하라는 안내가 없어야 한다.
+    assert!(!stderr.contains("K001"), "{stderr}");
+    assert!(!stderr.contains("keyword `docs`"), "{stderr}");
+
+    // fix 가 시킨 대로 그 줄을 다시 파일 최상단으로 옮긴다.
+    쓰기(&root, "docs/card.kang", &통과본);
+
+    let (stdout, stderr, 코드) = 실행(&root, &["build"]);
+    assert_eq!(코드, 0, "{stderr}");
+    assert_eq!(stderr, "", "fix 를 적용하면 새 진단이 생기면 안 된다");
+    assert_eq!(stdout, "");
+    정리(&root);
+}
+
+/// **`list` 가 낸 주소는 `show` 가 받아야 한다.** 도구가 자기 출력을 자기 파서로 거절하면서
+/// 처방으로 같은 경로를 다시 주면 결정론적 루프다. 여기서 검증하는 것은 사람이 손으로 옮겨
+/// 적은 주소가 아니라 **`list` 의 stdout 그 자체**다.
+#[test]
+fn list_가_낸_주소를_show_가_그대로_받는다() {
+    let root = 임시_루트("list-show-왕복");
+    git_저장소로(&root);
+    // 디렉토리 이름에는 구분자가 합법이다 (스펙 6.0 주소 분할 규칙).
+    쓰기(
+        &root,
+        "v1.2/a#b/pay.kang",
+        "---\ndescription: 결제 정책\n---\n\nkeyword `결제`: 대금을 지불하는 행위\n\n## 결제의 방법\n\n사용자는 `결제` 를 한다.\n",
+    );
+
+    let (목록, stderr, 코드) = 실행(&root, &["list"]);
+    assert_eq!(코드, 0, "{stderr}");
+
+    // 목록 줄에서 주소만 뗀다 (스펙 6.3 은 `<경로>: <description>` 이다).
+    let 주소들: Vec<&str> = 목록
+        .lines()
+        .map(|줄| 줄.split_once(": ").map_or(줄, |(주소, _)| 주소))
+        .collect();
+    assert_eq!(주소들, vec!["v1.2/a#b/pay"], "{목록}");
+
+    // 훑은 주소를 하나씩 그대로 `show` 에 넣는다.
+    for 주소 in 주소들 {
+        let (문서, stderr, 코드) = 실행(&root, &["show", 주소]);
+        assert_eq!(
+            코드, 0,
+            "list 가 낸 주소를 show 가 거절했다: {주소}\n{stderr}"
+        );
+        assert!(문서.starts_with(&format!("path: {주소}\n")), "{문서}");
+    }
+    정리(&root);
+}
+
+/// 문서 **파일 이름**의 `.`·`#`·`!` 는 CLI 주소로 가리킬 수 없으므로 로드가 거절한다
+/// (스펙 6.0 `:414`). 셋 다 `bless`·`refs` 가 막히고, `#` 은 `show` 도 막힌다.
+///
+/// 거절하지 않으면 `list`·`keywords` 가 **아무 명령도 받지 않는 주소**를 찍는다.
+#[test]
+fn 문서_파일_이름의_구분자는_로드를_거절한다() {
+    let root = 임시_루트("문서이름-구분자");
+    git_저장소로(&root);
+    // 구분자 셋을 각각 하나씩. 문서 이름 외의 문법은 전부 합법이다.
+    for 이름 in ["a#b", "v1.2", "x!y"] {
+        쓰기(
+            &root,
+            &format!("docs/{이름}.kang"),
+            "---\ndescription: 결제 정책\n---\n\nkeyword `결제`: 대금을 지불하는 행위\n\n## 결제의 방법\n\n사용자는 `결제` 를 한다.\n",
+        );
+    }
+
+    let (stdout, stderr, 코드) = 실행(&root, &["build"]);
+
+    assert_eq!(코드, 1, "{stderr}");
+    assert_eq!(stdout, "");
+    assert_eq!(stderr.matches("K113").count(), 3, "{stderr}");
+    // 셋 다 `Project.docs` 에서 빠져야 한다. 남아 있으면 세 문서가 같은 이름을 선언하므로
+    // `K012` 가 함께 나고, 그 진단의 fix 는 가리킬 수 없는 주소로 iknow 를 쓰라고 시킨다.
+    assert_eq!(stderr.matches("error[").count(), 3, "{stderr}");
+    // 파일 이름을 고치라고 말해야 한다 — 그 말을 하지 않으면 처방이 아예 없다.
+    assert!(stderr.contains("파일 이름"), "{stderr}");
+
+    // 조회 명령이 쓸 수 없는 주소를 찍으면 안 된다.
+    let (목록, _, 코드) = 실행(&root, &["list"]);
+    assert_eq!(코드, 1);
+    assert_eq!(목록, "", "쓸 수 없는 주소를 찍었다: {목록}");
+    정리(&root);
+}
+
+/// **처방이 있어야 한다.** 파일 이름에 `.` 이 든 문서의 심볼을 import 하면 오늘은
+/// `K020` 의 유일한 fix 인 `bless` 가 exit 2 로 죽어 빌드가 영구히 error 에 머문다
+/// (`bless` 에 수동 rev 주입 인자가 없고 스펙 4.8 이 핀을 손으로 계산할 수 없다고 못박는다).
+///
+/// 파일 이름을 고치는 것이 유일한 해결이므로 진단이 그 말을 해야 하고, 고친 뒤에는
+/// `K020` 의 fix 가 실제로 돌아 빌드가 통과해야 한다.
+#[test]
+fn 문서_이름을_고치면_핀_fix_가_실제로_돈다() {
+    let root = 임시_루트("문서이름-봉쇄해제");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/v1.2.kang",
+        "---\ndescription: 버전 정책\n---\n\nkeyword `승격`: 다음 단계로 올리는 행위\n\n## 승격의 방법\n\n`승격` 은 이렇게 한다.\n",
+    );
+    쓰기(
+        &root,
+        "docs/use.kang",
+        "---\ndescription: 사용처\n---\n\nimport `docs`/`v1.2`.`승격`\n\n## 승격 사용\n\n`승격` 을 쓴다.\n",
+    );
+
+    let (_, stderr, 코드) = 실행(&root, &["build"]);
+    assert_eq!(코드, 1, "{stderr}");
+    assert!(stderr.contains("K113"), "{stderr}");
+
+    // 진단이 시킨 대로 파일 이름을 고치고 그것을 가리키던 import 를 맞춘다.
+    fs::rename(root.join("docs/v1.2.kang"), root.join("docs/v12.kang"))
+        .expect("파일 이름을 바꿀 수 있어야 한다");
+    쓰기(
+        &root,
+        "docs/use.kang",
+        "---\ndescription: 사용처\n---\n\nimport `docs`/`v12`.`승격`\n\n## 승격 사용\n\n`승격` 을 쓴다.\n",
+    );
+
+    // 이제 남는 것은 핀뿐이고, 그 fix 는 복사해 실행하면 실제로 돈다.
+    let (_, stderr, 코드) = 실행(&root, &["build"]);
+    assert_eq!(코드, 1, "{stderr}");
+    assert_eq!(fix_적용(&root, &stderr), 1, "{stderr}");
+
+    let (stdout, stderr, 코드) = 실행(&root, &["build"]);
+    assert_eq!(코드, 0, "{stderr}");
+    assert_eq!(stderr, "", "fix 를 적용하면 새 진단이 생기면 안 된다");
+    assert_eq!(stdout, "");
+    정리(&root);
+}
+
 /// 스펙 V0001 의 예제 프로젝트는 합법 kang 이어야 한다. 스펙이 든 예제가 자기 컴파일러를
 /// 통과하지 못하면 스펙과 구현 중 하나가 틀린 것이다.
 #[test]
@@ -2790,6 +2969,39 @@ fn 생성된_skill_md_가_비어있지_않다() {
             !내용.contains("조회할 때"),
             "{상대} 가 스킬 내용을 복제했다: {내용}"
         );
+    }
+    정리(&root);
+}
+
+/// **사용자의 `.kang` 초안에 템플릿을 덧붙이면 안 된다.**
+///
+/// 스펙 6.1 은 "섹션만 덧붙인다" 를 세 마크다운 진입점에만 배정하고 첫 `.kang` 은
+/// "템플릿" 으로 구분한다. marker 기제를 `.kang` 에 재사용하면 `description:` 이 없는
+/// 초안에 템플릿이 그대로 append 되어 두 번째 `---`/`description:` 이 문서 중간에 박히고,
+/// 그러면서 "만들었습니다" 라고 말한다.
+///
+/// 파싱에 실패하는 초안이 그 경우다 — 예제 판정이 `docs.is_empty()` 하나뿐이면
+/// 파싱에 실패한 문서만 있는 프로젝트가 "문서가 없다" 로 읽힌다.
+#[test]
+fn init_은_파싱에_실패하는_예제_초안을_한_바이트도_바꾸지_않는다() {
+    let root = 임시_루트("init-초안-보존");
+    git_저장소로(&root);
+    // frontmatter 가 없으므로 `K101` 로 파싱에 실패하고, `description:` 줄도 없다.
+    let 초안 = "## 결제 초안\n\n아직 frontmatter 를 안 썼다.\n\n`결제` 를 정리할 예정.\n";
+    쓰기(&root, "docs/example.kang", 초안);
+
+    let (stdout, stderr, 코드) = 실행(&root, &["init"]);
+
+    assert_eq!(코드, 0, "{stderr}");
+    assert_eq!(stdout, "");
+    // 한 바이트도 바뀌지 않았다.
+    assert_eq!(읽기(&root, "docs/example.kang"), 초안, "{stderr}");
+    // 만들지 않은 것을 만들었다고 하면 검증하면 거짓이다.
+    assert!(stderr.contains("docs/example.kang"), "{stderr}");
+    assert!(stderr.contains("건너"), "{stderr}");
+    // 나머지 셋은 만들어져야 한다.
+    for 상대 in [".claude/skills/kang/SKILL.md", "AGENTS.md", "CLAUDE.md"] {
+        assert!(root.join(상대).exists(), "{상대} 가 없다: {stderr}");
     }
     정리(&root);
 }

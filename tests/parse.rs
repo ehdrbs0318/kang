@@ -1455,6 +1455,63 @@ import `폐포` 가 깊으면 `결제` 를 다시 본다.
     );
 }
 
+/// 첫 topic 뒤의 **선언으로 읽히는** import 줄은 자리가 틀린 선언이다 (스펙 4.7 "파일 최상단").
+///
+/// 본문으로 흘리면 주소의 백틱이 전부 심볼 참조로 세어져 문서 경로 조각까지 미해결 심볼이
+/// 되고, 그 진단이 `docs`·`pay` 같은 일반 명사를 keyword 로 선언하라고 안내한다.
+/// 스펙 4.3 이 선언하지 말라고 못박은 이름이 그렇게 SoT 에 박힌다.
+#[test]
+fn 첫_topic_뒤의_import_선언은_에러다() {
+    let source = r#"---
+description: 카드 결제 정책
+---
+
+## 카드 결제
+
+import `docs`/`A`.`결제` as `A 결제` rev "a3f9c1"
+"#;
+
+    let diagnostics = parse::parse_document(문서경로(), source).unwrap_err();
+
+    // 거짓 진단 셋이 아니라 참인 진단 하나다.
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+    assert_eq!(diagnostics[0].code, "K114");
+    assert_eq!(diagnostics[0].severity, Severity::Error);
+    assert_eq!(diagnostics[0].locations[0].line, 7);
+    assert_eq!(diagnostics[0].fixes[0].doc, Some(문서경로()));
+    let action = &diagnostics[0].fixes[0].action;
+    assert!(action.contains("최상단"), "{action}");
+    // 줄 번호를 좌표로 쓰지 않는다 (ADR-0003).
+    assert!(!action.contains("7"), "{action}");
+}
+
+/// **판정 기준은 "그 줄이 최상단에 있었다면 합법 import 선언인가" 하나다.**
+///
+/// 접두사만 보면 합법 산문이 거부된다 — 이 저장소의 최악 실패 종류다. 선언으로 읽히지
+/// 않는 줄은 산문이므로 그대로 본문이고, 코드펜스 안은 참조에서 아예 빠진다 (스펙 4.2).
+#[test]
+fn 선언으로_읽히지_않는_import_줄은_산문이다() {
+    let source = r#"---
+description: kang 사용법 문서
+---
+
+## import 를 쓰는 자리
+
+import 를 쓸 때는 파일 최상단에 모아 둔다.
+
+```
+import `docs`/`A`.`결제` rev "a3f9c1"
+```
+"#;
+
+    let doc = parse::parse_document(문서경로(), source).unwrap();
+
+    assert!(doc.imports.is_empty());
+    assert!(doc.topics[0].body.contains("import 를 쓸 때는"));
+    // 코드펜스 안의 주소는 심볼로 세지 않는다.
+    assert!(doc.topics[0].refs.is_empty(), "{:?}", doc.topics[0].refs);
+}
+
 /// 대상이 하나도 없는 `// iknow` 는 아무것도 인지하지 않는다.
 #[test]
 fn iknow_대상이_없으면_에러다() {

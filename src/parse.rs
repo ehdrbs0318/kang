@@ -19,6 +19,10 @@
 //! | `K110` | modifier 문법이 올바르지 않음 |
 //! | `K111` | exception / cover 선언 문법이 올바르지 않음 |
 //! | `K112` | topic 밖에 내용이 있음 |
+//! | `K114` | import 선언이 첫 topic 뒤에 있음 |
+//!
+//! `K113` 은 문서 파일 이름의 구분자에 배당되어 있고 그것을 보는 층은 [`crate::resolve`] 다
+//! (스펙 6.0 `:419`). 이 모듈이 그 번호를 쓰지 않는 이유가 그것이다.
 
 use crate::ast::{
     Diagnostic, DocPath, Document, Exception, Fix, FixKind, Import, Keyword, KeywordName, Location,
@@ -158,16 +162,36 @@ pub fn parse_document(path: DocPath, source: &str) -> Result<Document, Vec<Diagn
             continue;
         }
 
-        // import 는 파일 최상단의 선언이다 (스펙 4.7). 첫 topic 이후의 같은 낱말은
-        // 서술 본문이므로 선언으로 가로채지 않는다.
-        if topics.is_empty()
-            && let Some(rest) = trimmed.strip_prefix("import ")
-        {
-            match parse_import_line(&path, rest, line_no) {
-                Ok(import) => imports.push(import),
-                Err(diagnostic) => diagnostics.push(diagnostic),
+        // import 는 파일 최상단의 선언이다 (스펙 4.7).
+        //
+        // **첫 topic 뒤의 판정 기준은 "그 줄이 최상단에 있었다면 합법 선언인가" 하나다** —
+        // 접두사만 보면 `import 를 쓸 때는 …` 같은 합법 산문을 거부하고(이 저장소의 스펙
+        // 문서 자신이 그렇게 쓴다), 그렇다고 산문으로 흘리면 주소의 백틱이 전부 심볼
+        // 참조로 세어져 문서 경로 조각까지 미해결 심볼이 되고 그 진단이 일반 명사를
+        // keyword 로 선언하라고 안내한다 (스펙 4.3 이 금지한 것). 그래서 판정을 같은
+        // 파서에 맡긴다 — 기준이 한 곳에 있으므로 두 자리가 갈라질 수 없다.
+        //
+        // ponytail: 천장은 **문법 오류가 있으면서 자리도 틀린** import 다. 그 줄은 선언으로
+        // 읽히지 않으므로 산문으로 남아 옛 증상이 그대로 나온다. 기준을 "`import ` 뒤에
+        // 백틱" 으로 넓히면 그것도 잡히지만 `import `폐포` 가 깊으면 …` 같은 합법 산문을
+        // 함께 거부한다 — 합법 입력 거부가 더 나쁘다. 실수 둘이 겹친 경우를 위해 실수
+        // 하나짜리 문서를 깨지 않는다. 문법 오류가 든 줄까지 잡아야 하면 `import ` 뒤에
+        // 백틱이 있고 **그 문서에 최상단 import 블록이 아예 없을 때만** 으로 좁힌다.
+        if let Some(rest) = trimmed.strip_prefix("import ") {
+            let 선언 = parse_import_line(&path, rest, line_no);
+            if topics.is_empty() {
+                match 선언 {
+                    Ok(import) => imports.push(import),
+                    Err(diagnostic) => diagnostics.push(diagnostic),
+                }
+                continue;
             }
-            continue;
+            // 첫 topic 뒤인데 선언으로 읽힌다. 자리가 틀린 선언이다.
+            if 선언.is_ok() {
+                diagnostics.push(import_자리_오류(&path, line_no));
+                continue;
+            }
+            // 선언으로 읽히지 않으므로 산문이다. 아래 본문 처리로 흘려보낸다.
         }
 
         // keyword 선언은 서술이 아니라 선언이므로 topic 본문에 담지 않는다 (스펙 4.8).
@@ -1294,6 +1318,42 @@ fn topic_밖_위치(path: &DocPath, line: usize, first: bool) -> Location {
         } else {
             "이 줄도 어떤 topic 에도 속하지 않습니다".to_string()
         },
+    }
+}
+
+/// import 선언이 첫 topic 뒤에 있다는 진단을 만든다 (스펙 4.7 "파일 최상단").
+///
+/// **이 줄이 산문이 아니라 선언임은 호출자가 [`parse_import_line`] 으로 이미 확인했다.**
+/// 그것이 이 진단의 유일한 발화 조건이며, 접두사만 보면 합법 산문을 거부한다.
+///
+/// 진단하지 않고 본문으로 흘리면 주소의 백틱이 전부 심볼 참조로 세어져 문서 경로
+/// 조각까지 미해결 심볼이 되고, `K001` 의 fix 가 그 일반 명사를 keyword 로 선언하라고
+/// 안내한다. 스펙 4.3 이 선언하지 말라고 못박은 이름이 그렇게 SoT 에 박힌다.
+///
+/// # 매개변수
+/// - `path`: 대상 문서 경로
+/// - `line`: 자리가 틀린 import 선언이 있는 줄 번호
+///
+/// # 반환값
+/// `K114` 진단
+fn import_자리_오류(path: &DocPath, line: usize) -> Diagnostic {
+    Diagnostic {
+        severity: Severity::Error,
+        code: "K114",
+        message: "import 선언이 첫 topic 뒤에 있습니다. import 는 파일 최상단에 모아 씁니다 (스펙 4.7). 이 자리에서는 심볼을 당겨 오지 못합니다.".to_string(),
+        locations: vec![Location {
+            doc: path.clone(),
+            line,
+            note: "이 import 선언".to_string(),
+        }],
+        // **줄 번호를 좌표로 쓰지 않는다** (ADR-0003). 옮길 자리는 첫 `##` 헤딩과의
+        // 앞뒤 관계로 말한다 — 그것은 문서를 고쳐 줄이 밀려도 변하지 않는다.
+        fixes: vec![Fix {
+            kind: FixKind::Edit,
+            doc: Some(path.clone()),
+            action: "이 줄을 파일 최상단의 import 블록으로, 첫 `##` 헤딩보다 앞에 옮기세요"
+                .to_string(),
+        }],
     }
 }
 
