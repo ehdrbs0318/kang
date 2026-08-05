@@ -2210,3 +2210,116 @@ fn 계층_이름_진단은_조각마다_백틱을_두른다() {
     assert!(!편집.action.contains("`결제수단.카드`"), "{}", 편집.action);
     정리(&root);
 }
+
+/// **합법 문서를 거부하지 않는다.** 같은 파일에서 상위를 선언한 형태 (스펙 4.3 정본 예시).
+#[test]
+fn 같은_파일에서_선언한_상위는_통과한다() {
+    let root = 임시_루트("parent-same-file");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: 결제\n---\n\nkeyword `결제수단`: 대금을 내는 방법\nkeyword `결제수단`.`카드`: 카드를 사용한 결제\n",
+    );
+
+    let 진단 = 심볼_검사(&root);
+
+    assert!(진단.is_empty(), "{진단:?}");
+    정리(&root);
+}
+
+/// **합법 문서를 거부하지 않는다.** 상위를 import 한 형태.
+#[test]
+fn import_한_상위는_통과한다() {
+    let root = 임시_루트("parent-imported");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: 결제\n---\n\nkeyword `결제수단`: 대금을 내는 방법\n",
+    );
+    쓰기(
+        &root,
+        "docs/b.kang",
+        "---\ndescription: 카드\n---\n\nimport `docs`/`a`.`결제수단`\n\nkeyword `결제수단`.`카드`: 카드를 사용한 결제\n",
+    );
+
+    let 진단 = 심볼_검사(&root);
+
+    assert!(진단.is_empty(), "{진단:?}");
+    정리(&root);
+}
+
+/// **합법 문서를 거부하지 않는다 — 이 라운드의 핵심 회귀 방어.**
+/// alias 를 붙이면 스코프에 묶이는 이름은 `수단` 이지만, 스펙 4.3:91 은 "import**한 것**"
+/// 을 허용하고 4.7 은 alias 가 정식 이름을 폐기한다고 하지 않는다.
+/// 상위 판정을 `scope()` 로 하면 이 합법 문서가 거부된다.
+#[test]
+fn alias_로_import_한_상위도_통과한다() {
+    let root = 임시_루트("parent-aliased");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: 결제\n---\n\nkeyword `결제수단`: 대금을 내는 방법\n",
+    );
+    쓰기(
+        &root,
+        "docs/b.kang",
+        "---\ndescription: 카드\n---\n\nimport `docs`/`a`.`결제수단` as `수단`\n\nkeyword `결제수단`.`카드`: 카드를 사용한 결제\n",
+    );
+
+    let 진단 = 심볼_검사(&root);
+
+    assert!(진단.is_empty(), "{진단:?}");
+    정리(&root);
+}
+
+/// **합법 문서를 거부하지 않는다.** 요구되는 것은 **직접 상위 하나**다.
+/// `결제`.`수단`.`카드` 는 `결제`.`수단` 만 요구하고 `결제` 는 요구하지 않는다 —
+/// `결제`.`수단` 이 import 된 것이라면 `결제` 는 그 파일의 사정이다.
+#[test]
+fn 삼단_계층은_직접_상위만_요구한다() {
+    let root = 임시_루트("parent-direct-only");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/x.kang",
+        "---\ndescription: 결제\n---\n\nkeyword `결제`: 대금을 지불하는 행위\nkeyword `결제`.`수단`: 대금을 내는 방법\n",
+    );
+    // `결제` 는 이 문서에 없다. 그래도 통과해야 한다.
+    쓰기(
+        &root,
+        "docs/b.kang",
+        "---\ndescription: 카드\n---\n\nimport `docs`/`x`.`결제`.`수단`\n\nkeyword `결제`.`수단`.`카드`: 카드를 사용한 결제\n",
+    );
+
+    let 진단 = 심볼_검사(&root);
+
+    assert!(진단.is_empty(), "{진단:?}");
+    정리(&root);
+}
+
+/// **합법 문서를 거부하지 않는다.** 스펙 4.3:91 의 의무는 **선언**에 걸린다.
+/// 계층 심볼을 import 하는 것은 남의 파일 심볼을 가져오는 것이고 그 계층은 그 파일의
+/// 사정이므로, 상위를 함께 import 할 것을 요구하지 않는다 (스펙 4.7 에 그런 조항이 없다).
+#[test]
+fn 계층_심볼_import_는_상위를_요구하지_않는다() {
+    let root = 임시_루트("import-no-parent-duty");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/x.kang",
+        "---\ndescription: 결제\n---\n\nkeyword `결제`: 대금을 지불하는 행위\nkeyword `결제`.`수단`: 대금을 내는 방법\n",
+    );
+    쓰기(
+        &root,
+        "docs/b.kang",
+        "---\ndescription: 청구\n---\n\nimport `docs`/`x`.`결제`.`수단`\n\n## 청구의 방법\n\n사용자는 `결제`.`수단` 으로 낸다.\n",
+    );
+
+    let 진단 = 심볼_검사(&root);
+
+    assert!(진단.is_empty(), "{진단:?}");
+    정리(&root);
+}

@@ -533,7 +533,22 @@ fn 참조_해석(
     for keyword in &document.keywords {
         // 진짜 상위만 넣는다. 자기 자신은 선언이지 사용이 아니다.
         for 끝 in 1..keyword.name.0.len() {
-            사용.insert(keyword.name.0[..끝].join("."));
+            let 상위 = &keyword.name.0[..끝];
+            // 그 상위를 대주는 import 는 **대상의 정식 이름**으로 찾는다. alias 를 붙이면
+            // 스코프에 묶이는 이름은 alias 이므로, 상위 이름만 넣으면 그 import 가
+            // 미사용으로 오인된다. 스펙 4.3:91 은 "import **한 것**" 을 허용하고
+            // 4.7 은 alias 가 정식 이름을 폐기한다고 하지 않는다.
+            for import in &document.imports {
+                if import.target.name[..] == *상위 {
+                    사용.insert(
+                        import
+                            .alias
+                            .clone()
+                            .unwrap_or_else(|| import.target.name.join(".")),
+                    );
+                }
+            }
+            사용.insert(상위.join("."));
         }
     }
 
