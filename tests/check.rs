@@ -2090,3 +2090,95 @@ fn 무관한_import_는_계층_조각에_묻어_통과하지_않는다() {
     assert!(진단[0].message.contains("카드"), "{}", 진단[0].message);
     정리(&root);
 }
+
+/// `K012` 의 수정은 **상대 심볼의 종류**로 주소를 적어야 한다. 자기 종류로 적으면
+/// 구분 기호가 뒤바뀌어(`.` ↔ `#`) 그대로 적용한 문서가 `K010` 을 맞는다.
+#[test]
+fn iknow_수정은_상대_심볼의_종류로_주소를_적는다() {
+    let root = 임시_루트("iknow-fix-kind");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: A\n---\n\nkeyword `epoch`: 임차 기간의 단위\n",
+    );
+    쓰기(
+        &root,
+        "docs/b.kang",
+        "---\ndescription: B\n---\n\n## epoch\n\n세대를 뜻하는 서술 단위.\n",
+    );
+
+    let 진단 = 심볼_검사(&root);
+
+    assert_eq!(코드들(&진단), vec!["K012"], "{진단:?}");
+    assert_eq!(진단[0].fixes.len(), 2, "{진단:?}");
+    // a 를 고치는 수정은 b 의 topic 을 `#` 로 가리켜야 한다.
+    assert_eq!(
+        진단[0].fixes[0].doc.as_ref().map(DocPath::to_string),
+        Some("docs/a".to_string())
+    );
+    assert!(
+        진단[0].fixes[0].action.contains("`docs`/`b`#`epoch`"),
+        "{}",
+        진단[0].fixes[0].action
+    );
+    // b 를 고치는 수정은 a 의 keyword 를 `.` 로 가리켜야 한다.
+    assert!(
+        진단[0].fixes[1].action.contains("`docs`/`a`.`epoch`"),
+        "{}",
+        진단[0].fixes[1].action
+    );
+    정리(&root);
+}
+
+/// 위 수정을 그대로 적용한 문서는 진단이 없어야 한다. 종류를 잘못 적으면 여기서
+/// `K010` 이 난다 — 수정이 스스로 새 진단을 만드는 것이 `K012` 의 최악 실패다.
+#[test]
+fn 종류가_다른_이름_충돌도_iknow_로_합법이_된다() {
+    let root = 임시_루트("iknow-cross-kind-legal");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: A\n---\n\nkeyword `epoch`: 임차 기간의 단위 // iknow `docs`/`b`#`epoch`\n",
+    );
+    쓰기(
+        &root,
+        "docs/b.kang",
+        "---\ndescription: B\n---\n\n## epoch // iknow `docs`/`a`.`epoch`\n\n세대를 뜻하는 서술 단위.\n",
+    );
+
+    let 진단 = 심볼_검사(&root);
+
+    assert!(진단.is_empty(), "{진단:?}");
+    정리(&root);
+}
+
+/// 상호 명시가 **완전하면** 진단이 없다. 세 문서가 서로를 전부 알고 있는 것은
+/// 스펙 4.4 가 정의한 합법 형태이고, 이 층에서 직접 단언해 두지 않으면
+/// "무조건 진단" 회귀가 수정 개수 단언만으로 간접적으로 걸리게 된다.
+#[test]
+fn 상호_명시가_완전하면_진단이_없다() {
+    let root = 임시_루트("iknow-complete");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: A\n---\n\nkeyword `epoch`: A // iknow `docs`/`b`.`epoch`, `docs`/`c`.`epoch`\n",
+    );
+    쓰기(
+        &root,
+        "docs/b.kang",
+        "---\ndescription: B\n---\n\nkeyword `epoch`: B // iknow `docs`/`a`.`epoch`, `docs`/`c`.`epoch`\n",
+    );
+    쓰기(
+        &root,
+        "docs/c.kang",
+        "---\ndescription: C\n---\n\nkeyword `epoch`: C // iknow `docs`/`a`.`epoch`, `docs`/`b`.`epoch`\n",
+    );
+
+    let 진단 = 심볼_검사(&root);
+
+    assert!(진단.is_empty(), "{진단:?}");
+    정리(&root);
+}
