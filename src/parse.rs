@@ -176,7 +176,7 @@ pub fn parse_document(path: DocPath, source: &str) -> Result<Document, Vec<Diagn
             // exception 의 의미는 그것을 선언한 topic 의 맥락에서 나오고 rev 핀도
             // 그 topic 의 해시다 (스펙 4.8). topic 밖에서는 선언이 성립하지 않는다.
             let Some(topic) = topics.last_mut() else {
-                diagnostics.push(선언_문법_오류(
+                diagnostics.push(선언_위치_오류(
                     &path,
                     line_no,
                     "exception 은 topic 안에서만 선언할 수 있습니다. 이 선언은 어떤 topic 의 맥락에도 속하지 않습니다.".to_string(),
@@ -193,7 +193,7 @@ pub fn parse_document(path: DocPath, source: &str) -> Result<Document, Vec<Diagn
         // cover 선언도 마찬가지다.
         if let Some(rest) = trimmed.strip_prefix("cover ") {
             let Some(topic) = topics.last_mut() else {
-                diagnostics.push(선언_문법_오류(
+                diagnostics.push(선언_위치_오류(
                     &path,
                     line_no,
                     "cover 는 topic 안에서만 선언할 수 있습니다. 이 선언은 어떤 topic 의 맥락에도 속하지 않습니다.".to_string(),
@@ -434,13 +434,20 @@ fn parse_import_line(path: &DocPath, rest: &str, line_no: usize) -> Result<Impor
     // `rev "<핀>"` 은 줄 끝의 선택 토큰이다. 백틱 밖에서만 찾아 별칭 안의 낱말과 구분한다.
     let (rest, rev) = match find_outside_backticks(rest, " rev ") {
         Some(at) => {
-            let value = rest[at + " rev ".len()..].trim();
-            // 핀은 큰따옴표로 감싼다. 벗기지 못한 것을 그대로 담으면 따옴표가 해시에 섞인다.
-            let Some(value) = value.strip_prefix('"').and_then(|v| v.strip_suffix('"')) else {
+            let 원문 = rest[at + " rev ".len()..].trim();
+            // 핀은 큰따옴표로 감싼 값 **하나**다. 벗긴 값에 따옴표가 남으면 뒤에 토큰이
+            // 더 붙어 있다는 뜻이고, 그대로 담으면 그 텍스트가 통째로 해시에 섞인다.
+            let Some(value) = 원문
+                .strip_prefix('"')
+                .and_then(|value| value.strip_suffix('"'))
+                .filter(|value| !value.contains('"'))
+            else {
                 return Err(import_문법_오류(
                     path,
                     line_no,
-                    format!("rev 핀 {value} 이 큰따옴표로 감싸여 있지 않습니다."),
+                    format!(
+                        "rev 핀 {원문} 을 큰따옴표로 감싼 값 하나로 읽을 수 없습니다. rev 는 줄 끝에 오고 `as` 는 그 앞에 옵니다."
+                    ),
                 ));
             };
             (&rest[..at], Some(value.to_string()))
@@ -548,6 +555,18 @@ fn parse_exception_line(
 /// 백틱 짝이 맞지 않으면 `K104`, 빈 백틱 쌍이면 `K108`, 선언 문법이 맞지 않으면 `K111` 진단
 fn parse_cover_line(path: &DocPath, rest: &str, line_no: usize) -> Result<String, Diagnostic> {
     백틱_검사(path, rest, line_no)?;
+
+    // modifier 를 먼저 가려낸다. 그러지 않으면 iknow 대상의 백틱까지 선언에 섞여
+    // "대상은 하나입니다" 라는 엉뚱한 원인을 대게 된다 — 사용자가 쓴 대상은 하나다.
+    if split_modifier(rest).1.is_some() {
+        return Err(선언_문법_오류(
+            path,
+            line_no,
+            "cover 에는 modifier 를 붙일 수 없습니다. `// iknow` 는 keyword 선언·topic 헤딩·exception 선언 세 자리에만 붙습니다 (스펙 4.4)."
+                .to_string(),
+        ));
+    }
+
     let declaration = rest.trim();
 
     // 대상은 백틱으로 감싼 이름 하나다. 뒤에 텍스트가 남으면 조용히 버리지 않는다.
@@ -625,10 +644,21 @@ fn parse_modifier(
             Some(at) => (&rest[..at], Some(&rest[at + 1..])),
             None => (rest, None),
         };
+        let piece = piece.trim();
+        // 빈 자리를 그대로 넘기면 원문에 없는 `""` 를 가리켜 고칠 자리를 못 찾게 한다.
+        if piece.is_empty() {
+            return Err(modifier_문법_오류(
+                path,
+                line_no,
+                "`// iknow` 의 대상 목록에 빈 자리가 있습니다. 쉼표가 겹쳤거나 마지막 대상 뒤에 쉼표가 남았습니다."
+                    .to_string(),
+            ));
+        }
         iknow.push(
-            parse_symbol_ref(piece.trim())
+            parse_symbol_ref(piece)
                 .map_err(|message| modifier_문법_오류(path, line_no, message))?,
         );
+
         match next {
             Some(next) => rest = next,
             None => break,
@@ -1173,7 +1203,27 @@ fn modifier_문법_오류(path: &DocPath, line: usize, message: String) -> Diagn
     }
 }
 
-/// exception / cover 선언 문법이 올바르지 않다는 진단을 만든다.
+/// exception / cover 선언이 **놓인 자리**가 틀렸다는 진단을 만든다.
+///
+/// # 매개변수
+/// - `path`: 대상 문서 경로
+/// - `line`: 선언이 있는 줄 번호
+/// - `message`: 무엇이 틀렸는지 알리는 한 문장
+///
+/// # 반환값
+/// `K111` 진단
+fn 선언_위치_오류(path: &DocPath, line: usize, message: String) -> Diagnostic {
+    선언_오류(
+        path,
+        line,
+        message,
+        "이 선언을 `##` 헤딩으로 시작하는 topic 안으로 옮기세요".to_string(),
+    )
+}
+
+/// exception / cover 선언의 **문법**이 틀렸다는 진단을 만든다.
+///
+/// 위치를 고치라고 하지 않는다 — 이미 topic 안에 있는 줄에는 적용할 대상이 없다.
 ///
 /// # 매개변수
 /// - `path`: 대상 문서 경로
@@ -1183,6 +1233,25 @@ fn modifier_문법_오류(path: &DocPath, line: usize, message: String) -> Diagn
 /// # 반환값
 /// `K111` 진단
 fn 선언_문법_오류(path: &DocPath, line: usize, message: String) -> Diagnostic {
+    선언_오류(
+        path,
+        line,
+        message,
+        "이 줄을 `exception `<이름>`` (정책이 아직 없으면 뒤에 ` pending`) 또는 `cover `<이름>`` 형식으로 고치세요. 두 선언 모두 이름 하나만 받고 cover 는 modifier 를 받지 않습니다".to_string(),
+    )
+}
+
+/// exception / cover 선언 진단의 공통 뼈대.
+///
+/// # 매개변수
+/// - `path`: 대상 문서 경로
+/// - `line`: 선언이 있는 줄 번호
+/// - `message`: 무엇이 틀렸는지 알리는 한 문장
+/// - `action`: 적용할 수정 한 문장
+///
+/// # 반환값
+/// `K111` 진단
+fn 선언_오류(path: &DocPath, line: usize, message: String, action: String) -> Diagnostic {
     Diagnostic {
         severity: Severity::Error,
         code: "K111",
@@ -1195,7 +1264,7 @@ fn 선언_문법_오류(path: &DocPath, line: usize, message: String) -> Diagnos
         fixes: vec![Fix {
             kind: FixKind::Edit,
             doc: Some(path.clone()),
-            action: "이 줄을 `exception `<이름>`` (정책이 아직 없으면 뒤에 ` pending`) 또는 `cover `<이름>`` 형식으로 고치고, `##` 헤딩으로 시작하는 topic 안에 두세요".to_string(),
+            action,
         }],
     }
 }

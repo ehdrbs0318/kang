@@ -790,7 +790,8 @@ exception `해외 결제`
     assert_eq!(diagnostics[0].code, "K111");
     assert_eq!(diagnostics[0].severity, Severity::Error);
     assert_eq!(diagnostics[0].locations[0].line, 5);
-    assert!(!diagnostics[0].fixes.is_empty());
+    // 위치 위반이므로 옮기라고 하는 것이 맞다.
+    assert!(diagnostics[0].fixes[0].action.contains("옮기"));
 }
 
 /// `// iknow` 는 쉼표로 여러 대상을 나열한다.
@@ -1394,6 +1395,97 @@ keyword `주소`: https://example.com 형식의 문자열
     assert!(doc.keywords[0].iknow.is_empty());
 }
 
+/// 쉼표만 남은 자리는 원문에 없는 빈 주소를 인용하지 말고 쉼표를 지적해야 한다.
+#[test]
+fn iknow_의_후행_쉼표는_빈_자리를_알린다() {
+    let source = r#"---
+description: 결제 정책 문서
+---
+
+keyword `금액`: 청구 액수 // iknow `docs`/`B`.`금액`,
+"#;
+
+    let diagnostics = parse::parse_document(문서경로(), source).unwrap_err();
+
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(diagnostics[0].code, "K110");
+    // 원문에 없는 빈 문자열을 가리키면 고칠 자리를 못 찾는다.
+    assert!(!diagnostics[0].message.contains("\"\""));
+    assert!(diagnostics[0].message.contains("쉼표"));
+}
+/// rev 핀은 큰따옴표로 감싼 값 하나다. 뒤에 토큰이 더 붙으면 조용히 삼키지 않는다.
+#[test]
+fn rev_핀_뒤에_텍스트가_남으면_에러다() {
+    let source = r#"---
+description: 결제 정책 문서
+---
+
+import `docs`/`A`.`결제` rev "a3f9c1" rev "c40d8a"
+"#;
+
+    let diagnostics = parse::parse_document(문서경로(), source).unwrap_err();
+
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(diagnostics[0].code, "K109");
+    assert_eq!(diagnostics[0].locations[0].line, 5);
+    assert!(!diagnostics[0].fixes.is_empty());
+}
+/// `as` 는 `rev` 앞에 온다. 순서가 뒤집히면 별칭이 핀 값으로 삼켜지므로 error 다.
+#[test]
+fn rev_가_as_보다_앞에_오면_에러다() {
+    let source = r#"---
+description: 결제 정책 문서
+---
+
+import `docs`/`A`.`결제` rev "a3f9c1" as `A 결제`
+"#;
+
+    let diagnostics = parse::parse_document(문서경로(), source).unwrap_err();
+
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(diagnostics[0].code, "K109");
+    assert_eq!(diagnostics[0].locations[0].line, 5);
+}
+/// 백틱이 여럿이라는 이유로 "대상은 하나입니다" 라고 하면 엉뚱한 원인을 대는 것이다.
+#[test]
+fn cover_에_붙은_modifier_는_자리를_알린다() {
+    let source = r#"---
+description: 결제 정책 문서
+---
+
+## 무료상품 결제일 때 청구서
+
+cover `무료상품 청구서 예외` // iknow `docs`/`B`!`무료상품 청구서 예외`
+"#;
+
+    let diagnostics = parse::parse_document(문서경로(), source).unwrap_err();
+
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(diagnostics[0].code, "K111");
+    assert!(diagnostics[0].message.contains("modifier"));
+    // 사용자가 쓴 대상은 하나다. 개수를 탓하면 거짓이다.
+    assert!(!diagnostics[0].message.contains("하나입니다"));
+}
+/// topic **안**의 문법 오류에 "topic 안으로 옮기세요" 라고 하면 적용할 대상이 없다.
+#[test]
+fn topic_안의_exception_문법_오류는_옮기라고_하지_않는다() {
+    let source = r#"---
+description: 결제 정책 문서
+---
+
+## 결제 청구서
+
+exception `해외 결제`  pending
+"#;
+
+    let diagnostics = parse::parse_document(문서경로(), source).unwrap_err();
+
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(diagnostics[0].code, "K111");
+    // 문법 fix 가 위치를 언급하면 이미 topic 안인 이 줄에는 적용할 대상이 없다.
+    assert!(!diagnostics[0].fixes[0].action.contains("topic"));
+    assert!(diagnostics[0].fixes[0].action.contains("형식"));
+}
 /// import 를 선언으로 읽는 것은 첫 topic 이전뿐이다 (스펙 4.7 "파일 최상단").
 /// 그 뒤의 같은 낱말은 서술 본문이며, 이 저장소의 스펙 문서 자신이 그렇게 쓴다.
 #[test]
