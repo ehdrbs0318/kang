@@ -217,17 +217,11 @@ fn parse_frontmatter(
 /// 백틱 짝이 맞지 않으면 `K104`, 이름이나 한 줄 정의가 없으면 `K103` 진단
 fn parse_keyword_line(path: &DocPath, rest: &str, line_no: usize) -> Result<Keyword, Diagnostic> {
     // 이름과 정의 양쪽의 백틱이 모두 닫혀 있어야 구분자를 신뢰할 수 있다.
-    let Some(symbols) = scan_symbols(rest) else {
-        return Err(백틱_짝_없음(path, line_no));
-    };
-
     // 빈 백틱 쌍은 가리키는 심볼이 없다. 이름·정의·상세 어디에 있든 마찬가지다.
-    if symbols.iter().any(String::is_empty) {
-        return Err(빈_심볼(path, line_no));
-    }
+    백틱_검사(path, rest, line_no)?;
 
     // 이름 뒤의 `:` 가 이름과 정의를 가른다. 정의 안의 `:` 에 걸리면 안 되므로 첫 번째만 본다.
-    let Some(colon) = find_definition_colon(rest) else {
+    let Some(colon) = find_outside_backticks(rest, ":") else {
         return Err(keyword_문법_오류(
             path,
             line_no,
@@ -310,6 +304,29 @@ fn parse_keyword_line(path: &DocPath, rest: &str, line_no: usize) -> Result<Keyw
     })
 }
 
+/// 한 줄의 백틱 쌍을 검사하고 그 안의 이름들을 돌려준다.
+///
+/// # 매개변수
+/// - `path`: 진단에 담을 문서 경로
+/// - `text`: 검사할 텍스트
+/// - `line_no`: 텍스트가 있는 줄 번호 (1-based)
+///
+/// # 반환값
+/// 백틱 쌍 안의 이름들
+///
+/// # 오류
+/// 짝이 맞지 않으면 `K104`, 빈 쌍이 있으면 `K108` 진단
+fn 백틱_검사(path: &DocPath, text: &str, line_no: usize) -> Result<Vec<String>, Diagnostic> {
+    let Some(symbols) = scan_symbols(text) else {
+        return Err(백틱_짝_없음(path, line_no));
+    };
+    // 빈 백틱 쌍은 가리키는 심볼이 없다.
+    if symbols.iter().any(String::is_empty) {
+        return Err(빈_심볼(path, line_no));
+    }
+    Ok(symbols)
+}
+
 /// 한 줄에서 백틱 쌍 안의 심볼 이름을 등장 순서대로 뽑는다.
 ///
 /// `\`` 로 이스케이프한 백틱은 리터럴이므로 구분자로 세지 않는다 (스펙 4.2).
@@ -353,21 +370,23 @@ fn scan_symbols(line: &str) -> Option<Vec<String>> {
     if open.is_some() { None } else { Some(symbols) }
 }
 
-/// keyword 선언에서 이름과 정의를 가르는 `:` 의 바이트 위치를 찾는다.
+/// 백틱 **밖에서** `needle` 이 처음 나타나는 바이트 위치를 찾는다.
 ///
-/// 백틱 안의 `:` 는 이름의 일부이므로 건너뛴다.
+/// 백틱 안의 문자는 심볼 이름의 일부이므로 구분자로 세지 않는다.
+/// 이스케이프 규칙은 [`scan_symbols`] 와 같다 — `` \` `` 는 리터럴이라 안팎을 뒤집지 않는다.
 ///
 /// # 매개변수
-/// - `rest`: `keyword ` 뒤의 나머지 텍스트
+/// - `text`: 검사할 텍스트
+/// - `needle`: 찾을 구분자. ASCII 로 시작해야 결과가 문자 경계에 놓인다
 ///
 /// # 반환값
-/// 백틱 밖에 있는 첫 `:` 의 바이트 위치. 없으면 `None`
-fn find_definition_colon(rest: &str) -> Option<usize> {
-    let bytes = rest.as_bytes();
+/// 백틱 밖에 있는 첫 `needle` 의 바이트 위치. 없으면 `None`
+fn find_outside_backticks(text: &str, needle: &str) -> Option<usize> {
+    let bytes = text.as_bytes();
     let mut in_backtick = false;
     let mut index = 0;
 
-    // 백틱 안팎을 추적하면서 이름 뒤에 오는 첫 `:` 를 찾는다.
+    // 백틱 안팎을 추적하면서 백틱 밖의 needle 을 찾는다.
     while index < bytes.len() {
         match bytes[index] {
             // 이스케이프된 백틱은 구분자가 아니다.
@@ -376,8 +395,10 @@ fn find_definition_colon(rest: &str) -> Option<usize> {
                 in_backtick = !in_backtick;
                 index += 1;
             }
-            // 백틱 밖의 `:` 만 이름과 정의의 경계다.
-            b':' if !in_backtick => return Some(index),
+            // 백틱 밖의 것만 구분자다.
+            _ if !in_backtick && bytes[index..].starts_with(needle.as_bytes()) => {
+                return Some(index);
+            }
             _ => index += 1,
         }
     }
