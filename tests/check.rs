@@ -2379,3 +2379,90 @@ fn topic_을_상위로_쓰면_에러다() {
     );
     정리(&root);
 }
+
+/// 사용 집계도 `K005` 와 같은 규칙을 써야 한다. 계층의 상위는 keyword 뿐이므로
+/// 이름만 같은 topic import 는 하위 선언이 쓰는 것이 아니다.
+/// 안 그러면 무관한 계층 선언 하나가 무관한 import 의 미사용 검사를 무력화한다.
+#[test]
+fn 무관한_topic_import_는_계층_선언에_묻어_통과하지_않는다() {
+    let root = 임시_루트("usage-kind");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: 결제\n---\n\nkeyword `결제수단`: 대금을 내는 방법 // iknow `docs`/`c`#`결제수단`\n",
+    );
+    쓰기(
+        &root,
+        "docs/c.kang",
+        "---\ndescription: 설명\n---\n\n## 결제수단 // iknow `docs`/`a`.`결제수단`\n\n결제수단을 서술한다.\n",
+    );
+    쓰기(
+        &root,
+        "docs/b.kang",
+        "---\ndescription: 카드\n---\n\nimport `docs`/`c`#`결제수단` as `수단토픽`\nimport `docs`/`a`.`결제수단`\n\nkeyword `결제수단`.`카드`: 카드를 사용한 결제\n",
+    );
+
+    let 진단 = 심볼_검사(&root);
+
+    // 쓰이지 않는 것은 topic import 하나뿐이다.
+    assert_eq!(코드들(&진단), vec!["K003"], "{진단:?}");
+    assert!(진단[0].message.contains("수단토픽"), "{}", 진단[0].message);
+    정리(&root);
+}
+
+/// 사용 집계는 **직접 상위 하나**만 센다. `K005` 의 의무가 직접 상위에만 걸리므로
+/// (`삼단_계층은_직접_상위만_요구한다`) 조부모까지 세면 참인 `K003` 이 사라진다.
+#[test]
+fn 조부모_import_는_하위_선언이_쓰지_않는다() {
+    let root = 임시_루트("usage-direct-parent");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/x.kang",
+        "---\ndescription: 결제\n---\n\nkeyword `결제`: 대금을 지불하는 행위\nkeyword `결제`.`수단`: 대금을 내는 방법\n",
+    );
+    쓰기(
+        &root,
+        "docs/b.kang",
+        "---\ndescription: 카드\n---\n\nimport `docs`/`x`.`결제`\nimport `docs`/`x`.`결제`.`수단`\n\nkeyword `결제`.`수단`.`카드`: 카드를 사용한 결제\n",
+    );
+
+    let 진단 = 심볼_검사(&root);
+
+    // `결제`.`수단` 은 직접 상위라 쓰이지만 `결제` 는 아무도 쓰지 않는다.
+    assert_eq!(코드들(&진단), vec!["K003"], "{진단:?}");
+    assert_eq!(위치들(&진단[0]), vec![("docs/b".to_string(), 5)]);
+    정리(&root);
+}
+
+/// 후보 문서를 아는 경우의 `K005` 수정은 그 주소를 구체적으로 적어야 한다.
+/// 두 픽스처 모두 후보가 비어 있으면 이 안내 문구가 통째로 미검증으로 남는다.
+#[test]
+fn k005_수정은_상위를_가진_문서를_지목한다() {
+    let root = 임시_루트("k005-fix-candidate");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/x.kang",
+        "---\ndescription: 결제\n---\n\nkeyword `결제수단`: 대금을 내는 방법\n",
+    );
+    쓰기(
+        &root,
+        "docs/b.kang",
+        "---\ndescription: 카드\n---\n\nkeyword `결제수단`.`카드`: 카드를 사용한 결제\n",
+    );
+
+    let 진단 = 심볼_검사(&root);
+
+    assert_eq!(코드들(&진단), vec!["K005"], "{진단:?}");
+    assert_eq!(수정_종류(&진단[0]), vec![&FixKind::Edit, &FixKind::Edit]);
+    assert!(진단[0].message.contains("docs/x"), "{}", 진단[0].message);
+    // 두 번째 갈래는 그 문서에서 가져오라고 구체적으로 말한다.
+    assert!(
+        진단[0].fixes[1].action.contains("`docs`/`x`.`결제수단`"),
+        "{}",
+        진단[0].fixes[1].action
+    );
+    정리(&root);
+}

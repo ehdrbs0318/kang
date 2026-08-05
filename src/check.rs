@@ -531,28 +531,41 @@ fn 참조_해석(
         }
     }
 
-    // 하위 키워드를 선언하면 그 상위 전부를 쓰는 것이다 (스펙 4.3:91). 본문이 상위 이름을
+    // 하위 키워드를 선언하면 그 **직접 상위**를 쓰는 것이다 (스펙 4.3:91). 본문이 그 이름을
     // 백틱으로 언급하지 않아도 마찬가지다.
+    //
+    // 조부모까지 세지 않는다. 의무가 직접 상위에만 걸리므로([`계층_상위_검사`]) 조부모를
+    // 세면 그것만 import 하고 쓰지 않는 줄의 참인 `K003` 이 사라진다. 연쇄는 각 선언이
+    // 자기 직접 상위를 요구하면서 스스로 닫힌다.
     for keyword in &document.keywords {
-        // 진짜 상위만 넣는다. 자기 자신은 선언이지 사용이 아니다.
-        for 끝 in 1..keyword.name.0.len() {
-            let 상위 = &keyword.name.0[..끝];
-            // 그 상위를 대주는 import 는 **대상의 정식 이름**으로 찾는다. alias 를 붙이면
-            // 스코프에 묶이는 이름은 alias 이므로, 상위 이름만 넣으면 그 import 가
-            // 미사용으로 오인된다. 스펙 4.3:91 은 "import **한 것**" 을 허용하고
-            // 4.7 은 alias 가 정식 이름을 폐기한다고 하지 않는다.
-            for import in &document.imports {
-                if import.target.name[..] == *상위 {
-                    사용.insert(
-                        import
-                            .alias
-                            .clone()
-                            .unwrap_or_else(|| import.target.name.join(".")),
-                    );
-                }
+        // 계층이 아니면 쓰는 상위가 없다. 자기 자신은 선언이지 사용이 아니다.
+        let Some(상위) = 직접_상위(&keyword.name.0) else {
+            continue;
+        };
+
+        // 그 상위를 대주는 import 는 **대상의 정식 이름**으로 찾는다. alias 를 붙이면
+        // 스코프에 묶이는 이름은 alias 이므로, 상위 이름만 넣으면 그 import 가
+        // 미사용으로 오인된다. 스펙 4.3:91 은 "import **한 것**" 을 허용하고
+        // 4.7 은 alias 가 정식 이름을 폐기한다고 하지 않는다.
+        //
+        // 종류도 [`계층_상위_검사`] 와 같이 본다. 이름만 같은 topic import 는 상위가 될 수
+        // 없으므로(스펙 4.1:68) 하위 선언이 그것을 쓰는 것이 아니다.
+        //
+        // ponytail: 같은 이름을 keyword 로 import 한 줄이 여럿이면 전부 사용으로 센다.
+        // 상위를 실제로 대준 것은 하나뿐이므로 나머지의 `K003` 을 놓친다. 어느 줄이
+        // 대주었는지는 스코프가 알려 주지 않아, 없애려면 상위 해석을 import 줄 단위로
+        // 되돌려야 한다. 그 형태가 실제로 나타나면 그때 올린다.
+        for import in &document.imports {
+            if import.target.kind == SymbolKind::Keyword && import.target.name[..] == *상위 {
+                사용.insert(
+                    import
+                        .alias
+                        .clone()
+                        .unwrap_or_else(|| import.target.name.join(".")),
+                );
             }
-            사용.insert(상위.join("."));
         }
+        사용.insert(상위.join("."));
     }
 
     // `cover` 대상과 keyword 상세 마커는 `refs` 에 담기지 않지만 선언부의 백틱이므로
@@ -891,13 +904,7 @@ fn 계층_상위_검사(
     // 이 문서가 선언한 keyword 를 파일 순서대로 본다.
     for keyword in &document.keywords {
         // 계층이 아니면 요구할 상위가 없다.
-        let Some(상위) = keyword
-            .name
-            .0
-            .split_last()
-            .map(|(_, 앞)| 앞)
-            .filter(|앞| !앞.is_empty())
-        else {
+        let Some(상위) = 직접_상위(&keyword.name.0) else {
             continue;
         };
 
@@ -937,6 +944,27 @@ fn 계층_상위_검사(
             선언들,
         ));
     }
+}
+
+/// 계층 이름의 **직접 상위**를 돌려준다.
+///
+/// 스펙 4.3:91 의 의무는 직접 상위 하나에만 걸린다 — `A`.`B`.`C` 는 `A`.`B` 만 요구하고
+/// `A` 는 요구하지 않는다. `A`.`B` 가 import 된 것이면 `A` 는 그 파일의 사정이고, 이 파일이
+/// 선언한 것이면 그 선언이 자기 차례에 `A` 를 요구받아 연쇄가 스스로 닫힌다.
+///
+/// 사용 집계와 [`계층_상위_검사`] 가 이것을 함께 쓴다. 둘이 다른 범위를 보면 한쪽이
+/// 의무라고 하지 않은 것을 다른 쪽이 사용으로 세어 참인 `K003` 이 사라진다.
+///
+/// # 매개변수
+/// - `조각들`: keyword 이름의 조각들
+///
+/// # 반환값
+/// 계층이면 마지막 조각을 뗀 앞부분. 계층이 아니면 `None`
+fn 직접_상위(조각들: &[String]) -> Option<&[String]> {
+    조각들
+        .split_last()
+        .map(|(_, 앞)| 앞)
+        .filter(|앞| !앞.is_empty())
 }
 
 /// 심볼 종류를 문서에 쓰는 낱말로 바꾼다.
