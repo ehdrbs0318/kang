@@ -1224,14 +1224,30 @@ cover `무료상품 청구서 예외`
     assert_eq!(diagnostics[0].locations[0].line, 5);
 }
 
-/// kang 에는 주석 문법이 없으므로 알 수 없는 modifier 는 조용히 버리지 않는다.
+/// 쓸 방법이 없어진다. kang 에는 `//` 이스케이프가 없다.
 #[test]
-fn 알_수_없는_modifier_는_에러다() {
+fn 알_수_없는_낱말은_modifier_가_아니라_이름의_일부다() {
     let source = r#"---
 description: 결제 정책 문서
 ---
 
 ## 결제의 방법 // 메모
+"#;
+
+    let doc = parse::parse_document(문서경로(), source).unwrap();
+
+    assert_eq!(doc.topics[0].name, "결제의 방법 // 메모");
+    assert!(!doc.topics[0].uncoded);
+    assert!(doc.topics[0].iknow.is_empty());
+}
+/// 알려진 낱말로 시작하면 modifier 자리이므로, 그 뒤가 틀리면 조용히 버리지 않는다.
+#[test]
+fn uncoded_뒤에_텍스트가_남으면_에러다() {
+    let source = r#"---
+description: 결제 정책 문서
+---
+
+## 결제의 방법 // uncoded 뭐
 "#;
 
     let diagnostics = parse::parse_document(문서경로(), source).unwrap_err();
@@ -1241,6 +1257,70 @@ description: 결제 정책 문서
     assert_eq!(diagnostics[0].severity, Severity::Error);
     assert_eq!(diagnostics[0].locations[0].line, 5);
     assert!(!diagnostics[0].fixes.is_empty());
+}
+/// kang 에 `//` 이스케이프가 없으므로 이것이 막히면 이 정의를 쓸 방법이 아예 없다.
+#[test]
+fn 정의_안의_두_슬래시_주소는_modifier_가_아니다() {
+    let source = r#"---
+description: 결제 정책 문서
+---
+
+keyword `CDN`: 기본 주소는 //cdn.example.com 이다
+"#;
+
+    let doc = parse::parse_document(문서경로(), source).unwrap();
+
+    assert_eq!(
+        doc.keywords[0].definition,
+        "기본 주소는 //cdn.example.com 이다"
+    );
+    assert!(doc.keywords[0].iknow.is_empty());
+}
+/// 공백 뒤의 `//` 라도 알려진 modifier 낱말이 아니면 본문이다.
+#[test]
+fn 공백_뒤_두_슬래시라도_알_수_없는_낱말이면_본문이다() {
+    let source = r#"---
+description: 결제 정책 문서
+---
+
+keyword `비율`: 50 // 100 으로 계산
+"#;
+
+    let doc = parse::parse_document(문서경로(), source).unwrap();
+
+    assert_eq!(doc.keywords[0].definition, "50 // 100 으로 계산");
+    assert!(doc.keywords[0].iknow.is_empty());
+}
+/// 첫 후보에서 멈추면 이 헤딩의 `uncoded` 를 놓친다.
+#[test]
+fn 주소_뒤에_붙은_modifier_는_여전히_인식된다() {
+    let source = r#"---
+description: 결제 정책 문서
+---
+
+## 참고 http://a.com 문서 // uncoded
+"#;
+
+    let doc = parse::parse_document(문서경로(), source).unwrap();
+
+    assert!(doc.topics[0].uncoded);
+    assert_eq!(doc.topics[0].name, "참고 http://a.com 문서");
+}
+/// 낱말 판정을 넣어도 정상 modifier 는 그대로 인식되어야 한다.
+#[test]
+fn 정의_뒤에_붙은_iknow_는_여전히_인식된다() {
+    let source = r#"---
+description: 결제 정책 문서
+---
+
+keyword `금액`: 청구 액수 // iknow `docs`/`B`.`금액`
+"#;
+
+    let doc = parse::parse_document(문서경로(), source).unwrap();
+
+    assert_eq!(doc.keywords[0].definition, "청구 액수");
+    assert_eq!(doc.keywords[0].iknow.len(), 1);
+    assert_eq!(doc.keywords[0].iknow[0].name, vec!["금액".to_string()]);
 }
 
 /// 대상이 하나도 없는 `// iknow` 는 아무것도 인지하지 않는다.

@@ -582,15 +582,6 @@ fn parse_modifier(
     line_no: usize,
     allow_uncoded: bool,
 ) -> Result<(bool, Vec<SymbolRef>), Diagnostic> {
-    // kang 에는 주석 문법이 없으므로 빈 modifier 는 오타다.
-    if text.is_empty() {
-        return Err(modifier_문법_오류(
-            path,
-            line_no,
-            "`//` 뒤에 modifier 가 없습니다.".to_string(),
-        ));
-    }
-
     // `// uncoded` 는 대응 코드가 없는 것이 정상인 topic 을 표시한다 (스펙 4.5).
     if text == "uncoded" {
         if !allow_uncoded {
@@ -786,8 +777,10 @@ fn topic_밖_허용(trimmed: &str) -> bool {
 
 /// 선언 줄을 선언부와 modifier 부로 가른다.
 ///
-/// modifier 의 `//` 는 **공백 뒤에만** 온다. 이 조건이 없으면 `https://` 같은 본문
-/// 표기를 modifier 로 가로채 합법 문서를 "알 수 없는 modifier" 로 거부한다.
+/// modifier 의 `//` 는 **공백 뒤에** 오고 **알려진 modifier 낱말이 뒤따를 때만** 인정한다.
+/// 두 조건 중 하나라도 빠지면 `https://`·`//cdn.example.com`·`50 // 100` 같은 본문
+/// 표기를 modifier 로 가로채고, kang 에는 `//` 이스케이프가 없으므로 그런 정의를
+/// 쓸 방법이 아예 없어진다.
 ///
 /// # 매개변수
 /// - `text`: 선언 줄에서 `keyword `·`##` 등의 접두사를 뗀 나머지
@@ -801,13 +794,33 @@ fn split_modifier(text: &str) -> (&str, Option<&str>) {
     // 균형을 이룬다는 뜻이므로, 후보를 지나 이어서 스캔해도 안팎 판정이 어긋나지 않는다.
     while let Some(offset) = find_outside_backticks(&text[base..], "//") {
         let at = base + offset;
-        if text[..at].ends_with(char::is_whitespace) {
-            return (&text[..at], Some(text[at + 2..].trim()));
+        let candidate = text[at + 2..].trim();
+        if text[..at].ends_with(char::is_whitespace) && modifier_낱말(candidate) {
+            return (&text[..at], Some(candidate));
         }
         base = at + 2;
     }
 
     (text, None)
+}
+
+/// modifier 로 인정하는 낱말로 시작하는지 본다.
+///
+/// 낱말까지만 보고 그 **뒤가 올바른지는 보지 않는다.** `uncoded 뭐` 처럼 낱말은 맞고
+/// 형태가 틀린 것은 modifier 자리로 넘겨 `K110` 을 받게 해야 한다 — 여기서 걸러 버리면
+/// 그 오타가 조용히 topic 이름의 일부가 된다.
+///
+/// # 매개변수
+/// - `candidate`: `//` 뒤의 텍스트 (앞뒤 공백이 제거되어 있어야 한다)
+///
+/// # 반환값
+/// `uncoded` 나 `iknow` 낱말로 시작하면 참
+fn modifier_낱말(candidate: &str) -> bool {
+    ["uncoded", "iknow"].into_iter().any(|word| {
+        candidate
+            .strip_prefix(word)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace))
+    })
 }
 
 /// 한 줄에서 백틱 쌍 안의 심볼 이름을 등장 순서대로 뽑는다.
