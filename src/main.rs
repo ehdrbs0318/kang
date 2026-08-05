@@ -12,7 +12,7 @@
 //! 같은 명령 목록을 두 곳에 적게 되고, 슬라이스 패턴은 인자 개수까지 한 번에 가른다.
 //! 서브커맨드가 인자 파싱 이상의 상태를 갖게 되면 그때 타입으로 올린다.
 
-use kang::ast::{Diagnostic, DocPath, Severity, SymbolKind, SymbolRef};
+use kang::ast::{Diagnostic, DocPath, Severity, SymbolKind};
 use kang::bless::{self, ImportAddress};
 use kang::check;
 use kang::resolve::{self, Project, SymbolTable};
@@ -428,34 +428,19 @@ fn 참조들(주소: &str) -> i32 {
         Err(진단들) => return 종료_코드(&진단들),
     };
 
-    // 마지막 `/` 뒤가 문서 이름과 키워드이고, 그 둘은 첫 `.` 로 갈린다.
-    // 남은 `.` 은 키워드의 계층이다.
-    //
-    // ponytail: 문서 이름 자체에 `.` 이 있으면(`docs/a.b.kang` 은 합법 문서다 —
-    // `resolve::문서경로` 가 마지막 `.kang` 만 뗀다) 첫 점 분할이 틀린다.
-    // `kang keywords` 는 `docs/a.b.결제` 를 찍는데 `kang refs` 가 그것을 거절하므로
-    // 스펙 6.5 의 "keywords 로 훑고 refs 로 좁힌다" 왕복이 그 문서에서만 끊긴다.
-    // **스펙 6.0 주소 문법의 천장이지 배선 실수가 아니다** — 같은 문자열을 `K020` 의
-    // `[shell] fix` 도 만들므로 `bless`·`show` 가 같은 자리에 선다.
-    // `project.docs` 를 뒤져 최장 일치로 고치는 것은 "구분자만으로 파싱한다" 는 스펙
-    // 지시를 어기고, 더 흔한 경로 오타(`kang refs docs/zzz.결제`)의 참인 진단을 망친다.
-    // 문법이 문서 이름의 `.` 을 다루는 방법을 정하면 그때 올린다.
-    let (디렉토리, 마지막) = 주소.rsplit_once('/').unwrap_or(("", 주소));
-    let Some((문서명, 이름)) = 마지막.split_once('.') else {
-        // 인자의 **모양**이 틀린 것이므로 사용법 오류다. 도움말이 에이전트의 첫 접점이라는
-        // 규약이 이 분기에서만 깨지면 안 된다.
-        eprintln!("키워드 주소가 아닙니다: {주소}");
-        eprintln!("문서 경로와 키워드를 점으로 이어 적으세요. 예: kang refs docs/A.결제");
-        eprintln!("{사용법}");
-        return 2;
-    };
-    let mut 조각 = 경로_조각(Some(디렉토리));
-    조각.push(문서명.to_string());
-
-    let 참조 = SymbolRef {
-        doc: DocPath(조각),
-        kind: SymbolKind::Keyword,
-        name: 이름.split('.').map(str::to_string).collect(),
+    // **주소 파싱은 [`ImportAddress::parse`] 하나가 한다.** 여기서 손으로 다시 가르면
+    // `K020` 의 `[shell] fix` 가 낸 주소를 `bless` 는 받고 `refs` 는 거절하는 어긋남이
+    // 생기고, 스펙 6.0 주소 문법의 천장이 세 곳에 흩어진다. 천장 설명은 그 함수에 있다.
+    let 참조 = match ImportAddress::parse(주소) {
+        Ok(addr) if addr.target.kind == SymbolKind::Keyword => addr.target,
+        // 주소가 아니거나 키워드 주소가 아니다. 둘 다 인자의 **모양** 문제이므로 사용법
+        // 오류다 — 도움말이 에이전트의 첫 접점이라는 규약이 이 분기에서만 깨지면 안 된다.
+        _ => {
+            eprintln!("키워드 주소가 아닙니다: {주소}");
+            eprintln!("문서 경로와 키워드를 점으로 이어 적으세요. 예: kang refs docs/A.결제");
+            eprintln!("{사용법}");
+            return 2;
+        }
     };
     // 없는 키워드를 빈 결과로 돌려주면 "아무도 참조하지 않는다" 와 구분할 수 없다.
     let Some(대상) = table.resolve(&참조) else {
@@ -505,18 +490,24 @@ fn 조회(주소: &str) -> i32 {
         Err(진단들) => return 종료_코드(&진단들),
     };
 
-    // 문서 경로와 topic 은 `#` 로 갈린다 (스펙 6.0). 키워드의 `.` 과 달리 `#` 는 문서
-    // 이름에 흔치 않으므로, `kang refs` 가 문서 이름의 `.` 에서 만나는 갈림([`참조들`] 의
-    // 주석)이 여기서는 `docs/a.b` 를 그대로 받는다.
+    // **마지막 `/` 뒤에서 가른다** (스펙 6.0 주소 분할 규칙). 그 앞은 전부 디렉토리이므로
+    // 디렉토리 이름의 `#` 에서 갈리지 않는다. [`ImportAddress::parse`] 와 같은 순서다 —
+    // 여기서만 전체 문자열의 첫 `#` 를 보면 `list`·`refs` 가 받는 문서를 `show` 만 거절한다.
     //
-    // ponytail: 그래도 같은 천장이 남는다 — 문서 이름에 `#` 이 있으면 첫 `#` 분할이
-    // 틀린다. 스펙 6.0 이 문서 이름에 구분자를 허용할지 정하면 세 명령을 함께 올린다.
-    let (문서, 토픽) = match 주소.split_once('#') {
-        Some((문서, 토픽)) => (문서, Some(토픽)),
-        None => (주소, None),
+    // 그 함수를 그대로 부르지는 못한다. `show` 는 구분자가 없는 문서 주소(`docs/A`)도
+    // 받는데 `parse` 는 그것을 오류로 낸다.
+    //
+    // ponytail: 문서 **파일 이름**에 `#` 이 있으면 여전히 그 자리에서 갈린다. 스펙 6.0 이
+    // 그 이름을 금지하기로 정했고, 그것을 거절하는 `K113` 은 문서를 로드하는 층의 몫이다.
+    let (디렉토리, 마지막) = 주소.rsplit_once('/').unwrap_or(("", 주소));
+    let (문서명, 토픽) = match 마지막.split_once('#') {
+        Some((문서명, 토픽)) => (문서명, Some(토픽)),
+        None => (마지막, None),
     };
 
-    let path = DocPath(경로_조각(Some(문서)));
+    let mut 조각 = 경로_조각(Some(디렉토리));
+    조각.push(문서명.to_string());
+    let path = DocPath(조각);
     // 없는 주소를 빈 출력으로 돌려주면 "그런 문서가 없다" 와 "내용이 없다" 를 구분할 수 없다.
     let Some(document) = project.docs.get(&path) else {
         eprintln!("그런 문서가 없습니다: {주소}");

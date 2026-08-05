@@ -99,6 +99,47 @@ fn 정상_문서(root: &Path) {
     );
 }
 
+/// 스펙 V0001 의 예제 프로젝트를 쓴다 — `docs/A`(결제)·`docs/B`(카드결제)·`docs/C`(무료결제).
+///
+/// **핀 없이 쓴다.** 스펙 4.8 의 3단계 레시피 1단계가 그 상태이고, 핀을 하드코딩하면
+/// 정규화 규칙이 바뀔 때 무관한 이유로 픽스처가 죽는다. 통과 상태가 필요한 시나리오는
+/// [`예제_프로젝트_통과`] 가 `kang bless` 를 실제로 돌려 핀을 넣는다.
+///
+/// **임시 디렉토리에 만든다.** 루트 탐색이 git 저장소를 요구하므로 픽스처도 저장소여야
+/// 하는데, `tests/` 안에 두면 이 저장소의 워크트리 안에 중첩 저장소가 생겨 `git status`
+/// 와 `.gitignore` 취급이 갈린다. 임시 디렉토리는 그 문제가 없고 격리도 공짜다.
+///
+/// # 매개변수
+/// - `root`: 프로젝트 루트
+fn 예제_프로젝트(root: &Path) {
+    쓰기(
+        root,
+        "docs/A.kang",
+        "---\ndescription: 결제 정책\n---\n\nkeyword `결제`: 사용자가 상품 대금을 지불하는 행위\nkeyword `청구서`: 결제를 청구하는 문서\nkeyword `결제 내역`: 결제의 기록\n\n## 결제의 구성 요소\n\n`결제` 는 `청구서` 와 `결제 내역` 으로 이루어져 있다.\n\n## 결제의 방식\n\n`결제` 는 즉시 결제와 예약 결제로 나뉜다.\n\n## 결제의 종류\n\n`결제` 는 유료 결제와 무료 결제로 나뉜다.\n",
+    );
+    쓰기(
+        root,
+        "docs/B.kang",
+        "---\ndescription: 카드 결제 정책\n---\n\nimport `docs`/`A`.`결제`\n\nkeyword `결제수단`: 결제를 실행하는 방법\nkeyword `결제수단`.`카드`: 카드를 사용한 결제\n\n## 카드 결제\n\n`결제` 를 하기 위한 수단 중 `결제수단`.`카드` 에 대한 설명이다.\n\nexception `카드 수단 무료 결제`\n",
+    );
+    쓰기(
+        root,
+        "docs/C.kang",
+        "---\ndescription: 무료 결제 정책\n---\n\nimport `docs`/`A`.`결제`\nimport `docs`/`B`.`결제수단`.`카드`\nimport `docs`/`B`!`카드 수단 무료 결제`\n\n## 무료결제의 구성요소\n\n무료결제는 0원 `결제` 기록만 남기며 `결제수단`.`카드` 도 같다.\n\ncover `카드 수단 무료 결제`\n",
+    );
+}
+
+/// 예제 프로젝트를 쓰고 진단이 낸 fix 를 **그대로** 실행해 통과 상태로 만든다.
+///
+/// # 매개변수
+/// - `root`: 프로젝트 루트
+fn 예제_프로젝트_통과(root: &Path) {
+    예제_프로젝트(root);
+    let (_, stderr, 코드) = 실행(root, &["build"]);
+    assert_eq!(코드, 1, "핀 없는 예제는 K020 으로 실패해야 한다: {stderr}");
+    fix_적용(root, &stderr);
+}
+
 /// `K001`(미해결 심볼) 하나가 나는 최소 프로젝트를 만든다.
 ///
 /// # 매개변수
@@ -1383,22 +1424,11 @@ fn build_이_낸_fix_명령을_그대로_실행하면_통과한다() {
 
     let (_, stderr, 코드) = 실행(&root, &["build"]);
     assert_eq!(코드, 1, "{stderr}");
-    let 명령 = 셸_fix(&stderr);
-    assert!(명령.starts_with("kang bless "), "{명령}");
-
-    let 결과 = Command::new("sh")
-        .arg("-c")
-        .arg(&명령)
-        .current_dir(&root)
-        .env("PATH", 바이너리_경로())
-        .output()
-        .expect("sh 를 실행할 수 있어야 한다");
-    assert_eq!(
-        결과.status.code(),
-        Some(0),
-        "fix 명령이 실패했다: {명령}\n{}",
-        String::from_utf8_lossy(&결과.stderr)
+    assert!(
+        셸_fix(&stderr)[0].starts_with("kang bless "),
+        "렌더된 fix 는 명령으로 시작해야 한다: {stderr}"
     );
+    fix_적용(&root, &stderr);
 
     let (_, stderr, 코드) = 실행(&root, &["build"]);
     assert_eq!(코드, 0, "{stderr}");
@@ -1747,20 +1777,53 @@ fn bless_가_파싱_실패_상태에서는_실행되지_않는다() {
     정리(&root);
 }
 
-/// 진단이 낸 `[shell] fix` 에서 셸 명령만 잘라낸다.
+/// 진단이 낸 `[shell] fix` 줄을 전부 뽑는다. **접두 `[shell] ` 만 뗀다.**
+///
+/// 명령이 시작하는 자리를 찾아 앞을 잘라내면 **그 잘라내기가 테스트를 대신한다** —
+/// `action` 이 한글 산문으로 시작해 복사해 실행할 수 없는 결함이 통째로 가려진다.
+/// 스펙 5.1.1 과 6.1 이 요구하는 것은 명령만 있는 줄이므로, 테스트도 접두만 떼야 한다.
 ///
 /// # 매개변수
 /// - `stderr`: `kang build` 의 진단 출력
 ///
 /// # 반환값
-/// `kang` 으로 시작하는 셸 명령 한 줄
-fn 셸_fix(stderr: &str) -> String {
-    let 줄 = stderr
+/// 렌더된 순서대로의 셸 명령들
+fn 셸_fix(stderr: &str) -> Vec<String> {
+    stderr
         .lines()
-        .find(|줄| 줄.contains("[shell]"))
-        .expect("진단에 셸 fix 가 있어야 한다");
-    let at = 줄.find("kang ").expect("fix 에 kang 명령이 있어야 한다");
-    줄[at..].to_string()
+        .filter_map(|줄| 줄.trim_start().strip_prefix("[shell] "))
+        .map(str::to_string)
+        .collect()
+}
+
+/// `[shell] fix` 줄을 전부 셸에 **그대로** 넣어 실행하고 각각이 성공하는지 본다.
+///
+/// # 매개변수
+/// - `root`: 명령을 실행할 프로젝트 루트
+/// - `stderr`: `kang build` 의 진단 출력
+///
+/// # 반환값
+/// 실행한 명령의 개수
+fn fix_적용(root: &Path, stderr: &str) -> usize {
+    let 명령들 = 셸_fix(stderr);
+    assert!(!명령들.is_empty(), "진단에 셸 fix 가 있어야 한다: {stderr}");
+    // 렌더된 순서대로 하나씩 실행한다. `fixes` 는 순서 있는 목록이다 (스펙 5.1.1).
+    for 명령 in &명령들 {
+        let 결과 = Command::new("sh")
+            .arg("-c")
+            .arg(명령)
+            .current_dir(root)
+            .env("PATH", 바이너리_경로())
+            .output()
+            .expect("sh 를 실행할 수 있어야 한다");
+        assert_eq!(
+            결과.status.code(),
+            Some(0),
+            "렌더된 fix 를 그대로 실행하지 못했다: {명령}\n{}",
+            String::from_utf8_lossy(&결과.stderr)
+        );
+    }
+    명령들.len()
 }
 
 /// 테스트용 `kang` 바이너리가 있는 디렉토리를 `PATH` 로 만든다.
@@ -1990,5 +2053,523 @@ fn bless_가_문서의_파일_권한을_보존한다() {
         .mode()
         & 0o777;
     assert_eq!(mode, 0o600, "파일 mode 가 {mode:o} 로 바뀌었다");
+    정리(&root);
+}
+
+// ---------------------------------------------------------------------------
+// 통합 검증 — 스펙 V0001 의 예제 프로젝트로 전 명령을 왕복한다 (Task 12)
+// ---------------------------------------------------------------------------
+
+/// **C1 의 회귀 테스트.** 렌더된 `[shell]` 줄에서 접두 `[shell] ` 만 떼고 나머지를
+/// 통째로 셸에 넣는다. `action` 이 한글 산문으로 시작하면 `sh` 가 그 낱말을 명령으로
+/// 찾아 127 로 죽는다 (스펙 5.1.1 :261·:306, 6.1 :417).
+#[test]
+fn build_출력을_bless_에_그대로_넘기면_전부_해제된다() {
+    let root = 임시_루트("예제-fix-왕복");
+    git_저장소로(&root);
+    예제_프로젝트(&root);
+
+    let (_, stderr, 코드) = 실행(&root, &["build"]);
+    assert_eq!(코드, 1, "{stderr}");
+    // 핀 없는 import 가 넷이므로 fix 도 넷이다. 하나만 돌면 회귀를 놓친다.
+    assert_eq!(fix_적용(&root, &stderr), 4, "{stderr}");
+
+    let (stdout, stderr, 코드) = 실행(&root, &["build"]);
+    assert_eq!(코드, 0, "{stderr}");
+    assert_eq!(stderr, "", "fix 를 적용하면 새 진단이 생기면 안 된다");
+    assert_eq!(stdout, "");
+    정리(&root);
+}
+
+/// **M8 의 특성 고정 테스트.** `참조들` 의 손 파싱을 [`kang::bless::ImportAddress::parse`]
+/// 로 갈아 끼우기 **전에** 오늘 통과하는 입력을 못박는다. 구분자를 담은 디렉토리 이름은
+/// 마지막 `/` 를 먼저 가르기 때문에 오늘 정확히 동작하며, 그것이 깨지면 안 된다.
+#[test]
+fn refs_는_구분자가_든_디렉토리_이름을_그대로_받는다() {
+    let root = 임시_루트("refs-구분자-디렉토리");
+    git_저장소로(&root);
+    // 디렉토리 이름에 `.` 과 `#` 이 있다. 문서 이름과 키워드 이름은 구분자가 없다.
+    쓰기(
+        &root,
+        "v1.2/a#b/pay.kang",
+        "---\ndescription: 결제 정책\n---\n\nkeyword `결제`: 대금을 지불하는 행위\n\n## 결제의 방법\n\n사용자는 `결제` 를 한다.\n",
+    );
+
+    let (stdout, stderr, 코드) = 실행(&root, &["refs", "v1.2/a#b/pay.결제"]);
+
+    assert_eq!(코드, 0, "{stderr}");
+    assert_eq!(stdout, "v1.2/a#b/pay#결제의 방법\n");
+    정리(&root);
+}
+
+/// topic 주소를 `refs` 에 주면 **모양 오류**다. `refs` 가 받는 것은 키워드뿐이다 (스펙 6.5).
+#[test]
+fn refs_는_topic_주소를_거절하고_사용법을_출력한다() {
+    let root = 임시_루트("refs-topic-주소");
+    git_저장소로(&root);
+    정상_문서(&root);
+
+    let (도움말, _, _) = 실행(&root, &["--help"]);
+    let (stdout, stderr, 코드) = 실행(&root, &["refs", "docs/a#결제의 방법"]);
+
+    assert_eq!(코드, 2, "{stderr}");
+    assert_eq!(stdout, "");
+    assert!(stderr.contains(&도움말), "{stderr}");
+    정리(&root);
+}
+
+/// `show` 도 **마지막 `/` 뒤**에서 가른다 (스펙 6.0 주소 분할 규칙). 전체 문자열의 첫 `#`
+/// 로 가르면 디렉토리 이름의 `#` 에서 갈려, `list`·`refs` 가 받는 문서를 `show` 만 거절한다.
+#[test]
+fn show_는_구분자가_든_디렉토리_이름을_그대로_받는다() {
+    let root = 임시_루트("show-구분자-디렉토리");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "v1.2/a#b/pay.kang",
+        "---\ndescription: 결제 정책\n---\n\nkeyword `결제`: 대금을 지불하는 행위\n\n## 결제의 방법\n\n사용자는 `결제` 를 한다.\n",
+    );
+
+    let (문서, stderr, 코드) = 실행(&root, &["show", "v1.2/a#b/pay"]);
+    assert_eq!(코드, 0, "{stderr}");
+    assert!(문서.starts_with("path: v1.2/a#b/pay\n"), "{문서}");
+
+    let (토픽, stderr, 코드) = 실행(&root, &["show", "v1.2/a#b/pay#결제의 방법"]);
+    assert_eq!(코드, 0, "{stderr}");
+    assert!(토픽.contains("결제의 방법"), "{토픽}");
+    정리(&root);
+}
+
+/// 스펙 V0001 의 예제 프로젝트는 합법 kang 이어야 한다. 스펙이 든 예제가 자기 컴파일러를
+/// 통과하지 못하면 스펙과 구현 중 하나가 틀린 것이다.
+#[test]
+fn fixture_프로젝트가_build_를_통과한다() {
+    let root = 임시_루트("예제-통과");
+    git_저장소로(&root);
+    예제_프로젝트_통과(&root);
+
+    let (stdout, stderr, 코드) = 실행(&root, &["build"]);
+
+    assert_eq!(코드, 0, "{stderr}");
+    assert_eq!(stderr, "", "예제 프로젝트는 진단을 내지 않아야 한다");
+    assert_eq!(stdout, "", "build 는 문서를 출력하지 않는다");
+    정리(&root);
+}
+
+/// 상위 정책이 바뀌면 그것을 import 한 문서가 **전부** 깨진다 (스펙 4.8). 한 곳만 깨지면
+/// 나머지가 옛 정책을 전제로 방치된다.
+#[test]
+fn 상위_문서_수정_후_모든_참조처가_깨진다() {
+    let root = 임시_루트("상위-수정");
+    git_저장소로(&root);
+    예제_프로젝트_통과(&root);
+
+    // `docs/A` 의 `결제` 한 줄 정의를 고친다. `docs/B` 와 `docs/C` 가 둘 다 이것을 import 한다.
+    let a = 읽기(&root, "docs/A.kang").replace(
+        "keyword `결제`: 사용자가 상품 대금을 지불하는 행위",
+        "keyword `결제`: 사용자가 상품 대금을 지불하고 기록을 남기는 행위",
+    );
+    쓰기(&root, "docs/A.kang", &a);
+
+    let (_, stderr, 코드) = 실행(&root, &["build"]);
+
+    assert_eq!(코드, 1, "{stderr}");
+    // 참조처가 둘이므로 진단도 둘이다. 하나만 나면 나머지가 방치된다.
+    assert_eq!(stderr.matches("error[K021]").count(), 2, "{stderr}");
+    assert!(stderr.contains("docs/B.kang:5"), "{stderr}");
+    assert!(stderr.contains("docs/C.kang:5"), "{stderr}");
+    정리(&root);
+}
+
+/// 정상 워크플로는 "참조처를 고친 뒤 `bless`" 다 (스펙 6.2). 그래서 진단이 알린 줄 번호는
+/// bless 시점에 이미 낡아 있다. 주소가 심볼이므로 그래도 맞는 줄이 갱신된다 (ADR-0003).
+#[test]
+fn 참조처를_먼저_고친_뒤_bless_해도_올바른_핀이_갱신된다() {
+    let root = 임시_루트("고친뒤-bless");
+    git_저장소로(&root);
+    예제_프로젝트_통과(&root);
+    let 옛_핀 = 읽기(&root, "docs/C.kang");
+
+    let a = 읽기(&root, "docs/A.kang").replace(
+        "keyword `결제`: 사용자가 상품 대금을 지불하는 행위",
+        "keyword `결제`: 사용자가 상품 대금을 지불하고 기록을 남기는 행위",
+    );
+    쓰기(&root, "docs/A.kang", &a);
+
+    // 참조처를 먼저 고친다 — 빈 줄 하나로 import 블록이 한 줄 아래로 밀린다.
+    let c = 읽기(&root, "docs/C.kang").replacen("---\n\nimport", "---\n\n\nimport", 1);
+    쓰기(&root, "docs/C.kang", &c);
+    let (_, stderr, _) = 실행(&root, &["build"]);
+    assert!(
+        stderr.contains("docs/C.kang:6"),
+        "밀린 줄이 진단에 나와야 한다: {stderr}"
+    );
+
+    let (_, stderr, 코드) = 실행(&root, &["bless", "docs/C", "--import", "docs/A.결제"]);
+    assert_eq!(코드, 0, "{stderr}");
+
+    // 밀린 자리의 import 줄이 갱신되었고, 값도 실제로 달라졌다.
+    let 새_본문 = 읽기(&root, "docs/C.kang");
+    let 새_줄 = 새_본문
+        .lines()
+        .nth(5)
+        .expect("여섯째 줄이 있어야 한다")
+        .to_string();
+    assert!(
+        새_줄.starts_with("import `docs`/`A`.`결제` rev \""),
+        "{새_줄}"
+    );
+    assert!(
+        !옛_핀.contains(&새_줄),
+        "핀이 실제로 바뀌어야 한다: {새_줄}"
+    );
+    // 나머지 참조처(`docs/B`)는 여전히 깨진 채여야 한다 — 일괄 해제 수단은 없다 (스펙 6.2).
+    let (_, stderr, 코드) = 실행(&root, &["build"]);
+    assert_eq!(코드, 1, "{stderr}");
+    assert_eq!(stderr.matches("error[K021]").count(), 1, "{stderr}");
+    assert!(stderr.contains("docs/B.kang:5"), "{stderr}");
+    정리(&root);
+}
+
+/// exception 의 해시 입력은 **그것을 선언한 topic 의 본문**이다 (스펙 4.8). 맥락이 바뀌면
+/// 그 예외를 커버하는 문서가 깨져야 한다.
+#[test]
+fn exception_선언_topic_을_바꾸면_커버_문서가_깨진다() {
+    let root = 임시_루트("예외-맥락");
+    git_저장소로(&root);
+    예제_프로젝트_통과(&root);
+
+    // 예외 이름도 `cover` 줄도 그대로 두고, 예외를 선언한 topic 의 **본문만** 고친다.
+    let b = 읽기(&root, "docs/B.kang").replace(
+        "`결제` 를 하기 위한 수단 중",
+        "`결제` 를 하기 위한 여러 수단 중",
+    );
+    쓰기(&root, "docs/B.kang", &b);
+
+    let (_, stderr, 코드) = 실행(&root, &["build"]);
+
+    assert_eq!(코드, 1, "{stderr}");
+    assert!(stderr.contains("error[K021]"), "{stderr}");
+    // 깨지는 것은 예외를 import 한 줄이다 (`docs/C` 의 셋째 import).
+    assert!(stderr.contains("`카드 수단 무료 결제`"), "{stderr}");
+    assert!(stderr.contains("docs/C.kang:7"), "{stderr}");
+    정리(&root);
+}
+
+/// 순환은 **체인 전체**를 출력해야 한다 (스펙 5.1). 한 문서만 가리키면 어디를 끊을지
+/// 판단할 수 없다.
+#[test]
+fn 순환_import_를_만들면_체인이_출력된다() {
+    let root = 임시_루트("순환");
+    git_저장소로(&root);
+    예제_프로젝트_통과(&root);
+
+    // `docs/A` 가 `docs/C` 의 topic 을 import 하면 A → C → B → A 가 닫힌다.
+    let a = 읽기(&root, "docs/A.kang")
+        .replacen(
+            "---\n\nkeyword",
+            "---\n\nimport `docs`/`C`#`무료결제의 구성요소`\n\nkeyword",
+            1,
+        )
+        .replace(
+            "`결제` 는 `청구서` 와 `결제 내역` 으로 이루어져 있다.",
+            "`결제` 는 `청구서` 와 `결제 내역` 으로 이루어져 있다. `무료결제의 구성요소` 도 참고한다.",
+        );
+    쓰기(&root, "docs/A.kang", &a);
+
+    let (_, stderr, 코드) = 실행(&root, &["build"]);
+
+    assert_eq!(코드, 1, "{stderr}");
+    assert!(stderr.contains("error[K040]"), "{stderr}");
+    // 체인은 닫히는 지점까지 전부 나온다.
+    assert!(
+        stderr.contains("docs/A → docs/C → docs/B → docs/A"),
+        "{stderr}"
+    );
+    // 체인에 든 문서의 import 줄이 모두 위치로 나온다.
+    for 자리 in ["docs/A.kang:5", "docs/C.kang:6", "docs/B.kang:5"] {
+        assert!(stderr.contains(자리), "{자리} 가 없다: {stderr}");
+    }
+    정리(&root);
+}
+
+/// `show` 는 YAML 을 낸다 (스펙 6.4). 파서를 통과하지 못하면 소비자가 읽을 수 없다.
+///
+/// **의존성을 늘리지 않는다.** `python3` 과 `pyyaml` 이 있으면 반드시 돌고, 없으면
+/// 건너뛴다. 이미터 자체의 단위 검증은 `tests/yaml.rs` 에 있다.
+#[test]
+fn show_출력이_유효한_yaml_이다() {
+    let root = 임시_루트("show-yaml");
+    git_저장소로(&root);
+    예제_프로젝트_통과(&root);
+
+    // ponytail: python3 이나 pyyaml 이 없는 환경에서는 이 게이트가 조용히 빠진다. YAML
+    // 파서를 의존성으로 들이지 않기 위한 대가이며, CI 가 파서 없는 이미지로 도는 일이
+    // 생기면 그때 `serde_yaml` 을 dev-dependency 로 올린다.
+    let 파서_있음 = Command::new("python3")
+        .args(["-c", "import yaml"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|상태| 상태.success());
+    if !파서_있음 {
+        eprintln!("python3 또는 pyyaml 이 없어 YAML 검증을 건너뛴다");
+        정리(&root);
+        return;
+    }
+
+    // 문서 주소와 topic 주소 양쪽을 본다. topic 조회가 다른 코드 경로다.
+    for 주소 in [
+        "docs/A",
+        "docs/B",
+        "docs/C",
+        "docs/B#카드 결제",
+        "docs/C#무료결제의 구성요소",
+    ] {
+        let (stdout, stderr, 코드) = 실행(&root, &["show", 주소]);
+        assert_eq!(코드, 0, "{주소}: {stderr}");
+
+        let 결과 = Command::new("python3")
+            .args([
+                "-c",
+                "import sys,yaml; yaml.safe_load(sys.argv[1]) or sys.exit('빈 문서')",
+                "--",
+                &stdout,
+            ])
+            .output()
+            .expect("python3 을 실행할 수 있어야 한다");
+        assert!(
+            결과.status.success(),
+            "{주소} 의 출력이 YAML 이 아니다:\n{stdout}\n{}",
+            String::from_utf8_lossy(&결과.stderr)
+        );
+    }
+    정리(&root);
+}
+
+/// 통과하지 못한 문서는 **어떤** CLI 명령으로도 출력되지 않는다 (스펙 5절).
+/// 조회 명령 넷이 각자 손으로 반복한 별개 match 이므로 넷을 모두 본다.
+#[test]
+fn error_상태에서는_어떤_조회도_출력되지_않는다() {
+    let root = 임시_루트("에러-조회");
+    git_저장소로(&root);
+    예제_프로젝트_통과(&root);
+    // 통과하던 프로젝트를 깬다. 깨진 것은 `docs/A` 지만 어떤 조회도 막혀야 한다.
+    let a = 읽기(&root, "docs/A.kang").replace(
+        "keyword `결제`: 사용자가 상품 대금을 지불하는 행위",
+        "keyword `결제`: 사용자가 상품 대금을 지불하고 기록을 남기는 행위",
+    );
+    쓰기(&root, "docs/A.kang", &a);
+
+    for 인자 in [
+        vec!["list"],
+        vec!["keywords"],
+        vec!["refs", "docs/A.결제"],
+        vec!["show", "docs/B"],
+        vec!["show", "docs/C#무료결제의 구성요소"],
+    ] {
+        let (stdout, stderr, 코드) = 실행(&root, &인자);
+        assert_eq!(코드, 1, "{인자:?}: {stderr}");
+        assert_eq!(stdout, "", "{인자:?} 가 출력했다");
+        assert!(stderr.contains("error[K021]"), "{인자:?}: {stderr}");
+    }
+    정리(&root);
+}
+
+/// 스펙 5.1.1 이 예시로 못박은 세 진단(`K001`·`K012`·`K021`)이 **바이너리 출력에서**
+/// 세 요소를 갖추는지 본다 — 관련 위치 전부, 왜 문제인지 한 문장, 그대로 적용 가능한 fix.
+///
+/// 단위 테스트는 진단을 손으로 만들어 [`kang::check::report`] 만 보므로, 진단 함수가
+/// `compile()` 에 연결되지 않았거나 fix 가 산문으로 오염된 것은 여기서만 잡힌다.
+#[test]
+fn 진단_3종의_구조가_스펙_5_1_1_과_일치한다() {
+    let root = 임시_루트("진단-3종");
+    git_저장소로(&root);
+    // `epoch` 를 두 문서가 선언(K012), `docs/c` 가 `승격` 을 참조만 함(K001),
+    // `docs/d` 가 틀린 핀으로 import(K021).
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: 기준선\n---\n\nkeyword `승격`: 후보를 기준선으로 올리는 일\nkeyword `epoch`: 기준선의 세대\n",
+    );
+    쓰기(
+        &root,
+        "docs/b.kang",
+        "---\ndescription: 초안\n---\n\nkeyword `epoch`: 초안의 세대\n",
+    );
+    쓰기(
+        &root,
+        "docs/c.kang",
+        "---\ndescription: 회귀 정책\n---\n\n## 회귀의 기준\n\n`승격` 이후에는 회귀를 막는다.\n",
+    );
+    쓰기(
+        &root,
+        "docs/d.kang",
+        "---\ndescription: 청구\n---\n\nimport `docs`/`a`.`승격` rev \"000000\"\n\n## 청구의 기준\n\n`승격` 을 따른다.\n",
+    );
+
+    let (_, stderr, 코드) = 실행(&root, &["build"]);
+    assert_eq!(코드, 1, "{stderr}");
+
+    // 블록 하나가 진단 하나다. 머리글 줄이 블록의 시작이다 — 블록 **안에도** 빈 줄이
+    // 있으므로 빈 줄로 가르면 안 된다.
+    let mut 블록: Vec<String> = Vec::new();
+    for 줄 in stderr.lines() {
+        if 줄.starts_with("error[") || 줄.starts_with("warning[") {
+            블록.push(String::new());
+        }
+        if let Some(현재) = 블록.last_mut() {
+            현재.push_str(줄);
+            현재.push('\n');
+        }
+    }
+    for 코드이름 in ["K001", "K012", "K021"] {
+        let 블록 = 블록
+            .iter()
+            .find(|블록| 블록.starts_with(&format!("error[{코드이름}]: ")))
+            .unwrap_or_else(|| panic!("{코드이름} 블록이 없다: {stderr}"));
+        // 왜 문제인지 한 문장 — 머리글 줄이 곧 그것이다.
+        assert!(
+            블록.lines().next().is_some_and(|줄| 줄.ends_with('.')),
+            "{블록}"
+        );
+        // 관련 위치 전부 — 최소 하나, 그리고 문서:줄 꼴이다.
+        assert!(블록.contains(".kang:"), "{블록}");
+        // 그대로 적용 가능한 fix.
+        assert!(블록.contains("\n  fix:\n"), "{블록}");
+    }
+
+    // `K012` 는 다중 위치 진단이다. 한 곳만 보여주면 나머지를 찾아 헤맨다.
+    let k012 = 블록
+        .iter()
+        .find(|블록| 블록.starts_with("error[K012]: "))
+        .expect("K012 블록이 있어야 한다")
+        .as_str();
+    assert!(k012.contains("docs/a.kang:6"), "{k012}");
+    assert!(k012.contains("docs/b.kang:5"), "{k012}");
+
+    // 문법이 갈린다 — `[edit]` 는 문서 문법(백틱), `[shell]` 은 CLI 문법(백틱 금지·인용).
+    for 줄 in stderr.lines().filter(|줄| 줄.contains("[shell]")) {
+        assert!(!줄.contains('`'), "셸 fix 에 백틱이 있다: {줄}");
+    }
+    // 그리고 `[shell]` 은 명령만이다 — 렌더된 줄을 그대로 실행할 수 있어야 한다.
+    // 개수를 못박는다. 빈 목록을 돌면 이 검사가 조용히 사라진다 (`K001`·`K021` 이 하나씩).
+    let 명령들 = 셸_fix(&stderr);
+    assert_eq!(명령들.len(), 2, "{stderr}");
+    for 명령 in 명령들 {
+        assert!(명령.starts_with("kang "), "명령으로 시작해야 한다: {명령}");
+    }
+    정리(&root);
+}
+
+/// `parse_document` 는 `lines()` 로, `bless` 의 되쓰기는 `split_inclusive('\n')` 로 줄을
+/// 가른다. **두 색인이 어긋나면 엉뚱한 줄에 핀이 박힌다.**
+///
+/// BOM 과 CRLF 를 함께 준다. BOM 은 로더가 벗기지만 되쓰기는 원문을 쓰므로 조각 0 에
+/// 남고, CRLF 는 `lines()` 가 `\r` 를 떼지만 `split_inclusive` 는 남긴다 — 두 규칙이
+/// 한 파일에서 동시에 걸리는 경우다.
+#[test]
+fn bom_과_crlf_문서에서도_지정한_줄에만_핀이_박힌다() {
+    let root = 임시_루트("bom-crlf");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/base.kang",
+        "---\ndescription: 기초\n---\n\n## 기초 정책\n\n기초를 적는다.\n",
+    );
+    // `\u{feff}` 는 UTF-8 로 EF BB BF 세 바이트다.
+    쓰기(
+        &root,
+        "docs/top.kang",
+        "\u{feff}---\r\ndescription: 꼭대기\r\n---\r\n\r\nimport `docs`/`base`#`기초 정책` as `기초`\r\n\r\n## 꼭대기 정책\r\n\r\n`기초` 를 따른다.\r\n",
+    );
+
+    let (_, stderr, 코드) = 실행(&root, &["build"]);
+    assert_eq!(코드, 1, "{stderr}");
+    // 진단이 가리키는 줄은 BOM 을 벗긴 뒤의 색인이다.
+    assert!(stderr.contains("docs/top.kang:5"), "{stderr}");
+    fix_적용(&root, &stderr);
+
+    let 결과 = 읽기(&root, "docs/top.kang");
+    // BOM 이 살아 있어야 한다 — 되쓰기가 원문을 쓴다는 계약이다.
+    assert!(결과.starts_with('\u{feff}'), "BOM 이 사라졌다");
+    let 줄들: Vec<&str> = 결과.split_inclusive('\n').collect();
+    // 핀은 다섯째 줄에만 들어가고, 삽입 위치는 `\r` **앞**이다.
+    assert!(
+        줄들[4].starts_with("import `docs`/`base`#`기초 정책` as `기초` rev \"")
+            && 줄들[4].ends_with("\"\r\n"),
+        "{:?}",
+        줄들[4]
+    );
+    // 나머지 줄은 한 바이트도 바뀌지 않았다.
+    assert_eq!(줄들[0], "\u{feff}---\r\n");
+    assert_eq!(줄들[8], "`기초` 를 따른다.\r\n");
+
+    let (_, stderr, 코드) = 실행(&root, &["build"]);
+    assert_eq!(코드, 0, "{stderr}");
+    정리(&root);
+}
+
+/// 비 UTF-8 문서는 `K051` 이 위에서 막으므로 줄 색인 문제에 도달하지 않는다.
+/// `bless` 도 같은 로더를 거치므로 **파일을 한 바이트도 건드리지 않는다.**
+#[test]
+fn 비_utf8_문서는_bless_가_손대지_않는다() {
+    let root = 임시_루트("비-utf8");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/base.kang",
+        "---\ndescription: 기초\n---\n\n## 기초 정책\n\n기초를 적는다.\n",
+    );
+    // UTF-8 이 아닌 바이트열을 직접 쓴다. `쓰기` 는 &str 만 받으므로 여기서만 예외다.
+    let 원본: Vec<u8> = b"---\ndescription: \xB1\xE2\xC3\xCA\n---\n\nimport `docs`/`base`#`\xB1\xE2\xC3\xCA \xC1\xA4\xC3\xA5`\n".to_vec();
+    fs::create_dir_all(root.join("docs")).expect("디렉토리를 만들 수 있어야 한다");
+    fs::write(root.join("docs/top.kang"), &원본).expect("파일을 쓸 수 있어야 한다");
+
+    let (_, stderr, 코드) = 실행(&root, &["build"]);
+    assert_eq!(코드, 1, "{stderr}");
+    assert!(stderr.contains("K051"), "{stderr}");
+
+    let (_, stderr, 코드) = 실행(
+        &root,
+        &["bless", "docs/top", "--import", "docs/base#기초 정책"],
+    );
+    assert_eq!(코드, 1, "{stderr}");
+    assert_eq!(
+        fs::read(root.join("docs/top.kang")).expect("파일이 있어야 한다"),
+        원본,
+        "bless 가 비 UTF-8 문서를 건드렸다"
+    );
+    정리(&root);
+}
+
+/// **알려진 천장의 특성 고정** (`check.rs` 의 `이름_분할` 마커). 같은 줄의 백틱 조각들은
+/// 원문의 `.` 을 보지 않고 스코프만 보고 이어 붙는다. 그래서 `` `수단` 과 `카드` `` 처럼
+/// 따로 언급한 두 이름이 계층 keyword `수단`.`카드` 로 병합되고, 선언되지 않은 `카드`
+/// 참조에 나야 할 `K001` 이 **나지 않는다.**
+///
+/// ponytail: 도그푸딩 코퍼스(`plans/`·`docs/` 2035 줄, 백틱 조각 2개 이상인 줄 216, 원문이
+/// 점으로 이은 계층 이름 17종)에서 실제 충돌은 0 건이라 v1 에서 올리지 않는다. 올릴 조건은
+/// 실제 코퍼스에서 충돌 1 건이 관측되는 것이며, 고치려면 파서가 원문 인접성을 실어야 해
+/// `ast.rs`·`parse.rs` 변경이 필요하다. 그 변경이 오면 이 테스트가 뒤집힌다.
+#[test]
+fn 병합_천장은_같은_줄의_두_이름을_한_이름으로_읽는다() {
+    let root = 임시_루트("병합-천장");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/x.kang",
+        "---\ndescription: X\n---\n\nkeyword `수단`: 결제를 실행하는 방법\nkeyword `수단`.`카드`: 카드 수단\n\n## 정책\n\n`수단` 과 `카드` 를 함께 쓴다.\n",
+    );
+
+    // 병합되므로 통과한다. `카드` 단독 선언이 없으니 원래는 K001 이 나야 한다.
+    let (_, stderr, 코드) = 실행(&root, &["build"]);
+    assert_eq!(코드, 0, "{stderr}");
+
+    // 병합된 이름으로 조회되고, 상위 조각 단독으로는 조회되지 않는다.
+    let (합쳐진, _, _) = 실행(&root, &["refs", "docs/x.수단.카드"]);
+    assert_eq!(합쳐진, "docs/x#정책\n");
+    let (상위, _, _) = 실행(&root, &["refs", "docs/x.수단"]);
+    assert_eq!(상위, "", "상위 조각은 소비되어 남지 않는다");
     정리(&root);
 }

@@ -756,10 +756,14 @@ pub fn check_revs(project: &Project, table: &SymbolTable) -> Vec<Diagnostic> {
                         line: import.line,
                         note: "여기서 import 했습니다 — 이 줄에 rev 핀이 없습니다.".to_string(),
                     }],
+                    // **`action` 은 명령만이다.** 산문을 앞에 붙이면 렌더된
+                    // `[shell] {action}` 줄을 복사해 실행할 수 없다 — 셸이 첫 낱말을
+                    // 명령으로 찾는다 (스펙 5.1.1 :261·:306, 6.1 :417). 무엇을 왜
+                    // 하는지는 위 `message` 가 이미 말한다.
                     fixes: vec![Fix {
                         kind: FixKind::Shell,
                         doc: None,
-                        action: format!("이 import 에 rev 핀을 붙이세요: {}", 명령()),
+                        action: 명령(),
                     }],
                 },
                 Some(핀) => {
@@ -791,13 +795,12 @@ pub fn check_revs(project: &Project, table: &SymbolTable) -> Vec<Diagnostic> {
                             line: import.line,
                             note: format!("여기서 import 했습니다 — 핀 {핀}, 현재 {현재}."),
                         }],
+                        // 산문을 붙이지 않는다 — 위 `K020` 과 같은 이유다. "다시 읽고
+                        // 여전히 맞는지 확인한 뒤" 라는 선행 조건은 `message` 에 있다.
                         fixes: vec![Fix {
                             kind: FixKind::Shell,
                             doc: None,
-                            action: format!(
-                                "대상을 다시 읽고 이 문서가 여전히 맞는다면 핀을 갱신하세요: {}",
-                                명령()
-                            ),
+                            action: 명령(),
                         }],
                     }
                 }
@@ -1649,11 +1652,13 @@ fn 미해결_심볼(
                             "{조건}import 블록에 다음 줄을 추가하세요: import {문서_문법}"
                         ),
                     },
+                    // 산문을 붙이지 않는다 — `K020` 과 같은 이유다. 이 명령이 바로 위
+                    // `[edit]` 가 추가한 import 줄에 핀을 붙인다는 것은 순서가 말한다.
                     Fix {
                         kind: FixKind::Shell,
                         doc: None,
                         action: format!(
-                            "그 import 에 rev 핀을 붙이세요: kang bless {} --import {}",
+                            "kang bless {} --import {}",
                             셸_인용(&doc.to_string()),
                             셸_인용(&cli_문법)
                         ),

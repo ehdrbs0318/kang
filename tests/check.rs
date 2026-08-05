@@ -1792,7 +1792,10 @@ fn rev_불일치_진단의_구조가_스펙_5_1_1_과_일치한다() {
         fixes: vec![Fix {
             kind: FixKind::Shell,
             doc: None,
-            action: "대상을 다시 읽고 핀을 갱신하세요: kang bless 'docs/billing/invoice' --import 'docs/core/payment#결제의 방법'".to_string(),
+            // 스펙 5.1.1 의 예시가 그렇듯 `action` 은 명령만이다. 산문을 앞에 붙이면
+            // 렌더된 줄을 복사해 실행할 수 없다.
+            action: "kang bless 'docs/billing/invoice' --import 'docs/core/payment#결제의 방법'"
+                .to_string(),
         }],
     };
 

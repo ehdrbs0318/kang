@@ -850,18 +850,19 @@ pub fn bless(
 **구현 요점**
 스펙 V0001 의 예제(`docs/A`, `docs/B`, `docs/C` — 결제·카드결제·무료결제)를 fixture 로 만들고, 전 명령을 실제로 돌린다.
 
-- [ ] **Step 1: fixture 프로젝트 작성** — 결제·카드결제·무료결제 3개 문서. git 저장소여야 루트 탐색이 동작하므로 fixture 도 저장소로 만든다
-- [ ] **Step 2: 통합 테스트 작성** — 시나리오 9개
-  - `fixture_프로젝트가_build_를_통과한다`
-  - `상위_문서_수정_후_모든_참조처가_깨진다`
-  - `build_출력을_bless_에_그대로_넘기면_전부_해제된다`
-  - `참조처를_먼저_고친_뒤_bless_해도_올바른_핀이_갱신된다`
-  - `exception_선언_topic_을_바꾸면_커버_문서가_깨진다`
-  - `순환_import_를_만들면_체인이_출력된다`
-  - `show_출력이_유효한_YAML_이다`
-  - `error_상태에서는_어떤_조회도_출력되지_않는다`
-  - `git_init_후_kang_init_과_build_세_명령으로_통과한다`
-  - `진단_3종의_구조가_스펙_5_1_1_과_일치한다`
+- [x] **Step 1: fixture 프로젝트 작성** — 결제·카드결제·무료결제 3개 문서. git 저장소여야 루트 탐색이 동작하므로 fixture 도 저장소로 만든다
+  - `tests/cli.rs` 의 `예제_프로젝트` / `예제_프로젝트_통과`. 핀 없이 쓰고 `kang bless` 가 넣게 한다 (스펙 4.8 3단계). 임시 디렉토리에 만든다 — `tests/` 안에 두면 이 저장소 워크트리에 중첩 저장소가 생긴다
+- [x] **Step 2: 통합 테스트 작성** — 시나리오 9개 중 8개 (하나는 Task 14 로 이월)
+  - [x] `fixture_프로젝트가_build_를_통과한다`
+  - [x] `상위_문서_수정_후_모든_참조처가_깨진다`
+  - [x] `build_출력을_bless_에_그대로_넘기면_전부_해제된다` — C1 의 회귀 테스트
+  - [x] `참조처를_먼저_고친_뒤_bless_해도_올바른_핀이_갱신된다`
+  - [x] `exception_선언_topic_을_바꾸면_커버_문서가_깨진다`
+  - [x] `순환_import_를_만들면_체인이_출력된다`
+  - [x] `show_출력이_유효한_yaml_이다` — python3+pyyaml 게이트, 없으면 건너뜀
+  - [x] `error_상태에서는_어떤_조회도_출력되지_않는다`
+  - [ ] `git_init_후_kang_init_과_build_세_명령으로_통과한다` — **Task 14 로 이월.** `kang init` 이 아직 종료 코드 3 이라 지금 만들 수 없다
+  - [x] `진단_3종의_구조가_스펙_5_1_1_과_일치한다`
 **컨트롤러 이월 (Task 8 리뷰에서 나옴 — 저장소 전역 일괄 처리)**
 
 - **`[shell]` fix 의 `action` 이 한글 산문 접두사로 시작해 렌더된 줄을 그대로 실행할 수 없다.** `report()` 가 `[shell] {action}` 으로 찍는데 action 이 `이 import 에 rev 핀을 붙이세요: kang bless 'docs/b' --import 'docs/a#결제의 방법'` 이라, 통째로 복사하면 `command not found: 이` 다.
@@ -876,9 +877,11 @@ pub fn bless(
 
 - **참조 병합 천장의 실제 빈도를 측정하라.** Task 6 절의 "알려진 한계" 참조 — 두 이름을 따로 언급한 본문이 병합되면 뒤 조각의 import 가 `K003` 으로 오인된다. 도그푸딩 코퍼스에서 얼마나 자주 발생하는지 재고 승급 여부를 정하라.
 
-- [ ] **Step 3: `cargo test` 통과 확인**
-- [ ] **Step 4: `cargo clippy -- -D warnings` 통과 확인**
-- [ ] **Step 5: 커밋** — `test: 통합 검증과 fixture 프로젝트`
+- [x] **Step 3: `cargo test` 통과 확인** — 290 passed (275 → 290)
+- [x] **Step 4: `cargo clippy -- -D warnings` 통과 확인** — `--all-targets` 로 clean, `cargo fmt --check` 도 clean
+- [x] **Step 5: 커밋** — 판정 J1~J4 와 이월 검증 결과는 `.superpowers/sdd/V0002-kang-v1-implementation/task-12-report.md`
+  - C1(렌더된 `[shell]` fix 를 그대로 실행할 수 없음) 은 `check.rs` 3자리를 고쳐 해소. **`resolve.rs` 의 6자리(`K050`·`K051`)는 파일 동결로 남았다** — 리포트의 C1 전수 조사 표 참조
+  - M8(주소 파싱 통합) 은 `참조들` 이 `ImportAddress::parse` 를 쓰게 하고 `조회` 를 같은 분할 순서로 맞췄다. `main.rs` 606 → 597 줄
 
 ---
 
