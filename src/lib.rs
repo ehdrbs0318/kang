@@ -2,6 +2,7 @@
 //! 통합 테스트와 바이너리(`main.rs`)가 공유하는 모듈을 노출한다.
 
 pub mod ast;
+pub mod check;
 pub mod hash;
 pub mod parse;
 pub mod resolve;

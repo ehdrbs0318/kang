@@ -1,8 +1,10 @@
-// `resolve::find_root` / `resolve::load` / `resolve::SymbolTable` 을 검증하는 통합 테스트.
+// `resolve::find_root` / `resolve::load` / `resolve::SymbolTable` 과
+// `check::check_cycles` 를 검증하는 통합 테스트.
 //
 // 이 파일의 테스트는 **실제 파일 시스템**을 쓴다. 각 테스트는 자기만의 임시 디렉토리를
 // 만들고 그 안에서만 움직이므로 `cargo test` 의 기본 병렬 실행에서도 서로를 밟지 않는다.
-use kang::ast::{DocPath, FixKind, Severity, SymbolKind, SymbolRef};
+use kang::ast::{Diagnostic, DocPath, FixKind, Severity, SymbolKind, SymbolRef};
+use kang::check;
 use kang::resolve;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -75,6 +77,38 @@ fn 정리(dir: &Path) {
 /// 만들어진 [`DocPath`]
 fn 문서경로(조각들: &[&str]) -> DocPath {
     DocPath(조각들.iter().map(|조각| 조각.to_string()).collect())
+}
+
+/// 프로젝트를 읽어 순환 검사만 돌린다.
+///
+/// 로드 단계에서 진단이 나오면 픽스처가 잘못된 것이므로 여기서 잡는다 —
+/// 그것을 그대로 두면 순환 진단이 없는 이유를 픽스처 오타에서 찾게 된다.
+///
+/// # 매개변수
+/// - `root`: 프로젝트 루트
+///
+/// # 반환값
+/// [`check::check_cycles`] 가 낸 진단들
+fn 순환_검사(root: &Path) -> Vec<Diagnostic> {
+    let (project, 로드_진단) = resolve::load(root);
+    assert!(로드_진단.is_empty(), "{로드_진단:?}");
+    check::check_cycles(&project)
+}
+
+/// 진단이 가리키는 위치를 `(문서 경로, 줄 번호)` 목록으로 펼친다.
+/// 순환 체인의 **순서와 길이**를 그대로 단언하기 위한 것이다.
+///
+/// # 매개변수
+/// - `diagnostic`: 펼칠 진단
+///
+/// # 반환값
+/// 위치마다 문서 경로 문자열과 줄 번호를 담은 목록
+fn 위치들(diagnostic: &Diagnostic) -> Vec<(String, usize)> {
+    diagnostic
+        .locations
+        .iter()
+        .map(|location| (location.doc.to_string(), location.line))
+        .collect()
 }
 
 /// git 저장소 루트가 곧 프로젝트 루트여야 한다 (스펙 3절).
@@ -810,5 +844,318 @@ fn alias_가_없는_import_는_정본_이름으로_들어간다() {
         .expect("alias 가 없으면 정본 이름으로 들어가야 한다");
 
     assert_eq!(table.owner(id), &문서경로(&["docs", "a"]));
+    정리(&root);
+}
+
+/// `A → B → A` 는 순환이다 (스펙 5.1·5.3).
+#[test]
+fn 직접_순환을_검출한다() {
+    let root = 임시_루트("cycle-two");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: A\n---\n\nimport `docs`/`b`.`청구서`\n\nkeyword `결제`: 대금을 지불하는 행위\n",
+    );
+    쓰기(
+        &root,
+        "docs/b.kang",
+        "---\ndescription: B\n---\n\nimport `docs`/`a`.`결제`\n\nkeyword `청구서`: 청구 내역을 담은 문서\n",
+    );
+
+    let 진단 = 순환_검사(&root);
+
+    assert_eq!(진단.len(), 1, "{진단:?}");
+    assert_eq!(진단[0].code, "K040");
+    assert_eq!(진단[0].severity, Severity::Error);
+    // 체인은 두 문서를 지나 시작점으로 돌아온다. 위치는 각 파일의 import 줄이다.
+    assert_eq!(
+        위치들(&진단[0]),
+        vec![("docs/a".to_string(), 5), ("docs/b".to_string(), 5)]
+    );
+    assert!(
+        진단[0].message.contains("docs/a → docs/b → docs/a"),
+        "{}",
+        진단[0].message
+    );
+    // note 는 그 줄이 실제로 import 하는 대상을 말해야 한다.
+    assert!(진단[0].locations[0].note.contains("docs/b"), "{진단:?}");
+    assert!(진단[0].locations[1].note.contains("docs/a"), "{진단:?}");
+    // 순환을 닫는 문서가 고칠 대상이다.
+    assert!(!진단[0].fixes.is_empty());
+    assert_eq!(진단[0].fixes[0].kind, FixKind::Edit);
+    assert_eq!(
+        진단[0].fixes[0].doc.as_ref(),
+        Some(&문서경로(&["docs", "b"]))
+    );
+    정리(&root);
+}
+
+/// 순환 발견 시 체인 전체를 출력해야 한다 (스펙 5.1: "순환 체인 전체를 출력").
+#[test]
+fn 삼단계_순환의_체인_전체를_출력한다() {
+    let root = 임시_루트("cycle-three");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: A\n---\n\nimport `docs`/`b`.`청구서`\n\nkeyword `결제`: 대금을 지불하는 행위\n",
+    );
+    쓰기(
+        &root,
+        "docs/b.kang",
+        "---\ndescription: B\n---\n\nimport `docs`/`c`.`영수증`\n\nkeyword `청구서`: 청구 내역을 담은 문서\n",
+    );
+    쓰기(
+        &root,
+        "docs/c.kang",
+        "---\ndescription: C\n---\n\nimport `docs`/`a`.`결제`\n\nkeyword `영수증`: 지불을 증명하는 문서\n",
+    );
+
+    let 진단 = 순환_검사(&root);
+
+    assert_eq!(진단.len(), 1, "{진단:?}");
+    assert_eq!(
+        위치들(&진단[0]),
+        vec![
+            ("docs/a".to_string(), 5),
+            ("docs/b".to_string(), 5),
+            ("docs/c".to_string(), 5)
+        ]
+    );
+    assert!(
+        진단[0]
+            .message
+            .contains("docs/a → docs/b → docs/c → docs/a"),
+        "{}",
+        진단[0].message
+    );
+    정리(&root);
+}
+
+/// `iknow` 는 import 간선을 만들지 않으므로 상호 명시가 순환이 아니다 (스펙 4.4).
+/// keyword·topic·exception 세 자리 전부를 한 번에 본다.
+#[test]
+fn iknow_상호_명시는_순환이_아니다() {
+    let root = 임시_루트("iknow-mutual");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: A\n---\n\nkeyword `금액`: 청구되는 원화 액수 // iknow `docs`/`b`.`금액`\n\n## 정산 절차 // iknow `docs`/`b`#`정산 절차`\n\n정산은 `금액` 기준이다.\n\nexception `무료 상품` // iknow `docs`/`b`!`무료 상품`\n",
+    );
+    쓰기(
+        &root,
+        "docs/b.kang",
+        "---\ndescription: B\n---\n\nkeyword `금액`: 환불되는 원화 액수 // iknow `docs`/`a`.`금액`\n\n## 정산 절차 // iknow `docs`/`a`#`정산 절차`\n\n환불도 `금액` 기준이다.\n\nexception `무료 상품` // iknow `docs`/`a`!`무료 상품`\n",
+    );
+
+    let 진단 = 순환_검사(&root);
+
+    assert!(진단.is_empty(), "{진단:?}");
+    정리(&root);
+}
+
+/// 길이 1 사이클도 순환이다. 자기 파일을 import 하는 것은 자기 자신에 의존하는 것이다.
+#[test]
+fn 자기_파일_import_는_순환이다() {
+    let root = 임시_루트("cycle-self");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: A\n---\n\nimport `docs`/`a`.`결제`\n\nkeyword `결제`: 대금을 지불하는 행위\n",
+    );
+
+    let 진단 = 순환_검사(&root);
+
+    assert_eq!(진단.len(), 1, "{진단:?}");
+    assert_eq!(진단[0].code, "K040");
+    assert_eq!(위치들(&진단[0]), vec![("docs/a".to_string(), 5)]);
+    assert!(
+        진단[0].message.contains("docs/a → docs/a"),
+        "{}",
+        진단[0].message
+    );
+    // 자기 문서의 심볼은 import 없이 쓸 수 있으므로 fix 는 줄을 지우라고 말한다.
+    assert_eq!(진단[0].fixes[0].kind, FixKind::Edit);
+    assert_eq!(
+        진단[0].fixes[0].doc.as_ref(),
+        Some(&문서경로(&["docs", "a"]))
+    );
+    assert!(진단[0].fixes[0].action.contains("자기"), "{진단:?}");
+    정리(&root);
+}
+
+/// 깊은 사슬은 순환이 아니다. 같은 문서를 여러 갈래로 지나도 되돌아오지 않으면 DAG 다.
+#[test]
+fn 순환이_없으면_진단이_없다() {
+    let root = 임시_루트("no-cycle");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: A\n---\n\nimport `docs`/`b`.`청구서`\nimport `docs`/`d`.`정산`\n\nkeyword `결제`: 대금을 지불하는 행위\n",
+    );
+    쓰기(
+        &root,
+        "docs/b.kang",
+        "---\ndescription: B\n---\n\nimport `docs`/`c`.`영수증`\n\nkeyword `청구서`: 청구 내역을 담은 문서\n",
+    );
+    쓰기(
+        &root,
+        "docs/c.kang",
+        "---\ndescription: C\n---\n\nimport `docs`/`d`.`정산`\n\nkeyword `영수증`: 지불을 증명하는 문서\n",
+    );
+    쓰기(
+        &root,
+        "docs/d.kang",
+        "---\ndescription: D\n---\n\nkeyword `정산`: 주고받을 금액을 확정하는 일\n",
+    );
+
+    let 진단 = 순환_검사(&root);
+
+    assert!(진단.is_empty(), "{진단:?}");
+    정리(&root);
+}
+
+/// 문서가 하나도 없으면 볼 간선이 없다.
+#[test]
+fn 문서가_없으면_순환_진단도_없다() {
+    let root = 임시_루트("cycle-empty");
+    git_저장소로(&root);
+
+    let 진단 = 순환_검사(&root);
+
+    assert!(진단.is_empty(), "{진단:?}");
+    정리(&root);
+}
+
+/// 겹치는 순환은 **되돌아오는 간선마다 하나씩** 보고한다.
+/// `A↔B` 와 `B↔C` 는 간선 두 개로 닫히므로 진단도 둘이다 — 같은 순환의 중복이 아니다.
+#[test]
+fn 겹치는_순환을_각각_보고한다() {
+    let root = 임시_루트("cycle-overlap");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: A\n---\n\nimport `docs`/`b`.`청구서`\n\nkeyword `결제`: 대금을 지불하는 행위\n",
+    );
+    쓰기(
+        &root,
+        "docs/b.kang",
+        "---\ndescription: B\n---\n\nimport `docs`/`a`.`결제`\nimport `docs`/`c`.`영수증`\n\nkeyword `청구서`: 청구 내역을 담은 문서\n",
+    );
+    쓰기(
+        &root,
+        "docs/c.kang",
+        "---\ndescription: C\n---\n\nimport `docs`/`b`.`청구서`\n\nkeyword `영수증`: 지불을 증명하는 문서\n",
+    );
+
+    let 진단 = 순환_검사(&root);
+
+    assert_eq!(진단.len(), 2, "{진단:?}");
+    assert_eq!(
+        위치들(&진단[0]),
+        vec![("docs/a".to_string(), 5), ("docs/b".to_string(), 5)]
+    );
+    // docs/b 의 두 번째 import 줄이 docs/c 로 가는 간선이므로 줄 번호가 6 이어야 한다.
+    assert_eq!(
+        위치들(&진단[1]),
+        vec![("docs/b".to_string(), 6), ("docs/c".to_string(), 5)]
+    );
+    assert!(
+        진단[0].message.contains("docs/a → docs/b → docs/a"),
+        "{}",
+        진단[0].message
+    );
+    assert!(
+        진단[1].message.contains("docs/b → docs/c → docs/b"),
+        "{}",
+        진단[1].message
+    );
+    정리(&root);
+}
+
+/// 같은 문서를 두 번 import 하면 간선이 둘이지만 순환은 하나다.
+/// 체인은 **파일에서 먼저 나온 import 줄**을 가리킨다.
+#[test]
+fn 같은_대상을_두_번_import_해도_한_번만_보고한다() {
+    let root = 임시_루트("cycle-dup-edge");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: A\n---\n\nimport `docs`/`b`.`청구서`\nimport `docs`/`b`.`영수증`\n\nkeyword `결제`: 대금을 지불하는 행위\n",
+    );
+    쓰기(
+        &root,
+        "docs/b.kang",
+        "---\ndescription: B\n---\n\nimport `docs`/`a`.`결제`\nimport `docs`/`a`.`결제`\n\nkeyword `청구서`: 청구 내역을 담은 문서\n\nkeyword `영수증`: 지불을 증명하는 문서\n",
+    );
+
+    let 진단 = 순환_검사(&root);
+
+    assert_eq!(진단.len(), 1, "{진단:?}");
+    assert_eq!(
+        위치들(&진단[0]),
+        vec![("docs/a".to_string(), 5), ("docs/b".to_string(), 5)]
+    );
+    정리(&root);
+}
+
+/// 대상 문서가 없는 import 는 간선이 아니다. 미해결 심볼 진단은 다른 층의 몫이므로
+/// 순환 검사는 **아무 진단도 내지 않는다.**
+#[test]
+fn 해석되지_않는_import_는_간선이_아니다() {
+    let root = 임시_루트("cycle-unresolved");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: A\n---\n\nimport `docs`/`없는문서`.`청구서`\n\nkeyword `결제`: 대금을 지불하는 행위\n",
+    );
+
+    let 진단 = 순환_검사(&root);
+
+    assert!(진단.is_empty(), "{진단:?}");
+    정리(&root);
+}
+
+/// 진단 순서와 체인은 실행마다 같아야 한다. 골든 파일로 고정할 수 없으면 회귀를 볼 수 없다.
+/// `load` 를 두 번 불러 서로 다른 `HashMap` 두 개에서 같은 결과가 나오는지 본다.
+#[test]
+fn 순환_보고는_결정적이다() {
+    let root = 임시_루트("cycle-deterministic");
+    git_저장소로(&root);
+    // 서로 얽힌 순환을 여럿 두어 시작점 선택이 결과를 바꾸는지 드러낸다.
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: A\n---\n\nimport `docs`/`b`.`청구서`\nimport `docs`/`c`.`영수증`\n\nkeyword `결제`: 대금을 지불하는 행위\n",
+    );
+    쓰기(
+        &root,
+        "docs/b.kang",
+        "---\ndescription: B\n---\n\nimport `docs`/`c`.`영수증`\n\nkeyword `청구서`: 청구 내역을 담은 문서\n",
+    );
+    쓰기(
+        &root,
+        "docs/c.kang",
+        "---\ndescription: C\n---\n\nimport `docs`/`a`.`결제`\nimport `docs`/`b`.`청구서`\n\nkeyword `영수증`: 지불을 증명하는 문서\n",
+    );
+
+    let 첫번째 = 순환_검사(&root);
+    let 두번째 = 순환_검사(&root);
+
+    let 요약 = |진단: &[Diagnostic]| -> Vec<(String, Vec<(String, usize)>)> {
+        진단
+            .iter()
+            .map(|d| (d.message.clone(), 위치들(d)))
+            .collect()
+    };
+    assert!(!첫번째.is_empty(), "픽스처에 순환이 있어야 한다");
+    assert_eq!(요약(&첫번째), 요약(&두번째));
     정리(&root);
 }
