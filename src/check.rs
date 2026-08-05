@@ -1,13 +1,22 @@
-//! import 그래프의 순환을 검출하는 층.
+//! 심볼 규칙과 import 그래프의 순환을 검사하고, 진단을 사람과 LLM 이 읽을 형태로 찍는 층.
 //!
-//! [`crate::resolve`] 가 문서를 다 읽어 온 뒤, 문서들이 서로를 전제로 삼아 고리를
-//! 이루는지 본다. 순환이 없어야 어느 문서가 상위 정책인지 정할 수 있다 (스펙 5.3).
+//! [`crate::resolve`] 가 문서를 다 읽어 온 뒤, 이름이 실제로 해석되는지와 문서들이
+//! 서로를 전제로 삼아 고리를 이루는지 본다 (스펙 5.1·5.3).
 //!
-//! 이 모듈이 내는 진단 코드는 순환 대역인 `K040`-`K049` 를 쓴다.
+//! 이 모듈이 내는 진단 코드는 심볼 해석 대역 `K001`-`K009`, iknow·이름 충돌 대역
+//! `K010`-`K019`, 순환 대역 `K040`-`K049` 를 쓴다.
 //!
 //! | 코드 | 규칙 |
 //! |---|---|
+//! | `K001` | 본문·선언부의 백틱 심볼이 스코프에 없음 |
+//! | `K002` | import 대상 문서나 심볼이 존재하지 않음 |
+//! | `K003` | import 했으나 어떤 topic 에서도 사용하지 않음 |
+//! | `K004` | 한 심볼에 두 개 이상의 로컬 이름이 붙음 |
+//! | `K010` | iknow 대상 문서나 심볼이 존재하지 않음 |
+//! | `K012` | 여러 문서가 같은 이름을 선언했는데 iknow 상호 명시가 완전하지 않음 |
 //! | `K040` | import 그래프에 순환이 있음 |
+//!
+//! `K001` 과 `K012` 는 스펙 5.1.1 이 번호까지 못박은 코드다. 나머지는 대역 안에서 정했다.
 //!
 //! **노드는 파일이다** (스펙 5.3). 파일 그래프가 DAG 면 topic 그래프도 DAG 다 —
 //! topic 간선 T→U 는 반드시 file(T)→file(U) 를 동반하므로 파일 단위 금지가 더 강하다.
@@ -34,9 +43,11 @@
 //! 하나로만 보고될 수 있다.** 그 간선을 고치고 다시 돌리면 남은 순환이 드러난다.
 //! 한 번에 전부 열거하려면 강한 연결 요소를 세는 순회로 올린다.
 
-use crate::ast::{Diagnostic, DocPath, Fix, FixKind, Location, Severity};
-use crate::resolve::Project;
-use std::collections::HashSet;
+use crate::ast::{
+    Diagnostic, DocPath, Document, Fix, FixKind, Import, Location, Severity, SymbolKind, SymbolRef,
+};
+use crate::resolve::{Project, SymbolId, SymbolTable, 셸_인용};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// 파일 단위 import 관계를 DFS 로 훑어 순환을 검출한다.
 ///
@@ -219,5 +230,872 @@ fn 순환(체인: &[(&DocPath, usize)]) -> Diagnostic {
                 )
             },
         }],
+    }
+}
+
+/// 심볼 선언 하나의 자리.
+///
+/// [`SymbolTable`] 은 이름으로 [`SymbolId`] 를 주지만 종류·줄 번호를 되돌려 주는
+/// 접근자가 없다. 진단은 "어느 줄의 어떤 종류 선언인지" 를 말해야 하므로
+/// [`Project::docs`] 에서 직접 모은다.
+struct 선언<'a> {
+    /// 이 선언이 있는 문서.
+    doc: &'a DocPath,
+    /// 심볼의 종류. 주소의 구분 기호가 종류마다 다르다 (스펙 4.1).
+    kind: SymbolKind,
+    /// 전체 이름. keyword 계층은 `.` 로 이어 붙인다 (스펙 4.3).
+    name: String,
+    /// 선언이 등장한 줄 번호. 1-based 다.
+    line: usize,
+    /// 이 선언에 붙은 인지 선언.
+    iknow: &'a [SymbolRef],
+}
+
+/// 스펙 5.1 의 심볼 규칙을 검사한다.
+///
+/// 진단 순서는 **문서 경로 순**이고, 이름 충돌만 이름 순으로 맨 뒤에 붙는다.
+/// 충돌은 문서 하나에 속하지 않으므로 문서 순서에 끼워 넣을 자리가 없다.
+///
+/// # 매개변수
+/// - `project`: 파싱을 마친 프로젝트
+/// - `table`: [`SymbolTable::build`] 가 만든 전역 심볼 테이블
+///
+/// # 반환값
+/// 규칙을 어긴 자리마다 만들어진 진단들. 어긴 것이 없으면 빈 벡터
+pub fn check_symbols(project: &Project, table: &SymbolTable) -> Vec<Diagnostic> {
+    // HashMap 의 나열 순서는 보장되지 않는다. 정렬해야 진단 순서가 실행마다 같다.
+    let mut 순서: Vec<&DocPath> = project.docs.keys().collect();
+    // DocPath 는 Vec<String> 래퍼이므로 조각을 그대로 비교한다.
+    let 정렬 = |a: &&DocPath, b: &&DocPath| a.0.cmp(&b.0);
+    순서.sort_by(정렬);
+
+    // 이름 충돌과 미해결 심볼은 둘 다 "이 이름을 선언한 문서가 누구인가" 를 물으므로
+    // 색인을 먼저 완성한다. BTreeMap 이라 이름 순회가 결정적이다.
+    let mut 선언들: BTreeMap<String, Vec<선언>> = BTreeMap::new();
+    for doc in &순서 {
+        for 하나 in 선언_훑기(&project.docs[*doc]) {
+            선언들.entry(하나.name.clone()).or_default().push(하나);
+        }
+    }
+
+    let mut diagnostics: Vec<Diagnostic> = Vec::new();
+    for doc in &순서 {
+        let document = &project.docs[*doc];
+        let scope = table.scope(doc);
+        let (참조, 사용) = 참조_해석(document, &scope);
+        iknow_실재_검사(document, project, table, &mut diagnostics);
+        import_검사(document, project, table, &사용, &mut diagnostics);
+        미해결_검사(document, &참조, &scope, &선언들, &mut diagnostics);
+    }
+
+    이름_충돌_검사(&선언들, &mut diagnostics);
+    diagnostics
+}
+
+/// 진단 목록을 사람과 LLM 이 읽을 형태로 만든다 (스펙 5.1.1).
+///
+/// 세 요소를 항상 찍는다 — 관련 위치 전부, 왜 문제인지 한 문장, 그대로 적용 가능한 `fix`.
+///
+/// **순서를 다시 정하지 않는다.** 진단 하나가 여러 문서를 가리킬 수 있어(`K012`·`K040`)
+/// "이 진단의 문서" 라는 것이 없고, 호출자는 파싱·로드·규칙 진단을 이미 뜻이 있는
+/// 순서로 이어 붙인다. 결정성은 진단을 **만드는** 쪽이 문서 경로 순으로 도는 것으로 얻는다.
+///
+/// # 매개변수
+/// - `diags`: 찍을 진단들
+///
+/// # 반환값
+/// 진단마다 한 블록씩 담은 여러 줄 문자열. 진단이 없으면 빈 문자열
+pub fn report(diags: &[Diagnostic]) -> String {
+    let mut 출력 = String::new();
+
+    // 진단 하나가 한 블록이다. 블록 사이는 빈 줄로 가른다.
+    for diagnostic in diags {
+        if !출력.is_empty() {
+            출력.push('\n');
+        }
+        let 심각도 = match diagnostic.severity {
+            Severity::Error => "error",
+            Severity::Warn => "warning",
+        };
+        출력.push_str(&format!(
+            "{심각도}[{}]: {}\n\n",
+            diagnostic.code, diagnostic.message
+        ));
+
+        // `Location::line` 은 1-based 이므로 `0` 은 "가리킬 줄이 없음" 이다. 그때 `doc` 은
+        // 문서 주소가 아니라 표시용 경로이므로 `.kang` 을 붙이면 없는 파일 이름을 지어낸다.
+        let 자리들: Vec<String> = diagnostic
+            .locations
+            .iter()
+            .map(|location| {
+                if location.line == 0 {
+                    location.doc.to_string()
+                } else {
+                    format!("{}.kang:{}", location.doc, location.line)
+                }
+            })
+            .collect();
+        let 폭 = 자리들
+            .iter()
+            .map(|자리| 자리.chars().count())
+            .max()
+            .unwrap_or(0);
+
+        // 관련 위치 전부를 찍고 note 를 같은 열에서 시작시킨다.
+        for (자리, location) in 자리들.iter().zip(&diagnostic.locations) {
+            let 채움 = " ".repeat(폭 - 자리.chars().count());
+            출력.push_str(&format!("  {자리}{채움}   {}\n", location.note));
+        }
+
+        // fix 가 없는 진단은 만들지 않지만, 찍는 쪽이 그것을 전제로 빈 머리글을 남기면
+        // 적용할 것이 있는 것처럼 보인다.
+        if diagnostic.fixes.is_empty() {
+            continue;
+        }
+        출력.push_str("\n  fix:\n");
+        // `fixes` 는 순서 있는 목록이며 앞에서부터 적용한다 (스펙 5.1.1).
+        for fix in &diagnostic.fixes {
+            match (&fix.kind, &fix.doc) {
+                // 문서 편집은 어느 파일을 여는지부터 보여야 한다.
+                (FixKind::Edit, Some(doc)) => {
+                    출력.push_str(&format!(
+                        "    [edit]  {doc}.kang\n            {}\n",
+                        fix.action
+                    ));
+                }
+                // 대상 문서가 없는 편집은 파일 이름을 지어내지 않고 행동만 적는다.
+                (FixKind::Edit, None) => 출력.push_str(&format!("    [edit]  {}\n", fix.action)),
+                // 셸 명령은 그대로 복사해 실행할 수 있어야 하므로 한 줄로 찍는다.
+                (FixKind::Shell, _) => 출력.push_str(&format!("    [shell] {}\n", fix.action)),
+            }
+        }
+    }
+
+    출력
+}
+
+/// 문서의 모든 심볼 선언을 훑는다.
+///
+/// keyword 선언·topic 헤딩·exception 선언 세 자리가 모두 `iknow` 를 받을 수 있고
+/// (스펙 4.4) 세 종류 모두 파일 밖으로 노출되므로, 세 곳을 한 번에 도는 자리가 필요하다.
+///
+/// # 매개변수
+/// - `document`: 훑을 문서
+///
+/// # 반환값
+/// keyword 를 먼저, 그 다음 topic 과 그 topic 이 선언한 exception 을 담은 목록
+fn 선언_훑기(document: &Document) -> Vec<선언<'_>> {
+    let mut 목록: Vec<선언> = Vec::new();
+
+    // keyword 선언. 계층 이름은 `.` 로 이어 전체 이름으로 만든다 (스펙 4.3).
+    for keyword in &document.keywords {
+        목록.push(선언 {
+            doc: &document.path,
+            kind: SymbolKind::Keyword,
+            name: keyword.name.0.join("."),
+            line: keyword.line,
+            iknow: &keyword.iknow,
+        });
+    }
+
+    // topic 과 그 topic 이 선언한 exception.
+    for topic in &document.topics {
+        목록.push(선언 {
+            doc: &document.path,
+            kind: SymbolKind::Topic,
+            name: topic.name.clone(),
+            line: topic.line,
+            iknow: &topic.iknow,
+        });
+        for exception in &topic.exceptions {
+            목록.push(선언 {
+                doc: &document.path,
+                kind: SymbolKind::Exception,
+                name: exception.name.clone(),
+                line: exception.line,
+                iknow: &exception.iknow,
+            });
+        }
+    }
+
+    목록
+}
+
+/// 문서의 백틱 참조를 스코프 이름으로 합치고, 그 문서가 실제로 쓴 이름을 모은다.
+///
+/// **왜 합치는가.** [`SymbolTable::scope`] 의 키는 `"결제수단.카드"` 처럼 `.` 로 이은
+/// 전체 이름인데, 파서는 본문의 `` `결제수단`.`카드` `` 를 `"결제수단"` 과 `"카드"`
+/// **두 조각**으로 넣는다. 조각을 그대로 조회하면 합법 문서가 미해결 심볼 error 를 받는다.
+///
+/// **어떻게 합치는가.** 같은 줄에서 이어지는 조각을 왼쪽부터 보며 **스코프에 있는 가장 긴
+/// 이음**을 그 자리의 참조로 삼는다. 합치는 것은 이은 이름이 스코프에 있을 때뿐이므로
+/// 이 규칙은 해석되지 않는 이름을 새로 만들지 않는다 — 즉 **합법 문서를 거부할 수 없다.**
+///
+/// ponytail: 원문의 `.` 을 보지 않고 스코프만 본다. `` `A` 와 `B` `` 처럼 `.` 없이 붙어
+/// 있는 두 조각도 `A.B` 가 선언되어 있으면 하나로 합쳐지므로, 그 자리의 `B` 가 미선언일 때
+/// 진단을 놓친다. 파서가 조각의 원문 위치나 `.` 연결 여부를 `refs` 에 함께 실어 주면
+/// 그때 원문 인접성으로 올린다.
+///
+/// # 매개변수
+/// - `document`: 참조를 모을 문서
+/// - `scope`: 그 문서에서 쓸 수 있는 로컬 이름들
+///
+/// # 반환값
+/// - 합친 참조들. 각 항목은 `(이름, 줄 번호, 참조된 자리)` 이며 자리는 진단의 note 에 쓴다
+/// - 이 문서가 쓴 이름 집합. **조각과 합친 이름을 모두** 담는다 — 상위 키워드를 import 하고
+///   하위를 이 문서에서 선언하면(스펙 4.3) 본문의 `` `결제수단`.`카드` `` 가 하나로 합쳐져
+///   상위 이름이 사라지고, 조각을 세지 않으면 그 import 가 미사용으로 오인된다
+fn 참조_해석(
+    document: &Document,
+    scope: &HashMap<String, SymbolId>,
+) -> (Vec<(String, usize, &'static str)>, HashSet<String>) {
+    let mut 참조: Vec<(String, usize, &'static str)> = Vec::new();
+    let mut 사용: HashSet<String> = HashSet::new();
+    let 이어붙이기 = |조각: &[(String, usize)]| {
+        조각
+            .iter()
+            .map(|(이름, _)| 이름.as_str())
+            .collect::<Vec<&str>>()
+            .join(".")
+    };
+
+    // keyword 정의와 topic 본문 두 자리를 함께 돈다. 스펙 4.2 는 "본문과 **선언부**의 모든
+    // 백틱은 심볼 참조" 이므로 정의 안의 참조도 같은 규칙을 받는다.
+    let 자리들 = document
+        .keywords
+        .iter()
+        .map(|keyword| (&keyword.refs, "keyword 정의"))
+        .chain(document.topics.iter().map(|topic| (&topic.refs, "본문")));
+
+    for (조각들, 자리) in 자리들 {
+        let mut 첫째 = 0;
+        // 조각을 왼쪽부터 소비한다. 한 번에 하나 이상을 가져가므로 반드시 끝난다.
+        while 첫째 < 조각들.len() {
+            let 줄 = 조각들[첫째].1;
+            // 합칠 수 있는 것은 **같은 줄에서 이어지는** 조각뿐이다. 줄이 바뀌면
+            // 원문에서 `.` 로 이어져 있을 수 없다.
+            let mut 끝 = 첫째;
+            while 끝 + 1 < 조각들.len() && 조각들[끝 + 1].1 == 줄 {
+                끝 += 1;
+            }
+
+            // 긴 이음부터 본다. `A`.`B`.`C` 가 한 이름이면 그것을 먼저 잡아야
+            // `A`.`B` 로 잘못 끊기지 않는다.
+            let mut 길이 = 끝 - 첫째 + 1;
+            let mut 이름 = 이어붙이기(&조각들[첫째..=끝]);
+            while 길이 > 1 && !scope.contains_key(&이름) {
+                길이 -= 1;
+                이름 = 이어붙이기(&조각들[첫째..첫째 + 길이]);
+            }
+
+            // 조각 하나하나도 사용으로 친다 (위 반환값 설명 참조).
+            for (조각, _) in &조각들[첫째..첫째 + 길이] {
+                사용.insert(조각.clone());
+            }
+            사용.insert(이름.clone());
+            참조.push((이름, 줄, 자리));
+            첫째 += 길이;
+        }
+    }
+
+    (참조, 사용)
+}
+
+/// 스코프에 없는 참조를 `K001` 로 보고한다.
+///
+/// 같은 이름을 여러 자리에서 참조했으면 **진단 하나에 위치를 전부** 담는다.
+/// 고칠 곳은 import 한 줄이므로 자리마다 진단을 내면 같은 처방이 여러 번 나온다.
+///
+/// # 매개변수
+/// - `document`: 검사할 문서
+/// - `참조`: [`참조_해석`] 이 합친 참조들
+/// - `scope`: 그 문서에서 쓸 수 있는 로컬 이름들
+/// - `선언들`: 이름별 선언 색인
+/// - `diagnostics`: 진단을 모을 곳
+fn 미해결_검사(
+    document: &Document,
+    참조: &[(String, usize, &'static str)],
+    scope: &HashMap<String, SymbolId>,
+    선언들: &BTreeMap<String, Vec<선언>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    // 등장 순서를 따로 들고 다닌다. HashMap 만 쓰면 진단 순서가 실행마다 뒤집힌다.
+    let mut 순서: Vec<&str> = Vec::new();
+    let mut 자리들: HashMap<&str, Vec<(usize, &'static str)>> = HashMap::new();
+
+    // 해석되지 않은 참조를 이름별로 모은다.
+    for (이름, 줄, 자리) in 참조 {
+        if scope.contains_key(이름) {
+            continue;
+        }
+        let 모음 = 자리들.entry(이름.as_str()).or_default();
+        // 이 이름을 처음 보는 자리에서만 순서에 넣는다.
+        if 모음.is_empty() {
+            순서.push(이름.as_str());
+        }
+        모음.push((*줄, *자리));
+    }
+
+    // 이름마다 진단 하나를 만든다.
+    for 이름 in 순서 {
+        diagnostics.push(미해결_심볼(
+            &document.path,
+            이름,
+            &자리들[이름],
+            선언들.get(이름).map_or(&[][..], Vec::as_slice),
+        ));
+    }
+}
+
+/// import 의 대상 실재(`K002`)·사용 여부(`K003`)·이름 개수(`K004`)를 검사한다.
+///
+/// 세 규칙을 한 순회에 둔 이유는 셋 다 **같은 import 줄**을 훑고, 앞 규칙의 결과가 뒤
+/// 규칙의 전제이기 때문이다 — 대상이 없는 import 는 이름이 묶이지 않아 사용 여부를 물을
+/// 수 없다.
+///
+/// # 매개변수
+/// - `document`: 검사할 문서
+/// - `project`: 파싱을 마친 프로젝트. 대상 문서가 실재하는지 여기서 본다
+/// - `table`: 전역 심볼 테이블
+/// - `사용`: [`참조_해석`] 이 모은, 이 문서가 실제로 쓴 이름들
+/// - `diagnostics`: 진단을 모을 곳
+fn import_검사(
+    document: &Document,
+    project: &Project,
+    table: &SymbolTable,
+    사용: &HashSet<String>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    // 같은 대상에 묶인 로컬 이름들. 대상은 등장 순서를 지키려고 Vec 으로 든다.
+    let mut 대상별: Vec<(&SymbolRef, Vec<(String, usize)>)> = Vec::new();
+
+    // import 를 파일 순서대로 훑는다.
+    for import in &document.imports {
+        // 대상이 실재하지 않으면 이름이 묶이지 않았다. 순환 검출도 이 간선을 건너뛰므로
+        // (`check_cycles`) 여기서 진단하지 않으면 대상 없는 import 가 조용히 통과한다.
+        if table.resolve(&import.target).is_none() {
+            diagnostics.push(import_대상_없음(document, import, project));
+            continue;
+        }
+
+        // alias 가 있으면 그 이름으로, 없으면 대상의 정본 이름으로 묶인다 (스펙 4.7).
+        let 이름 = import
+            .alias
+            .clone()
+            .unwrap_or_else(|| import.target.name.join("."));
+        // 사용 여부는 문서 전체에서 본다. 한 topic 에서라도 쓰였으면 통과다.
+        if !사용.contains(&이름) {
+            diagnostics.push(미사용_import(document, import, &이름));
+        }
+
+        let 같은_대상 = 대상별.iter_mut().find(|(대상, _)| {
+            대상.doc == import.target.doc
+                && 대상.kind == import.target.kind
+                && 대상.name == import.target.name
+        });
+        match 같은_대상 {
+            Some((_, 이름들)) => 이름들.push((이름, import.line)),
+            None => 대상별.push((&import.target, vec![(이름, import.line)])),
+        }
+    }
+
+    // 한 심볼에 서로 다른 이름이 둘 이상 붙었는지 본다 (스펙 4.7).
+    for (대상, 이름들) in 대상별 {
+        let 서로_다른: HashSet<&str> = 이름들.iter().map(|(이름, _)| 이름.as_str()).collect();
+        if 서로_다른.len() >= 2 {
+            diagnostics.push(이름_여럿(document, 대상, &이름들));
+        }
+    }
+}
+
+/// `iknow` 대상 문서와 심볼이 실재하는지 검사한다 (`K010`).
+///
+/// `iknow` 는 import 가 아니므로 미사용 검사 대상이 아니다. 경로 실재와 상호성만 본다
+/// (스펙 4.4). 상호성은 [`이름_충돌_검사`] 가 본다.
+///
+/// # 매개변수
+/// - `document`: 검사할 문서
+/// - `project`: 파싱을 마친 프로젝트
+/// - `table`: 전역 심볼 테이블
+/// - `diagnostics`: 진단을 모을 곳
+fn iknow_실재_검사(
+    document: &Document,
+    project: &Project,
+    table: &SymbolTable,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    // 세 종류 선언 모두가 iknow 를 받을 수 있다 (스펙 4.4).
+    for 하나 in 선언_훑기(document) {
+        // 한 선언이 여러 대상을 나열할 수 있다.
+        for 대상 in 하나.iknow {
+            // 문서도 심볼도 실재해야 한다. 이름이 바뀌면 여기서 잡힌다 (스펙 4.4).
+            if table.resolve(대상).is_none() {
+                diagnostics.push(iknow_대상_없음(&하나, 대상, project));
+            }
+        }
+    }
+}
+
+/// 여러 문서가 같은 이름을 선언했는데 `iknow` 상호 명시가 완전하지 않은지 검사한다 (`K012`).
+///
+/// **진단 단위는 이름 하나다.** 스펙 5.1.1 의 `K012` 예시가 두 선언을 한 진단의 두 위치로
+/// 묶고 수정도 양쪽에 하나씩 낸다. 문서마다 진단을 내면 같은 사실이 N번 나온다.
+/// 그래서 3개 파일 중 한 곳만 빠뜨려도 진단은 **하나**이고, 수정만 그 한 곳을 가리킨다.
+///
+/// 판정은 **전체 경로 기준**이다 — `결제`.`상태` 와 `구독`.`상태` 는 다른 이름이므로
+/// 충돌이 아니다 (스펙 4.3). 색인의 키가 이미 전체 경로라 이것이 원천에서 지켜진다.
+///
+/// # 매개변수
+/// - `선언들`: 이름별 선언 색인
+/// - `diagnostics`: 진단을 모을 곳
+fn 이름_충돌_검사(
+    선언들: &BTreeMap<String, Vec<선언>>, diagnostics: &mut Vec<Diagnostic>
+) {
+    // 이름마다 그 이름을 선언한 문서들을 본다. BTreeMap 이라 이름 순회가 결정적이다.
+    for (이름, 선언목록) in 선언들 {
+        // 한 문서가 같은 이름을 두 번 선언한 경우(`K052`)는 문서 하나로 센다.
+        let mut 문서들: Vec<&DocPath> = Vec::new();
+        for 하나 in 선언목록 {
+            if !문서들.contains(&하나.doc) {
+                문서들.push(하나.doc);
+            }
+        }
+        // 한 문서만 선언했으면 충돌이 아니다.
+        if 문서들.len() < 2 {
+            continue;
+        }
+
+        // 문서마다 아직 명시하지 않은 상대를 모은다. N개 파일이면 각자 나머지 N-1개를
+        // 전부 명시해야 한다 (스펙 4.4).
+        let mut 누락: Vec<(&선언, Vec<&DocPath>)> = Vec::new();
+        for 문서 in &문서들 {
+            // 같은 문서의 선언이 여럿이면 iknow 는 합집합으로 본다.
+            // 종류는 보지 않는다 — 종류를 잘못 쓴 대상은 `K010` 이 이미 잡으므로,
+            // 여기서 또 "빠뜨렸다" 고 하면 명시한 사람에게 거짓을 말하게 된다.
+            let 내_iknow: HashSet<&DocPath> = 선언목록
+                .iter()
+                .filter(|하나| 하나.doc == *문서)
+                .flat_map(|하나| 하나.iknow.iter())
+                .filter(|대상| 대상.name.join(".") == *이름)
+                .map(|대상| &대상.doc)
+                .collect();
+            let 빠진: Vec<&DocPath> = 문서들
+                .iter()
+                .copied()
+                .filter(|상대| *상대 != *문서 && !내_iknow.contains(상대))
+                .collect();
+            if 빠진.is_empty() {
+                continue;
+            }
+            let 대표 = 선언목록
+                .iter()
+                .find(|하나| 하나.doc == *문서)
+                .expect("문서들 은 선언목록 에서 뽑았으므로 그 문서의 선언이 있다");
+            누락.push((대표, 빠진));
+        }
+
+        // 전부 상호 명시했으면 합법이다. 여기서 무조건 진단하면 iknow 를 제대로 쓴
+        // 문서가 거부된다.
+        if 누락.is_empty() {
+            continue;
+        }
+        diagnostics.push(iknow_불완전(이름, 선언목록, &누락));
+    }
+}
+
+/// 심볼 주소를 문자열로 만든다.
+///
+/// 문서와 이름을 잇는 기호가 종류마다 다르다 — keyword 는 `.`, topic 은 `#`,
+/// exception 은 `!` 다 (스펙 4.1).
+///
+/// # 매개변수
+/// - `doc`: 심볼이 선언된 문서
+/// - `kind`: 심볼의 종류
+/// - `name`: 전체 이름. keyword 계층은 `.` 로 이어진 형태다
+/// - `백틱`: 참이면 문서 문법(조각마다 백틱), 거짓이면 CLI 문법(백틱 없음). 스펙 5.1.1 은
+///   두 문법을 섞지 말라고 못박는다 — `[edit]` 는 문서 문법, `[shell]` 은 CLI 문법이다
+///
+/// # 반환값
+/// 조립된 주소 문자열
+fn 심볼_주소(doc: &DocPath, kind: &SymbolKind, name: &str, 백틱: bool) -> String {
+    let 감싸기 = |조각: &str| {
+        if 백틱 {
+            format!("`{조각}`")
+        } else {
+            조각.to_string()
+        }
+    };
+    let 문서 = doc
+        .0
+        .iter()
+        .map(|조각| 감싸기(조각))
+        .collect::<Vec<String>>()
+        .join("/");
+
+    match kind {
+        // 계층 keyword 는 조각마다 백틱을 두르고 `.` 로 잇는다 (스펙 4.1).
+        SymbolKind::Keyword => {
+            let 이름 = name
+                .split('.')
+                .map(&감싸기)
+                .collect::<Vec<String>>()
+                .join(".");
+            format!("{문서}.{이름}")
+        }
+        SymbolKind::Topic => format!("{문서}#{}", 감싸기(name)),
+        SymbolKind::Exception => format!("{문서}!{}", 감싸기(name)),
+    }
+}
+
+/// 심볼 종류를 문서에 쓰는 낱말로 바꾼다.
+///
+/// # 매개변수
+/// - `kind`: 심볼의 종류
+///
+/// # 반환값
+/// 선언 문법에 쓰이는 낱말
+fn 종류_낱말(kind: &SymbolKind) -> &'static str {
+    match kind {
+        SymbolKind::Keyword => "keyword",
+        SymbolKind::Topic => "topic",
+        SymbolKind::Exception => "exception",
+    }
+}
+
+/// 스코프에 없는 심볼을 참조했다는 진단을 만든다.
+///
+/// # 매개변수
+/// - `doc`: 참조한 문서
+/// - `이름`: 해석되지 않은 이름
+/// - `자리들`: 그 이름을 참조한 `(줄 번호, 참조된 자리)` 목록. 최소 1개
+/// - `선언한_곳`: 프로젝트에서 그 이름을 선언한 자리들. 없으면 빈 슬라이스
+///
+/// # 반환값
+/// `K001` 진단
+fn 미해결_심볼(
+    doc: &DocPath,
+    이름: &str,
+    자리들: &[(usize, &'static str)],
+    선언한_곳: &[선언],
+) -> Diagnostic {
+    // 같은 문서가 같은 이름을 두 번 선언했을 수 있으므로 문서 단위로 줄인다.
+    let mut 후보: Vec<&선언> = Vec::new();
+    for 하나 in 선언한_곳 {
+        if !후보.iter().any(|이미| 이미.doc == 하나.doc) {
+            후보.push(하나);
+        }
+    }
+
+    // 개수를 세어 말한다. "하나 있습니다" 라고 해 놓고 둘이면 진단이 거짓을 말한다.
+    let 안내 = if 후보.is_empty() {
+        "프로젝트 어디에도 이 이름을 선언한 문서가 없습니다. 이름을 잘못 썼거나, 아직 선언하지 않았습니다.".to_string()
+    } else {
+        let 목록: Vec<String> = 후보.iter().map(|하나| 하나.doc.to_string()).collect();
+        format!(
+            "같은 이름을 선언한 문서가 {} 개 있습니다: {}. 같은 개념이라면 import 하고, 다른 개념이라면 이 문서에서 선언한 뒤 양쪽에 iknow 를 붙이세요.",
+            후보.len(),
+            목록.join(", ")
+        )
+    };
+
+    // 선언한 문서가 없으면 import 할 대상도 없다. 그때는 선언하거나 오타를 고치는 것이
+    // 유일한 처방이다.
+    let fixes: Vec<Fix> = if 후보.is_empty() {
+        vec![Fix {
+            kind: FixKind::Edit,
+            doc: Some(doc.clone()),
+            action: format!(
+                "이 문서에서 keyword 로 선언하거나(예: keyword `{이름}`: <한 줄 정의>) 참조의 오타를 고치세요."
+            ),
+        }]
+    } else {
+        // 후보마다 "import 를 쓰고 → 핀을 붙인다" 두 수정이 짝을 이룬다. 순서가 뒤집히면
+        // bless 가 핀을 붙일 줄이 아직 없다 (스펙 4.8).
+        후보
+            .iter()
+            .flat_map(|하나| {
+                let 문서_문법 = 심볼_주소(하나.doc, &하나.kind, &하나.name, true);
+                let cli_문법 = 심볼_주소(하나.doc, &하나.kind, &하나.name, false);
+                // 후보가 둘 이상이면 어느 것을 고를지는 뜻이 정한다. 조건을 붙이지 않으면
+                // 진단이 "이것이 답이다" 라고 단정하게 된다.
+                let 조건 = if 후보.len() > 1 {
+                    format!("{} 가 같은 개념이라면, ", 하나.doc)
+                } else {
+                    String::new()
+                };
+                [
+                    Fix {
+                        kind: FixKind::Edit,
+                        doc: Some(doc.clone()),
+                        action: format!(
+                            "{조건}import 블록에 다음 줄을 추가하세요: import {문서_문법}"
+                        ),
+                    },
+                    Fix {
+                        kind: FixKind::Shell,
+                        doc: None,
+                        action: format!(
+                            "그 import 에 rev 핀을 붙이세요: kang bless {} --import {}",
+                            셸_인용(&doc.to_string()),
+                            셸_인용(&cli_문법)
+                        ),
+                    },
+                ]
+            })
+            .collect()
+    };
+
+    Diagnostic {
+        severity: Severity::Error,
+        code: "K001",
+        message: format!(
+            "선언되지 않은 심볼 — `{이름}`. 이 문서는 이 이름을 선언하지도 import 하지도 않았습니다. {안내}"
+        ),
+        locations: 자리들
+            .iter()
+            .map(|(줄, 자리)| Location {
+                doc: doc.clone(),
+                line: *줄,
+                note: format!("{자리}에서 참조했습니다."),
+            })
+            .collect(),
+        fixes,
+    }
+}
+
+/// import 대상이 실재하지 않는다는 진단을 만든다.
+///
+/// 문서가 없는 것과 문서 안에 심볼이 없는 것은 다른 사실이고 고치는 법도 다르다.
+/// 둘을 뭉뚱그리면 진단이 검증되지 않는 것을 말하게 된다.
+///
+/// # 매개변수
+/// - `document`: import 를 쓴 문서
+/// - `import`: 대상을 찾지 못한 import
+/// - `project`: 파싱을 마친 프로젝트. 대상 문서의 실재를 여기서 본다
+///
+/// # 반환값
+/// `K002` 진단
+fn import_대상_없음(document: &Document, import: &Import, project: &Project) -> Diagnostic {
+    let 대상 = &import.target;
+    let 이름 = 대상.name.join(".");
+    let 문서_문법 = 심볼_주소(&대상.doc, &대상.kind, &이름, true);
+    let 낱말 = 종류_낱말(&대상.kind);
+
+    // 문서 자체가 없는 경우와, 문서는 있는데 심볼이 없는 경우를 갈라 말한다.
+    let (설명, 처방) = if project.docs.contains_key(&대상.doc) {
+        (
+            format!("문서 {} 에 {낱말} `{이름}` 이 없습니다.", 대상.doc),
+            format!(
+                "이 import 줄의 대상 이름을 고치거나, 대상 문서에서 {낱말} `{이름}` 을 선언하세요."
+            ),
+        )
+    } else {
+        (
+            format!(
+                "이 프로젝트에서 문서 {} 를 찾지 못했습니다. 경로가 틀렸거나 그 문서가 컴파일되지 않았습니다.",
+                대상.doc
+            ),
+            "이 import 줄의 대상 경로를 실재하는 문서로 고치세요. 그 문서가 컴파일에 실패했다면 먼저 그쪽 진단을 고치세요.".to_string(),
+        )
+    };
+
+    Diagnostic {
+        severity: Severity::Error,
+        code: "K002",
+        message: format!("import 대상을 찾지 못했습니다 — {문서_문법}. {설명}"),
+        locations: vec![Location {
+            doc: document.path.clone(),
+            line: import.line,
+            note: "여기서 import 했습니다.".to_string(),
+        }],
+        fixes: vec![Fix {
+            kind: FixKind::Edit,
+            doc: Some(document.path.clone()),
+            action: 처방,
+        }],
+    }
+}
+
+/// import 했으나 쓰지 않았다는 진단을 만든다.
+///
+/// # 매개변수
+/// - `document`: import 를 쓴 문서
+/// - `import`: 쓰이지 않은 import
+/// - `이름`: 이 문서에서 그 심볼이 묶인 로컬 이름
+///
+/// # 반환값
+/// `K003` 진단
+fn 미사용_import(document: &Document, import: &Import, 이름: &str) -> Diagnostic {
+    Diagnostic {
+        severity: Severity::Error,
+        code: "K003",
+        message: format!(
+            "import 했으나 이 문서의 어느 곳에서도 쓰지 않았습니다 — `{이름}`. 쓰지 않는 import 는 문서가 무엇을 전제하는지 흐린다."
+        ),
+        locations: vec![Location {
+            doc: document.path.clone(),
+            line: import.line,
+            note: format!("여기서 `{이름}` 으로 import 했습니다."),
+        }],
+        fixes: vec![Fix {
+            kind: FixKind::Edit,
+            doc: Some(document.path.clone()),
+            action: format!(
+                "이 import 줄을 지우세요. 이 문서가 실제로 그 개념을 쓴다면, 쓰는 자리에서 `{이름}` 으로 참조하세요."
+            ),
+        }],
+    }
+}
+
+/// 한 심볼에 이름이 둘 이상 붙었다는 진단을 만든다.
+///
+/// # 매개변수
+/// - `document`: import 를 쓴 문서
+/// - `대상`: 여러 이름이 붙은 심볼
+/// - `이름들`: 그 심볼에 묶인 `(로컬 이름, import 줄)` 목록. 최소 2개
+///
+/// # 반환값
+/// `K004` 진단
+fn 이름_여럿(
+    document: &Document, 대상: &SymbolRef, 이름들: &[(String, usize)]
+) -> Diagnostic {
+    let 문서_문법 = 심볼_주소(&대상.doc, &대상.kind, &대상.name.join("."), true);
+
+    Diagnostic {
+        severity: Severity::Error,
+        code: "K004",
+        message: format!(
+            "한 심볼이 이 문서에서 서로 다른 이름 여럿으로 묶였습니다 — {문서_문법}. 하나의 개념이 여러 이름을 갖는 것을 막습니다 (스펙 4.7)."
+        ),
+        // import 줄 전부가 관련 위치다. 하나만 보여 주면 나머지를 찾아 헤맨다.
+        locations: 이름들
+            .iter()
+            .map(|(이름, 줄)| Location {
+                doc: document.path.clone(),
+                line: *줄,
+                note: format!("여기서 `{이름}` 으로 묶었습니다."),
+            })
+            .collect(),
+        fixes: vec![Fix {
+            kind: FixKind::Edit,
+            doc: Some(document.path.clone()),
+            action: "이 심볼을 가리킬 이름을 하나로 정하고, 나머지 import 줄을 지운 뒤 그 이름을 쓰던 참조도 함께 고치세요.".to_string(),
+        }],
+    }
+}
+
+/// `iknow` 대상이 실재하지 않는다는 진단을 만든다.
+///
+/// # 매개변수
+/// - `하나`: iknow 를 붙인 선언
+/// - `대상`: 찾지 못한 iknow 대상
+/// - `project`: 파싱을 마친 프로젝트. 대상 문서의 실재를 여기서 본다
+///
+/// # 반환값
+/// `K010` 진단
+fn iknow_대상_없음(하나: &선언, 대상: &SymbolRef, project: &Project) -> Diagnostic {
+    let 이름 = 대상.name.join(".");
+    let 문서_문법 = 심볼_주소(&대상.doc, &대상.kind, &이름, true);
+    let 낱말 = 종류_낱말(&대상.kind);
+
+    // import 와 같은 이유로 두 경우를 갈라 말한다.
+    let 설명 = if project.docs.contains_key(&대상.doc) {
+        format!("문서 {} 에 {낱말} `{이름}` 이 없습니다.", 대상.doc)
+    } else {
+        format!(
+            "이 프로젝트에서 문서 {} 를 찾지 못했습니다. 경로가 틀렸거나 그 문서가 컴파일되지 않았습니다.",
+            대상.doc
+        )
+    };
+
+    Diagnostic {
+        severity: Severity::Error,
+        code: "K010",
+        message: format!("iknow 대상을 찾지 못했습니다 — {문서_문법}. {설명}"),
+        locations: vec![Location {
+            doc: 하나.doc.clone(),
+            line: 하나.line,
+            note: format!(
+                "여기 {} `{}` 선언의 iknow 가 그 대상을 가리킵니다.",
+                종류_낱말(&하나.kind),
+                하나.name
+            ),
+        }],
+        fixes: vec![Fix {
+            kind: FixKind::Edit,
+            doc: Some(하나.doc.clone()),
+            action: format!(
+                "이 선언의 iknow 대상 주소를 실재하는 심볼로 고치세요. 그 대상이 사라졌다면 iknow 에서 {문서_문법} 를 지우세요."
+            ),
+        }],
+    }
+}
+
+/// `iknow` 상호 명시가 완전하지 않다는 진단을 만든다.
+///
+/// # 매개변수
+/// - `이름`: 여러 문서가 선언한 이름
+/// - `선언목록`: 그 이름을 선언한 자리 전부. 최소 2개
+/// - `누락`: 빠뜨린 문서마다 `(그 문서의 대표 선언, 아직 명시하지 않은 상대들)`. 최소 1개
+///
+/// # 반환값
+/// `K012` 진단
+fn iknow_불완전(
+    이름: &str, 선언목록: &[선언], 누락: &[(&선언, Vec<&DocPath>)]
+) -> Diagnostic {
+    Diagnostic {
+        severity: Severity::Error,
+        code: "K012",
+        message: format!(
+            "같은 이름의 심볼이 여러 파일에서 선언됨 — `{이름}`. iknow 상호 명시가 완전하지 않습니다. 다른 뜻이라면 각 선언에 iknow 를 붙여 상호 명시하고, 같은 뜻이라면 한쪽을 지우고 다른 쪽을 import 하세요."
+        ),
+        // 선언한 자리 전부가 관련 위치다 (스펙 5.1.1).
+        locations: 선언목록
+            .iter()
+            .enumerate()
+            .map(|(자리, 하나)| Location {
+                doc: 하나.doc.clone(),
+                line: 하나.line,
+                // 첫 자리에만 "여기서", 나머지는 "여기서도" 라고 말한다. 어느 쪽이 원인인지는
+                // 컴파일러가 알 수 없으므로 순서를 주장하지 않는다.
+                note: if 자리 == 0 {
+                    format!("여기서 {} `{이름}` 을 선언했습니다.", 종류_낱말(&하나.kind))
+                } else {
+                    format!(
+                        "여기서도 {} `{이름}` 을 선언했습니다.",
+                        종류_낱말(&하나.kind)
+                    )
+                },
+            })
+            .collect(),
+        // 고칠 곳은 **빠뜨린 문서뿐**이다. 이미 상호 명시한 문서에까지 수정을 내면
+        // 진단이 하지 않은 잘못을 탓하게 된다.
+        fixes: 누락
+            .iter()
+            .map(|(대표, 빠진)| {
+                let 목록: Vec<String> = 빠진
+                    .iter()
+                    .map(|상대| 심볼_주소(상대, &대표.kind, 이름, true))
+                    .collect();
+                let 낱말 = 종류_낱말(&대표.kind);
+                // 이미 iknow 를 쓴 문서에게 "추가하세요" 라고 하면 줄을 하나 더 만들게 된다.
+                let 이미_있음 = 대표.iknow.iter().any(|대상| 대상.name.join(".") == 이름);
+                Fix {
+                    kind: FixKind::Edit,
+                    doc: Some(대표.doc.clone()),
+                    action: if 이미_있음 {
+                        format!(
+                            "{낱말} `{이름}` 선언의 iknow 목록에 {} 를 덧붙이세요.",
+                            목록.join(", ")
+                        )
+                    } else {
+                        format!(
+                            "{낱말} `{이름}` 선언 줄 끝에 // iknow {} 를 추가하세요.",
+                            목록.join(", ")
+                        )
+                    },
+                }
+            })
+            .collect(),
     }
 }

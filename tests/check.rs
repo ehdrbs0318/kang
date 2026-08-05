@@ -1,9 +1,13 @@
 // `resolve::find_root` / `resolve::load` / `resolve::SymbolTable` 과
-// `check::check_cycles` 를 검증하는 통합 테스트.
+// `check::check_cycles` / `check::check_symbols` / `check::report` 를 검증하는 통합 테스트.
 //
 // 이 파일의 테스트는 **실제 파일 시스템**을 쓴다. 각 테스트는 자기만의 임시 디렉토리를
 // 만들고 그 안에서만 움직이므로 `cargo test` 의 기본 병렬 실행에서도 서로를 밟지 않는다.
-use kang::ast::{Diagnostic, DocPath, FixKind, Severity, SymbolKind, SymbolRef};
+//
+// 진단 검사는 **문자 단위가 아니라 구조 일치**를 본다 — `code` 값, `locations` 개수와
+// 각 `note` 유무, `fixes` 의 종류·순서, 셸 명령의 인용 여부다. 스펙 5.1.1 예시에 박힌
+// 경로와 줄 번호까지 맞추면 스펙의 오타를 고칠 때마다 테스트가 깨진다.
+use kang::ast::{Diagnostic, DocPath, Fix, FixKind, Location, Severity, SymbolKind, SymbolRef};
 use kang::check;
 use kang::resolve;
 use std::fs;
@@ -1244,5 +1248,678 @@ fn 시작점이_순환_밖이어도_검출한다() {
         "{}",
         진단[0].message
     );
+    정리(&root);
+}
+
+/// 프로젝트를 읽어 심볼 규칙만 돌린다.
+///
+/// 로드와 심볼 테이블 단계에서 진단이 나오면 픽스처가 잘못된 것이므로 여기서 잡는다 —
+/// 그것을 그대로 두면 심볼 진단이 없는 이유를 픽스처 오타에서 찾게 된다.
+///
+/// # 매개변수
+/// - `root`: 프로젝트 루트
+///
+/// # 반환값
+/// [`check::check_symbols`] 가 낸 진단들
+fn 심볼_검사(root: &Path) -> Vec<Diagnostic> {
+    let (project, 로드_진단) = resolve::load(root);
+    assert!(로드_진단.is_empty(), "{로드_진단:?}");
+    let (table, 테이블_진단) = resolve::SymbolTable::build(&project);
+    assert!(테이블_진단.is_empty(), "{테이블_진단:?}");
+    check::check_symbols(&project, &table)
+}
+
+/// 진단 코드만 뽑는다. 어떤 규칙이 몇 개 울렸는지를 한 줄로 단언하기 위한 것이다.
+///
+/// # 매개변수
+/// - `diagnostics`: 펼칠 진단들
+///
+/// # 반환값
+/// 진단 코드 목록
+fn 코드들(diagnostics: &[Diagnostic]) -> Vec<&str> {
+    diagnostics.iter().map(|d| d.code).collect()
+}
+
+/// 수정의 종류만 순서대로 뽑는다.
+///
+/// # 매개변수
+/// - `diagnostic`: 펼칠 진단
+///
+/// # 반환값
+/// `fixes` 의 종류 목록
+fn 수정_종류(diagnostic: &Diagnostic) -> Vec<&FixKind> {
+    diagnostic.fixes.iter().map(|fix| &fix.kind).collect()
+}
+
+/// 스펙 5.1: 본문의 백틱 심볼이 선언·import 되지 않았으면 error 다.
+#[test]
+fn 미선언_백틱_심볼은_에러다() {
+    let root = 임시_루트("unresolved-symbol");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/core/baseline.kang",
+        "---\ndescription: 기준선\n---\n\nkeyword `승격`: 후보를 기준선으로 올리는 일\n",
+    );
+    쓰기(
+        &root,
+        "docs/policy/regression.kang",
+        "---\ndescription: 회귀 정책\n---\n\n## 회귀의 기준\n\n`승격` 이후에는 회귀를 막는다.\n",
+    );
+
+    let 진단 = 심볼_검사(&root);
+
+    assert_eq!(코드들(&진단), vec!["K001"], "{진단:?}");
+    assert_eq!(
+        위치들(&진단[0]),
+        vec![("docs/policy/regression".to_string(), 7)]
+    );
+    assert!(진단[0].message.contains("승격"), "{}", 진단[0].message);
+    정리(&root);
+}
+
+/// 스펙 5.1: import 대상 **파일**이 없으면 error 다.
+#[test]
+fn 없는_파일을_import_하면_에러다() {
+    let root = 임시_루트("import-missing-doc");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/b.kang",
+        "---\ndescription: 청구\n---\n\nimport `docs`/`nope`.`결제` as `A 결제`\n",
+    );
+
+    let 진단 = 심볼_검사(&root);
+
+    assert_eq!(코드들(&진단), vec!["K002"], "{진단:?}");
+    assert_eq!(위치들(&진단[0]), vec![("docs/b".to_string(), 5)]);
+    // 대상 문서가 없다는 것이 사실이므로 진단이 문서를 지목해야 한다.
+    assert!(진단[0].message.contains("docs/nope"), "{}", 진단[0].message);
+    정리(&root);
+}
+
+/// 스펙 5.1: 파일은 있는데 그 안에 **심볼**이 없으면 error 다.
+#[test]
+fn 없는_심볼을_import_하면_에러다() {
+    let root = 임시_루트("import-missing-symbol");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: 결제 정책\n---\n\nkeyword `결제`: 대금을 지불하는 행위\n",
+    );
+    쓰기(
+        &root,
+        "docs/b.kang",
+        "---\ndescription: 청구\n---\n\nimport `docs`/`a`.`없는것` as `X`\n",
+    );
+
+    let 진단 = 심볼_검사(&root);
+
+    assert_eq!(코드들(&진단), vec!["K002"], "{진단:?}");
+    assert_eq!(위치들(&진단[0]), vec![("docs/b".to_string(), 5)]);
+    assert!(진단[0].message.contains("없는것"), "{}", 진단[0].message);
+    정리(&root);
+}
+
+/// 스펙 5.1: import 했으나 어떤 topic 에서도 쓰지 않으면 error 다.
+#[test]
+fn 사용하지_않는_import_는_에러다() {
+    let root = 임시_루트("unused-import");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: 결제 정책\n---\n\nkeyword `결제`: 대금을 지불하는 행위\n",
+    );
+    쓰기(
+        &root,
+        "docs/b.kang",
+        "---\ndescription: 청구\n---\n\nimport `docs`/`a`.`결제` as `A 결제`\n\n## 청구의 방법\n\n청구서를 발행한다.\n",
+    );
+
+    let 진단 = 심볼_검사(&root);
+
+    assert_eq!(코드들(&진단), vec!["K003"], "{진단:?}");
+    assert_eq!(위치들(&진단[0]), vec![("docs/b".to_string(), 5)]);
+    정리(&root);
+}
+
+/// 스펙 4.7: 한 심볼에 두 개 이상의 이름을 붙이는 것은 error 다.
+#[test]
+fn 한_심볼에_두_alias_는_에러다() {
+    let root = 임시_루트("two-alias");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: 결제 정책\n---\n\nkeyword `결제`: 대금을 지불하는 행위\n",
+    );
+    쓰기(
+        &root,
+        "docs/b.kang",
+        "---\ndescription: 청구\n---\n\nimport `docs`/`a`.`결제` as `X`\nimport `docs`/`a`.`결제` as `Y`\n\n## 청구의 방법\n\n`X` 와 `Y` 는 같다.\n",
+    );
+
+    let 진단 = 심볼_검사(&root);
+
+    assert_eq!(코드들(&진단), vec!["K004"], "{진단:?}");
+    // 두 import 줄이 모두 관련 위치다.
+    assert_eq!(
+        위치들(&진단[0]),
+        vec![("docs/b".to_string(), 5), ("docs/b".to_string(), 6)]
+    );
+    정리(&root);
+}
+
+/// 스펙 5.1: 서로 다른 파일이 같은 이름을 선언하고 iknow 가 없으면 error 다.
+#[test]
+fn 이름_충돌에_iknow_가_없으면_에러다() {
+    let root = 임시_루트("collision-no-iknow");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/core/lease.kang",
+        "---\ndescription: 임차\n---\n\nkeyword `epoch`: 임차 기간의 단위\n",
+    );
+    쓰기(
+        &root,
+        "docs/core/draft.kang",
+        "---\ndescription: 초안\n---\n\nkeyword `epoch`: 초안의 세대\n",
+    );
+
+    let 진단 = 심볼_검사(&root);
+
+    // 진단 단위는 **이름 하나**다. 두 파일이 각자 진단을 받으면 같은 사실이 두 번 나온다.
+    assert_eq!(코드들(&진단), vec!["K012"], "{진단:?}");
+    assert_eq!(진단[0].locations.len(), 2, "{진단:?}");
+    // 양쪽 모두 상대를 명시해야 하므로 수정도 둘이다.
+    assert_eq!(수정_종류(&진단[0]), vec![&FixKind::Edit, &FixKind::Edit]);
+    정리(&root);
+}
+
+/// 스펙 4.4: 상호 명시여야 한다. 한쪽만 iknow 하면 나머지 한쪽이 error 다.
+#[test]
+fn iknow_가_한쪽에만_있으면_에러다() {
+    let root = 임시_루트("iknow-one-sided");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: A\n---\n\nkeyword `epoch`: A 의 세대 // iknow `docs`/`b`.`epoch`\n",
+    );
+    쓰기(
+        &root,
+        "docs/b.kang",
+        "---\ndescription: B\n---\n\nkeyword `epoch`: B 의 세대\n",
+    );
+
+    let 진단 = 심볼_검사(&root);
+
+    assert_eq!(코드들(&진단), vec!["K012"], "{진단:?}");
+    // 위치는 여전히 선언 둘 전부지만, 고칠 곳은 빠뜨린 한쪽뿐이다.
+    assert_eq!(진단[0].locations.len(), 2, "{진단:?}");
+    assert_eq!(진단[0].fixes.len(), 1, "{진단:?}");
+    assert_eq!(
+        진단[0].fixes[0].doc.as_ref().map(DocPath::to_string),
+        Some("docs/b".to_string())
+    );
+    정리(&root);
+}
+
+/// 스펙 4.4: N개 파일이 같은 이름을 선언하면 각자 나머지 N-1개를 전부 명시해야 한다.
+#[test]
+fn 세개_파일_충돌은_각자_나머지_2개를_명시해야_한다() {
+    let root = 임시_루트("iknow-three");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: A\n---\n\nkeyword `epoch`: A // iknow `docs`/`b`.`epoch`, `docs`/`c`.`epoch`\n",
+    );
+    쓰기(
+        &root,
+        "docs/b.kang",
+        "---\ndescription: B\n---\n\nkeyword `epoch`: B // iknow `docs`/`a`.`epoch`, `docs`/`c`.`epoch`\n",
+    );
+    // c 는 a 만 알고 b 를 빠뜨렸다.
+    쓰기(
+        &root,
+        "docs/c.kang",
+        "---\ndescription: C\n---\n\nkeyword `epoch`: C // iknow `docs`/`a`.`epoch`\n",
+    );
+
+    let 진단 = 심볼_검사(&root);
+
+    assert_eq!(코드들(&진단), vec!["K012"], "{진단:?}");
+    assert_eq!(진단[0].locations.len(), 3, "{진단:?}");
+    assert_eq!(진단[0].fixes.len(), 1, "{진단:?}");
+    assert_eq!(
+        진단[0].fixes[0].doc.as_ref().map(DocPath::to_string),
+        Some("docs/c".to_string())
+    );
+    // 누락된 파일 경로를 명시해야 한다 (스펙 4.4). 이미 명시한 a 를 다시 요구하면 거짓이다.
+    assert!(
+        진단[0].fixes[0].action.contains("`b`"),
+        "{}",
+        진단[0].fixes[0].action
+    );
+    assert!(
+        !진단[0].fixes[0].action.contains("`a`"),
+        "{}",
+        진단[0].fixes[0].action
+    );
+    정리(&root);
+}
+
+/// 스펙 4.4: iknow 대상 파일이나 심볼이 실재하지 않으면 error 다.
+#[test]
+fn iknow_대상이_없으면_에러다() {
+    let root = 임시_루트("iknow-missing-target");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: A\n---\n\nkeyword `epoch`: A 의 세대 // iknow `docs`/`zzz`.`epoch`\n",
+    );
+
+    let 진단 = 심볼_검사(&root);
+
+    assert_eq!(코드들(&진단), vec!["K010"], "{진단:?}");
+    assert_eq!(위치들(&진단[0]), vec![("docs/a".to_string(), 5)]);
+    정리(&root);
+}
+
+/// 스펙 4.3: 전체 경로가 같을 때만 충돌이다. 말단 이름이 같은 것은 충돌이 아니다.
+#[test]
+fn 계층이_다르면_같은_말단_이름도_충돌이_아니다() {
+    let root = 임시_루트("hierarchy-no-collision");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: 결제\n---\n\nkeyword `결제`: 대금을 지불하는 행위\nkeyword `결제`.`상태`: 결제가 놓인 단계\n",
+    );
+    쓰기(
+        &root,
+        "docs/b.kang",
+        "---\ndescription: 구독\n---\n\nkeyword `구독`: 주기적으로 대금을 내는 계약\nkeyword `구독`.`상태`: 구독이 놓인 단계\n",
+    );
+
+    let 진단 = 심볼_검사(&root);
+
+    assert!(진단.is_empty(), "{진단:?}");
+    정리(&root);
+}
+
+/// **합법 문서를 거부하지 않는다.** 본문의 `` `결제수단`.`카드` `` 는 백틱 쌍 두 개로
+/// 파싱되지만 스코프 키는 `"결제수단.카드"` 하나다. 인접 조각을 합치지 않으면 이
+/// 합법 문서가 미해결 심볼 error 를 받는다.
+#[test]
+fn 계층_참조는_인접_조각을_합쳐_해석한다() {
+    let root = 임시_루트("hierarchy-ref-merge");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: 결제\n---\n\nkeyword `결제수단`: 대금을 내는 방법\nkeyword `결제수단`.`카드`: 카드를 사용한 결제\n\n## 결제의 방법\n\n사용자는 `결제수단`.`카드` 로 결제한다.\n",
+    );
+
+    let 진단 = 심볼_검사(&root);
+
+    assert!(진단.is_empty(), "{진단:?}");
+    정리(&root);
+}
+
+/// **합법 문서를 거부하지 않는다.** 상위 키워드를 import 하고 하위를 이 문서에서
+/// 선언하는 것은 스펙 4.3 이 명시한 형태다. 계층 참조가 상위 조각을 삼켜 버리면
+/// 그 import 가 미사용으로 오인된다.
+#[test]
+fn 계층_참조는_상위_import_를_사용으로_친다() {
+    let root = 임시_루트("hierarchy-parent-import");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: 결제\n---\n\nkeyword `결제수단`: 대금을 내는 방법\n",
+    );
+    쓰기(
+        &root,
+        "docs/b.kang",
+        "---\ndescription: 카드\n---\n\nimport `docs`/`a`.`결제수단`\n\nkeyword `결제수단`.`카드`: 카드를 사용한 결제\n\n## 카드 결제\n\n사용자는 `결제수단`.`카드` 로 결제한다.\n",
+    );
+
+    let 진단 = 심볼_검사(&root);
+
+    assert!(진단.is_empty(), "{진단:?}");
+    정리(&root);
+}
+
+/// 스펙 4.2 는 "본문과 **선언부**의 모든 백틱은 심볼 참조" 다.
+/// keyword 정의 안의 참조도 사용으로 쳐야 한다 — 아니면 합법 문서가 거부된다.
+#[test]
+fn keyword_정의의_참조도_사용으로_친다() {
+    let root = 임시_루트("keyword-def-usage");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: 결제\n---\n\nkeyword `결제`: 대금을 지불하는 행위\n",
+    );
+    쓰기(
+        &root,
+        "docs/b.kang",
+        "---\ndescription: 청구\n---\n\nimport `docs`/`a`.`결제` as `A 결제`\n\nkeyword `청구서`: `A 결제` 로 생겨나는 문서\n",
+    );
+
+    let 진단 = 심볼_검사(&root);
+
+    assert!(진단.is_empty(), "{진단:?}");
+    정리(&root);
+}
+
+/// 스펙 5.1.1: "관련 위치 전부." 한 곳만 보여주면 나머지를 찾아 헤맨다.
+#[test]
+fn 진단이_관련_위치를_전부_담는다() {
+    let root = 임시_루트("all-locations");
+    git_저장소로(&root);
+    // 세 파일이 같은 이름을 선언하고 아무도 iknow 하지 않는다.
+    for 이름 in ["a", "b", "c"] {
+        쓰기(
+            &root,
+            &format!("docs/{이름}.kang"),
+            &format!("---\ndescription: {이름}\n---\n\nkeyword `epoch`: {이름} 의 세대\n"),
+        );
+    }
+
+    let 진단 = 심볼_검사(&root);
+
+    assert_eq!(코드들(&진단), vec!["K012"], "{진단:?}");
+    assert_eq!(
+        위치들(&진단[0]),
+        vec![
+            ("docs/a".to_string(), 5),
+            ("docs/b".to_string(), 5),
+            ("docs/c".to_string(), 5)
+        ]
+    );
+    // 각 위치는 "그 위치가 왜 관련되는지" 를 말해야 한다.
+    for location in &진단[0].locations {
+        assert!(!location.note.is_empty(), "{location:?}");
+    }
+    정리(&root);
+}
+
+/// 스펙 5.1.1: 셸 명령을 담는 fix 는 인용까지 포함한다. 공백이 든 경로가 쪼개지면
+/// 에이전트가 그대로 실행했을 때 엉뚱한 인자를 받는다.
+#[test]
+fn 셸_명령_fix_는_인용되어_출력된다() {
+    let root = 임시_루트("shell-quoting");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/core policy/base.kang",
+        "---\ndescription: 기준선\n---\n\nkeyword `승격`: 후보를 기준선으로 올리는 일\n",
+    );
+    쓰기(
+        &root,
+        "docs/regression.kang",
+        "---\ndescription: 회귀\n---\n\n## 회귀의 기준\n\n`승격` 이후에는 회귀를 막는다.\n",
+    );
+
+    let 진단 = 심볼_검사(&root);
+
+    assert_eq!(코드들(&진단), vec!["K001"], "{진단:?}");
+    let 셸 = 진단[0]
+        .fixes
+        .iter()
+        .find(|fix| fix.kind == FixKind::Shell)
+        .expect("미해결 심볼 진단은 bless 셸 수정을 갖는다");
+    assert!(
+        셸.action.contains("'docs/core policy/base.승격'"),
+        "{}",
+        셸.action
+    );
+    정리(&root);
+}
+
+/// 스펙 5.1.1 의 첫 예시와 **구조**가 같아야 한다 —
+/// 코드 `K001`, 참조 자리 하나, `[edit]` 다음 `[shell]`.
+#[test]
+fn 미해결_심볼_진단의_구조가_스펙_5_1_1_과_일치한다() {
+    let root = 임시_루트("k001-shape");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/core/baseline.kang",
+        "---\ndescription: 기준선\n---\n\nkeyword `승격`: 후보를 기준선으로 올리는 일\n",
+    );
+    쓰기(
+        &root,
+        "docs/policy/regression.kang",
+        "---\ndescription: 회귀 정책\n---\n\n## 회귀의 기준\n\n`승격` 이후에는 회귀를 막는다.\n",
+    );
+
+    let 진단 = 심볼_검사(&root);
+
+    assert_eq!(코드들(&진단), vec!["K001"], "{진단:?}");
+    assert_eq!(진단[0].severity, Severity::Error);
+    assert_eq!(진단[0].locations.len(), 1);
+    assert!(!진단[0].locations[0].note.is_empty());
+    // 먼저 import 를 써야 bless 가 붙일 자리가 생긴다 — 순서가 뒤집히면 적용되지 않는다.
+    assert_eq!(수정_종류(&진단[0]), vec![&FixKind::Edit, &FixKind::Shell]);
+    assert_eq!(
+        진단[0].fixes[0].doc.as_ref().map(DocPath::to_string),
+        Some("docs/policy/regression".to_string())
+    );
+    assert_eq!(진단[0].fixes[1].doc, None);
+    // 같은 이름을 선언한 문서를 알려 주어야 한다 (스펙 5.1.1).
+    assert!(
+        진단[0].message.contains("docs/core/baseline"),
+        "{}",
+        진단[0].message
+    );
+
+    let 출력 = check::report(&진단);
+    assert!(출력.starts_with("error[K001]: "), "{출력}");
+    assert!(출력.contains("docs/policy/regression.kang:7"), "{출력}");
+    assert!(출력.contains("[edit]"), "{출력}");
+    assert!(출력.contains("[shell]"), "{출력}");
+    정리(&root);
+}
+
+/// 스펙 5.1.1 의 두 번째 예시와 **구조**가 같아야 한다 —
+/// 코드 `K012`, 선언 자리 둘, 문서 편집 수정 둘, 셸 수정 없음.
+#[test]
+fn iknow_누락_진단의_구조가_스펙_5_1_1_과_일치한다() {
+    let root = 임시_루트("k012-shape");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/core/lease.kang",
+        "---\ndescription: 임차\n---\n\nkeyword `epoch`: 임차 기간의 단위\n",
+    );
+    쓰기(
+        &root,
+        "docs/core/draft.kang",
+        "---\ndescription: 초안\n---\n\nkeyword `epoch`: 초안의 세대\n",
+    );
+
+    let 진단 = 심볼_검사(&root);
+
+    assert_eq!(코드들(&진단), vec!["K012"], "{진단:?}");
+    assert_eq!(진단[0].severity, Severity::Error);
+    assert_eq!(진단[0].locations.len(), 2);
+    for location in &진단[0].locations {
+        assert!(!location.note.is_empty(), "{location:?}");
+    }
+    assert_eq!(수정_종류(&진단[0]), vec![&FixKind::Edit, &FixKind::Edit]);
+    // 각 수정은 상대 문서를 iknow 하라고 말한다.
+    assert!(
+        진단[0].fixes[0].action.contains("`lease`"),
+        "{}",
+        진단[0].fixes[0].action
+    );
+    assert!(
+        진단[0].fixes[1].action.contains("`draft`"),
+        "{}",
+        진단[0].fixes[1].action
+    );
+
+    let 출력 = check::report(&진단);
+    assert!(출력.starts_with("error[K012]: "), "{출력}");
+    assert!(출력.contains("docs/core/draft.kang:5"), "{출력}");
+    assert!(출력.contains("docs/core/lease.kang:5"), "{출력}");
+    assert!(!출력.contains("[shell]"), "{출력}");
+    정리(&root);
+}
+
+/// 스펙 5.1.1 의 세 번째 예시와 **구조**가 같아야 한다.
+///
+/// `rev` 핀 규칙 자체는 Task 8 의 몫이므로 여기서는 진단을 손으로 만들어
+/// [`check::report`] 가 그 모양을 스펙대로 찍는지만 본다.
+#[test]
+fn rev_불일치_진단의_구조가_스펙_5_1_1_과_일치한다() {
+    let diagnostic = Diagnostic {
+        severity: Severity::Error,
+        code: "K021",
+        message: "rev 핀이 대상의 현재 내용과 다름 — docs/core/payment#결제의 방법".to_string(),
+        locations: vec![Location {
+            doc: 문서경로(&["docs", "billing", "invoice"]),
+            line: 3,
+            note: "핀 a3f9c1, 현재 7b21e0".to_string(),
+        }],
+        fixes: vec![Fix {
+            kind: FixKind::Shell,
+            doc: None,
+            action: "대상을 다시 읽고 핀을 갱신하세요: kang bless 'docs/billing/invoice' --import 'docs/core/payment#결제의 방법'".to_string(),
+        }],
+    };
+
+    let 출력 = check::report(std::slice::from_ref(&diagnostic));
+
+    assert!(출력.starts_with("error[K021]: "), "{출력}");
+    // 위치는 문서 파일 이름과 줄 번호로 찍는다.
+    assert!(출력.contains("docs/billing/invoice.kang:3"), "{출력}");
+    assert!(출력.contains("핀 a3f9c1, 현재 7b21e0"), "{출력}");
+    assert!(출력.contains("[shell]"), "{출력}");
+    assert!(출력.contains("'docs/core/payment#결제의 방법'"), "{출력}");
+    // 셸 수정은 CLI 문법이므로 백틱이 없어야 한다 (스펙 6.0).
+    let 셸_줄 = 출력
+        .lines()
+        .find(|line| line.contains("[shell]"))
+        .expect("셸 수정 줄이 있어야 한다");
+    assert!(!셸_줄.contains('`'), "{셸_줄}");
+}
+
+/// 스펙 5.1.1: `[edit]` 는 문서 문법(백틱), `[shell]` 은 CLI 문법(백틱 금지·인용)이다.
+/// 두 문법을 섞으면 삽입된 줄이 4.2 를 위반하거나 셸에서 명령 치환으로 터진다.
+#[test]
+fn edit_fix_는_문서_문법으로_shell_fix_는_cli_문법으로_출력된다() {
+    let root = 임시_루트("fix-syntax");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/core/baseline.kang",
+        "---\ndescription: 기준선\n---\n\nkeyword `승격`: 후보를 기준선으로 올리는 일\n",
+    );
+    쓰기(
+        &root,
+        "docs/policy/regression.kang",
+        "---\ndescription: 회귀 정책\n---\n\n## 회귀의 기준\n\n`승격` 이후에는 회귀를 막는다.\n",
+    );
+
+    let 진단 = 심볼_검사(&root);
+
+    assert_eq!(코드들(&진단), vec!["K001"], "{진단:?}");
+    let 편집 = &진단[0].fixes[0];
+    let 셸 = &진단[0].fixes[1];
+    // 문서 문법: 경로 조각마다 백틱을 두르고 `/` 로 잇는다.
+    assert_eq!(편집.kind, FixKind::Edit);
+    assert!(
+        편집.action.contains("`docs`/`core`/`baseline`.`승격`"),
+        "{}",
+        편집.action
+    );
+    assert!(!편집.action.contains('\''), "{}", 편집.action);
+    // CLI 문법: 백틱을 쓰지 않고 인용한다.
+    assert_eq!(셸.kind, FixKind::Shell);
+    assert!(!셸.action.contains('`'), "{}", 셸.action);
+    assert!(
+        셸.action.contains("'docs/core/baseline.승격'"),
+        "{}",
+        셸.action
+    );
+    정리(&root);
+}
+
+/// 스펙 5.1.1: `fix` 는 **순서 있는 목록**이며 앞에서부터 적용한다.
+/// import 를 먼저 써야 `bless` 가 핀을 붙일 줄이 생긴다.
+#[test]
+fn fixes_는_적용_순서대로_나온다() {
+    let root = 임시_루트("fix-order");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: 기준선\n---\n\nkeyword `승격`: 후보를 기준선으로 올리는 일\n",
+    );
+    쓰기(
+        &root,
+        "docs/b.kang",
+        "---\ndescription: 회귀\n---\n\n## 회귀의 기준\n\n`승격` 이후에는 회귀를 막는다.\n",
+    );
+
+    let 진단 = 심볼_검사(&root);
+
+    assert_eq!(코드들(&진단), vec!["K001"], "{진단:?}");
+    assert_eq!(수정_종류(&진단[0]), vec![&FixKind::Edit, &FixKind::Shell]);
+
+    let 출력 = check::report(&진단);
+    let 편집_자리 = 출력.find("[edit]").expect("문서 편집 수정이 있어야 한다");
+    let 셸_자리 = 출력.find("[shell]").expect("셸 수정이 있어야 한다");
+    assert!(편집_자리 < 셸_자리, "{출력}");
+    정리(&root);
+}
+
+/// `Location::line` 은 1-based 이므로 `0` 은 "가리킬 줄이 없음" 규약이다
+/// (Task 4 가 `K050`·`K051` 에 쓴다). 그때 `doc` 은 문서 주소가 아니라 표시용 경로이므로
+/// `.kang` 을 붙이거나 `:0` 을 찍으면 진단이 없는 파일 이름과 없는 줄을 지어낸다.
+#[test]
+fn 줄이_없는_진단은_줄_번호도_확장자도_찍지_않는다() {
+    let diagnostic = Diagnostic {
+        severity: Severity::Error,
+        code: "K050",
+        message: "kang 프로젝트 루트를 찾지 못했습니다.".to_string(),
+        locations: vec![Location {
+            doc: 문서경로(&["/tmp/여기에는 git 이 없다"]),
+            line: 0,
+            note: "이 디렉토리에서 위로 올라가며 .git 을 찾았지만 없었습니다.".to_string(),
+        }],
+        fixes: vec![Fix {
+            kind: FixKind::Shell,
+            doc: None,
+            action: "git init 을 실행하세요.".to_string(),
+        }],
+    };
+
+    let 출력 = check::report(std::slice::from_ref(&diagnostic));
+
+    assert!(출력.contains("/tmp/여기에는 git 이 없다"), "{출력}");
+    assert!(!출력.contains(":0"), "{출력}");
+    assert!(!출력.contains(".kang"), "{출력}");
+}
+
+/// 문서가 하나도 없는 프로젝트에는 검사할 심볼도 없다. 규칙이 빈 입력에서 터지면
+/// 갓 만든 저장소에서 `kang build` 가 죽는다.
+#[test]
+fn 빈_프로젝트에는_심볼_진단이_없다() {
+    let root = 임시_루트("empty-project");
+    git_저장소로(&root);
+
+    let 진단 = 심볼_검사(&root);
+
+    assert!(진단.is_empty(), "{진단:?}");
+    assert_eq!(check::report(&진단), "");
     정리(&root);
 }
