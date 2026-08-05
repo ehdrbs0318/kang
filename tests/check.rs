@@ -1910,6 +1910,30 @@ fn 줄이_없는_진단은_줄_번호도_확장자도_찍지_않는다() {
     assert!(!출력.contains(".kang"), "{출력}");
 }
 
+/// **합법 문서를 거부하지 않는다.** 스펙 4.6·4.7 의 정본 예시가 exception 을 alias 로
+/// import 한 뒤 `cover` 로만 쓴다. `cover` 대상을 사용으로 세지 않으면 그 문서가
+/// 미사용 import error 를 받는다.
+#[test]
+fn cover_로만_쓰는_import_도_사용으로_친다() {
+    let root = 임시_루트("cover-usage");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: 청구\n---\n\n## 청구서와 결제의 관계\n\n모든 청구서는 결제로 생겨난다.\n\nexception `무료 상품에 대한 청구서`\n",
+    );
+    쓰기(
+        &root,
+        "docs/b.kang",
+        "---\ndescription: 무료상품\n---\n\nimport `docs`/`a`!`무료 상품에 대한 청구서` as `무료상품 청구서 예외`\n\n## 무료상품 결제일 때 청구서\n\n무료상품은 0원 기록만 남긴다.\n\ncover `무료상품 청구서 예외`\n",
+    );
+
+    let 진단 = 심볼_검사(&root);
+
+    assert!(진단.is_empty(), "{진단:?}");
+    정리(&root);
+}
+
 /// 문서가 하나도 없는 프로젝트에는 검사할 심볼도 없다. 규칙이 빈 입력에서 터지면
 /// 갓 만든 저장소에서 `kang build` 가 죽는다.
 #[test]

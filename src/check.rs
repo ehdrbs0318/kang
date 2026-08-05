@@ -444,7 +444,9 @@ fn 선언_훑기(document: &Document) -> Vec<선언<'_>> {
 /// - 합친 참조들. 각 항목은 `(이름, 줄 번호, 참조된 자리)` 이며 자리는 진단의 note 에 쓴다
 /// - 이 문서가 쓴 이름 집합. **조각과 합친 이름을 모두** 담는다 — 상위 키워드를 import 하고
 ///   하위를 이 문서에서 선언하면(스펙 4.3) 본문의 `` `결제수단`.`카드` `` 가 하나로 합쳐져
-///   상위 이름이 사라지고, 조각을 세지 않으면 그 import 가 미사용으로 오인된다
+///   상위 이름이 사라지고, 조각을 세지 않으면 그 import 가 미사용으로 오인된다.
+///   `cover` 대상과 keyword 상세 마커도 선언부의 백틱이므로 함께 센다 — 스펙 4.6·4.7 의
+///   정본 예시가 exception 을 import 해 `cover` 로만 쓴다
 fn 참조_해석(
     document: &Document,
     scope: &HashMap<String, SymbolId>,
@@ -495,6 +497,24 @@ fn 참조_해석(
             사용.insert(이름.clone());
             참조.push((이름, 줄, 자리));
             첫째 += 길이;
+        }
+    }
+
+    // `cover` 대상과 keyword 상세 마커는 `refs` 에 담기지 않지만 선언부의 백틱이므로
+    // 심볼 참조다 (스펙 4.2). 미사용 판정에만 쓰고 미해결 판정에는 넣지 않는다 —
+    // `cover` 가 가리키는 exception 의 짝 맞추기는 상태 기계의 몫이라 여기서 함께 보면
+    // 같은 사실이 두 번 나오고, 상세 마커에 무엇을 쓸 수 있는지는 스펙 4.3 이 정하지
+    // 않아 미해결로 판정하면 합법일 수도 있는 문서를 거부하게 된다.
+    for topic in &document.topics {
+        // 한 topic 이 여러 예외를 커버할 수 있다.
+        for (이름, _) in &topic.covers {
+            사용.insert(이름.clone());
+        }
+    }
+    // 상세 topic 은 선택이므로 없는 keyword 가 많다.
+    for keyword in &document.keywords {
+        if let Some(detail) = &keyword.detail {
+            사용.insert(detail.clone());
         }
     }
 
