@@ -12,6 +12,7 @@
 //! | `K002` | import 대상 문서나 심볼이 존재하지 않음 |
 //! | `K003` | import 했으나 어떤 topic 에서도 사용하지 않음 |
 //! | `K004` | 한 심볼에 두 개 이상의 로컬 이름이 붙음 |
+//! | `K005` | 계층 keyword 의 상위가 같은 파일에 선언되지도 import 되지도 않음 |
 //! | `K010` | iknow 대상 문서나 심볼이 존재하지 않음 |
 //! | `K012` | 여러 문서가 같은 이름을 선언했는데 iknow 상호 명시가 완전하지 않음 |
 //! | `K040` | import 그래프에 순환이 있음 |
@@ -44,7 +45,8 @@
 //! 한 번에 전부 열거하려면 강한 연결 요소를 세는 순회로 올린다.
 
 use crate::ast::{
-    Diagnostic, DocPath, Document, Fix, FixKind, Import, Location, Severity, SymbolKind, SymbolRef,
+    Diagnostic, DocPath, Document, Fix, FixKind, Import, Keyword, Location, Severity, SymbolKind,
+    SymbolRef,
 };
 use crate::resolve::{Project, SymbolId, SymbolTable, 셸_인용};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -285,6 +287,7 @@ pub fn check_symbols(project: &Project, table: &SymbolTable) -> Vec<Diagnostic> 
         let (참조, 사용) = 참조_해석(document, &scope);
         iknow_실재_검사(document, project, table, &mut diagnostics);
         import_검사(document, project, table, &사용, &mut diagnostics);
+        계층_상위_검사(document, &선언들, &mut diagnostics);
         미해결_검사(document, &참조, &scope, &선언들, &mut diagnostics);
     }
 
@@ -857,6 +860,61 @@ fn 대상_설명(대상: &SymbolRef, project: &Project) -> String {
     }
 }
 
+/// 계층 keyword 의 상위가 이 문서에 있는지 검사한다 (`K005`).
+///
+/// 스펙 4.3:91 — "하위 키워드는 `.`로 계층을 표현한다. **상위 키워드는 같은 파일에서
+/// 정의했거나 import한 것이어야 한다.**"
+///
+/// **[`SymbolTable::scope`] 로 판정하지 않는다.** alias 를 붙이면 스코프에 묶이는 이름은
+/// alias 이므로, `` import `docs`/`a`.`결제수단` as `수단` `` 뒤의
+/// `` keyword `결제수단`.`카드` `` 가 거부된다. 스펙은 "import **한 것**" 을 허용하고 4.7 은
+/// alias 가 정식 이름을 폐기한다고 하지 않으므로 그 문서는 합법이다.
+/// 그래서 [`Document::keywords`] 의 선언 이름과 [`Document::imports`] 의 **대상 이름**을
+/// 직접 본다.
+///
+/// **요구하는 것은 직접 상위 하나뿐이다.** `A`.`B`.`C` 는 `A`.`B` 만 요구하고 `A` 는
+/// 요구하지 않는다. `A`.`B` 가 import 된 것이면 `A` 는 그 파일의 사정이고, 이 파일이
+/// 선언한 것이면 그 선언이 자기 차례에 `A` 를 요구받아 연쇄가 스스로 닫힌다.
+///
+/// **의무는 선언에만 걸린다.** 계층 심볼을 import 하는 것은 남의 파일 심볼을 가져오는
+/// 것이므로 상위를 함께 import 할 것을 요구하지 않는다 — 스펙 4.7 에 그런 조항이 없다.
+///
+/// # 매개변수
+/// - `document`: 검사할 문서
+/// - `선언들`: 이름별 선언 색인. 상위를 어디서 가져올 수 있는지 알려 주는 데 쓴다
+/// - `diagnostics`: 진단을 모을 곳
+fn 계층_상위_검사(
+    document: &Document,
+    선언들: &BTreeMap<String, Vec<선언>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    // 이 문서가 선언한 keyword 를 파일 순서대로 본다.
+    for keyword in &document.keywords {
+        // 계층이 아니면 요구할 상위가 없다.
+        let Some(상위) = keyword
+            .name
+            .0
+            .split_last()
+            .map(|(_, 앞)| 앞)
+            .filter(|앞| !앞.is_empty())
+        else {
+            continue;
+        };
+
+        // 같은 파일에서 선언했거나, 이 파일이 그 이름을 import 했으면 통과다.
+        let 갖춤 = document.keywords.iter().any(|다른| 다른.name.0 == *상위)
+            || document
+                .imports
+                .iter()
+                .any(|import| import.target.name[..] == *상위);
+        if 갖춤 {
+            continue;
+        }
+
+        diagnostics.push(계층_상위_없음(document, keyword, 상위, 선언들));
+    }
+}
+
 /// 심볼 종류를 문서에 쓰는 낱말로 바꾼다.
 ///
 /// # 매개변수
@@ -970,6 +1028,98 @@ fn 미해결_심볼(
             })
             .collect(),
         fixes,
+    }
+}
+
+/// 계층 keyword 의 상위가 이 문서에 없다는 진단을 만든다.
+///
+/// # 매개변수
+/// - `document`: 그 선언이 있는 문서
+/// - `keyword`: 상위를 갖추지 못한 계층 keyword 선언
+/// - `상위`: 요구되는 직접 상위의 이름 조각들. 최소 1개
+/// - `선언들`: 이름별 선언 색인. 그 이름을 keyword 로 선언한 문서를 찾는 데 쓴다
+///
+/// # 반환값
+/// `K005` 진단
+fn 계층_상위_없음(
+    document: &Document,
+    keyword: &Keyword,
+    상위: &[String],
+    선언들: &BTreeMap<String, Vec<선언>>,
+) -> Diagnostic {
+    // 문서 문법으로는 조각마다 백틱을 두른다 (스펙 4.1).
+    let 표기 = |조각들: &[String]| {
+        조각들
+            .iter()
+            .map(|조각| format!("`{조각}`"))
+            .collect::<Vec<String>>()
+            .join(".")
+    };
+    let 상위_표기 = 표기(상위);
+
+    // 그 이름을 keyword 로 선언한 문서를 찾는다. topic·exception 은 상위가 될 수 없으므로
+    // (스펙 4.3 은 "상위 **키워드**") import 를 권할 대상이 아니다.
+    let mut 후보: Vec<&선언> = Vec::new();
+    for 하나 in 선언들.get(&상위.join(".")).map_or(&[][..], Vec::as_slice) {
+        if 하나.kind == SymbolKind::Keyword && !후보.iter().any(|이미| 이미.doc == 하나.doc)
+        {
+            후보.push(하나);
+        }
+    }
+
+    // 개수를 세어 말한다. 없는데 "있습니다" 라고 하면 진단이 거짓을 말한다.
+    let 안내 = match 후보.first() {
+        Some(_) => format!(
+            "그 이름을 keyword 로 선언한 문서가 {} 개 있습니다: {}.",
+            후보.len(),
+            후보
+                .iter()
+                .map(|하나| 하나.doc.to_string())
+                .collect::<Vec<String>>()
+                .join(", ")
+        ),
+        None => "프로젝트 어디에도 그 이름의 keyword 선언이 없습니다.".to_string(),
+    };
+
+    Diagnostic {
+        severity: Severity::Error,
+        code: "K005",
+        message: format!(
+            "계층 keyword 의 상위를 이 문서에서 찾을 수 없습니다 — {상위_표기}. 스펙 4.3 은 상위 키워드가 같은 파일에서 정의했거나 import 한 것이어야 한다고 정합니다. {안내}"
+        ),
+        locations: vec![Location {
+            doc: document.path.clone(),
+            line: keyword.line,
+            note: format!(
+                "여기서 하위 keyword 를 선언했습니다 — {}",
+                표기(&keyword.name.0)
+            ),
+        }],
+        // 두 갈래는 **배타적**이다. 어느 쪽인지는 뜻이 정하므로 조건을 action 에 담는다.
+        // 순서는 이 문서 안에서 끝나는 쪽이 먼저다.
+        fixes: vec![
+            Fix {
+                kind: FixKind::Edit,
+                doc: Some(document.path.clone()),
+                action: format!(
+                    "이 개념이 이 문서의 것이라면, 상위를 여기서 선언하세요: keyword {상위_표기}: <한 줄 정의>"
+                ),
+            },
+            Fix {
+                kind: FixKind::Edit,
+                doc: Some(document.path.clone()),
+                action: match 후보.first() {
+                    Some(하나) => format!(
+                        "상위가 {} 의 것이라면, import 블록에 다음 줄을 추가하세요: import {}",
+                        하나.doc,
+                        심볼_주소(하나.doc, &하나.kind, &상위.join("."), true)
+                    ),
+                    None => format!(
+                        "상위가 다른 문서의 것이라면, 그 문서에서 keyword {상위_표기} 를 선언한 뒤 이 문서의 import 블록에서 그것을 가져오세요."
+                    ),
+                },
+            },
+        ],
     }
 }
 

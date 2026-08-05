@@ -2211,6 +2211,29 @@ fn 계층_이름_진단은_조각마다_백틱을_두른다() {
     정리(&root);
 }
 
+/// 스펙 4.3:91 — "상위 키워드는 같은 파일에서 정의했거나 import한 것이어야 한다."
+/// 지금은 상위가 어디에도 없는 계층 keyword 가 진단 없이 통과한다.
+#[test]
+fn 상위가_없는_계층_keyword_는_에러다() {
+    let root = 임시_루트("parent-missing");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: 카드\n---\n\nkeyword `없는부모`.`카드`: 카드를 사용한 결제\n",
+    );
+
+    let 진단 = 심볼_검사(&root);
+
+    assert_eq!(코드들(&진단), vec!["K005"], "{진단:?}");
+    assert_eq!(위치들(&진단[0]), vec![("docs/a".to_string(), 5)]);
+    assert!(!진단[0].locations[0].note.is_empty(), "{진단:?}");
+    assert!(진단[0].message.contains("없는부모"), "{}", 진단[0].message);
+    // 두 갈래를 다 준다 — 여기서 선언하거나, import 하거나.
+    assert_eq!(수정_종류(&진단[0]), vec![&FixKind::Edit, &FixKind::Edit]);
+    정리(&root);
+}
+
 /// **합법 문서를 거부하지 않는다.** 같은 파일에서 상위를 선언한 형태 (스펙 4.3 정본 예시).
 #[test]
 fn 같은_파일에서_선언한_상위는_통과한다() {
