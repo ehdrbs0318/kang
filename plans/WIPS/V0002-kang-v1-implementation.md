@@ -153,6 +153,11 @@ pub struct Keyword {
     pub definition: String,
     pub detail: Option<String>,   // #`상세 topic` 이름
     pub iknow: Vec<SymbolRef>,
+    /// 한 줄 정의 안의 백틱 심볼과 등장 줄.
+    /// 스펙 4.2 는 "본문과 **선언부**의 모든 백틱은 심볼 참조" 이므로
+    /// keyword 정의 안의 참조도 Task 6 의 미해결 심볼 검사 대상이다.
+    /// 이 필드가 없으면 keyword 정의가 kang 의 강제를 빠져나가는 은신처가 된다.
+    pub refs: Vec<(String, usize)>,
     pub line: usize,
 }
 
@@ -246,6 +251,18 @@ pub fn parse_document(path: DocPath, source: &str) -> Result<Document, Vec<Diagn
   - **`iknow` 는 import 가 아니다.** 파서는 대상을 `Vec<SymbolRef>` 로 담기만 하고, `imports` 에 넣지 않는다. 그래프 간선이 되지 않는 것이 스펙 4.4 의 핵심이다.
 - `// uncoded` 는 topic 헤딩 줄 뒤에만 붙는다.
 - 이 modifier들은 topic `body` 에서 제외한다 — rev 해시에 들어가면 안 된다.
+
+**컨트롤러 이월 (Task 2 리뷰 2회에서 나옴 — 반드시 처리)**
+
+- **`K105` 의 판정 범위를 좁혀야 한다.** Task 2 는 topic 헤딩 줄에 백틱이 하나라도 있으면 `K105` error 를 낸다 (근거: 스펙 6.0 이 CLI 인자에서 백틱을 금지하므로 헤딩에 백틱이 있으면 그 topic 은 주소를 댈 수 없다). 그런데 **스펙 4.4 는 `// iknow` 가 topic 헤딩에 붙는다고 하고 그 대상은 백틱을 포함한다** — `` ## 결제의 방법 // iknow `docs`/`B`.`결제의 방법` `` 은 합법 문서인데 지금 `K105` 로 거부된다.
+
+  따라서 Task 3 은 **헤딩에서 modifier(`// iknow …`, `// uncoded`)를 먼저 잘라낸 뒤 남은 헤딩 텍스트에만 `K105` 를 적용**하도록 고쳐야 한다. 순서를 반대로 하면 합법 문서가 거부된다.
+
+- **`Topic.name` 에서도 modifier 를 제거해야 한다.** 지금은 헤딩 원문 전체가 `name` 이 되므로, modifier 를 안 자르면 `` 조직의 문서 검토 절차 // uncoded `` 같은 조회 불가 이름이 **에러 없이** 만들어진다. `K105` 만 조용해지고 이름이 깨지는 것이 최악이다 — 둘을 함께 고친다.
+
+- **topic 밖 줄의 백틱 짝 검사.** Task 2 의 `parse.rs` 는 첫 `##` 이전 줄에서 `topics.last_mut()` 가 `None` 이라 조기 `continue` 하므로 백틱 짝 검사(`K104`)를 받지 않는다. Task 3 이 `import` 줄을 파싱하며 이 구간을 다루게 되므로, **import 줄과 그 밖의 topic 외 줄에 백틱 짝 검사를 적용할지 여기서 결정하고 명시한다.** import 줄은 반드시 검사해야 한다 — 심볼 주소가 백틱으로 쓰인다.
+
+- **타입 재정의 금지.** Task 2 가 확정한 `ast.rs` 의 14개 타입은 필드 이름·타입·순서가 고정이다. Task 3 은 빈 필드를 **채우기만** 한다. 필드를 늘려야 할 이유가 생기면 구현하지 말고 컨트롤러에 보고한다.
 
 - [ ] **Step 1: 실패하는 테스트 작성** — 시나리오 11개
   - `keyword_import_를_읽는다`
