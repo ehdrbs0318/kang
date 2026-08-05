@@ -32,6 +32,7 @@ cargo build --release
 kang — 문서 컴파일러
 
 명령:
+  kang init                            에이전트 진입점과 첫 문서 생성
   kang build                           컴파일 및 검증
   kang bless <문서> --import <심볼>    rev 핀 갱신·삽입
   kang list [경로]                     문서 목록과 description
@@ -41,7 +42,6 @@ kang — 문서 컴파일러
   kang --help                          이 도움말
 
 아직 구현되지 않은 명령 (부르면 종료 코드 3 이며, 다른 방법이 없습니다):
-  kang init                            에이전트 진입점과 첫 문서 생성
   kang inspect                         코드 대조 (v2)
 
 인자 문법:
@@ -56,8 +56,24 @@ kang — 문서 컴파일러
   0  성공
   1  컴파일 error 존재
   2  사용법 오류, 또는 환경 오류 (git 저장소가 아님)
-  3  아직 구현되지 않은 기능 (위 목록의 세 명령)
+  3  아직 구현되지 않은 기능 (kang inspect)
 ```
+
+## 시작하기
+
+빈 디렉토리에서 세 명령이면 끝난다. `kang init` 은 git 저장소를 요구하지 않지만
+`kang build` 는 프로젝트 루트를 git 저장소 루트로 삼으므로 `git init` 이 먼저다.
+
+```sh
+git init
+kang init
+kang build
+```
+
+`kang init` 은 네 파일을 만든다 — `.claude/skills/kang/SKILL.md`(에이전트가 읽는
+사용법의 유일한 사본), `AGENTS.md`·`CLAUDE.md`(그것을 가리키는 진입점),
+`docs/example.kang`(첫 문서 템플릿). 기존 `AGENTS.md`·`CLAUDE.md` 는 덮어쓰지 않고
+섹션만 덧붙이며, 이미 있으면 건너뛴다.
 
 ## 스펙
 

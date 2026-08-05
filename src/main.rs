@@ -15,6 +15,7 @@
 use kang::ast::{Diagnostic, DocPath, Severity, SymbolKind};
 use kang::bless::{self, ImportAddress};
 use kang::check;
+use kang::init;
 use kang::resolve::{self, Project, SymbolTable};
 use kang::show::{self, ShowTarget};
 use std::io::Write;
@@ -27,6 +28,7 @@ use std::path::PathBuf;
 const 사용법: &str = "kang — 문서 컴파일러
 
 명령:
+  kang init                            에이전트 진입점과 첫 문서 생성
   kang build                           컴파일 및 검증
   kang bless <문서> --import <심볼>    rev 핀 갱신·삽입
   kang list [경로]                     문서 목록과 description
@@ -36,7 +38,6 @@ const 사용법: &str = "kang — 문서 컴파일러
   kang --help                          이 도움말
 
 아직 구현되지 않은 명령 (부르면 종료 코드 3 이며, 다른 방법이 없습니다):
-  kang init                            에이전트 진입점과 첫 문서 생성
   kang inspect                         코드 대조 (v2)
 
 인자 문법:
@@ -51,7 +52,7 @@ const 사용법: &str = "kang — 문서 컴파일러
   0  성공
   1  컴파일 error 존재
   2  사용법 오류, 또는 환경 오류 (git 저장소가 아님)
-  3  아직 구현되지 않은 기능 (위 목록의 세 명령)";
+  3  아직 구현되지 않은 기능 (kang inspect)";
 
 /// 인자를 서브커맨드로 갈라 실행하고 그 종료 코드로 프로세스를 끝낸다.
 fn main() {
@@ -88,10 +89,8 @@ fn main() {
         ["refs", 키워드] => 참조들(키워드),
         ["show", 대상] => 조회(대상),
         ["bless", 문서, "--import", 심볼] => 축복(문서, 심볼),
-        // Task 14 가 본체를 채운다. 지금 사용법 오류로 흘려보내면 에이전트가 있는 명령을
-        // 없다고 배운다.
-        ["init"] => 미구현("kang init", "이 빌드에는 아직 없습니다."),
-        // v1 에 없는 것과 **v1 이 만들지 않기로 한 것**은 다르다. 앞의 셋은 다음 빌드를
+        ["init"] => 초기화(),
+        // v1 에 없는 것과 **v1 이 만들지 않기로 한 것**은 다르다. 앞의 것은 다음 빌드를
         // 기다리면 되지만 이것은 기다려도 오지 않는다 (스펙 6절).
         ["inspect"] => 미구현("kang inspect", "v2 기능이며 아직 구현되지 않았습니다."),
         // 알 수 없는 명령과 인자 개수 불일치가 함께 여기로 온다.
@@ -258,6 +257,56 @@ fn 종료_코드(진단들: &[Diagnostic]) -> i32 {
 fn 미구현(명령: &str, 사정: &str) -> i32 {
     eprintln!("아직 쓸 수 없는 명령입니다: {명령} — {사정}");
     3
+}
+
+/// 에이전트 진입점과 첫 문서를 만든다 (스펙 6.1).
+///
+/// **git 저장소를 요구하지 않는다.** `init` 은 갓 만든 디렉토리에서 실행되는 첫 명령이므로
+/// 여기서 종료 코드 2 로 죽으면 T0 에서 벽을 만든다. 저장소가 아니면 현재 디렉토리를
+/// 루트로 삼고 `git init` 안내를 함께 낸다 — `build` 는 저장소를 요구하기 때문이다
+/// (스펙 3절). 그래서 `K050` 진단을 찍지 않는다. 찍으면 에이전트가 성공한 명령에서
+/// 고칠 것을 찾는다.
+///
+/// **출력은 전부 표준 오류다.** `init` 은 파일을 만들 뿐 데이터를 내지 않으므로 [`축복`]
+/// 과 같은 규약을 따른다. 산출물마다의 처리는 [`kang::init::init`] 이 직접 찍는다.
+///
+/// # 반환값
+/// 프로세스 종료 코드
+fn 초기화() -> i32 {
+    // 현재 디렉토리를 잃은 프로세스는 루트를 정할 수 없다. `parse_project` 와 같은 답이다.
+    let cwd = std::env::current_dir().unwrap_or_else(|오류| {
+        eprintln!("현재 디렉토리를 확인하지 못했습니다 — {오류}");
+        std::process::exit(2);
+    });
+
+    // 하위 디렉토리에서 불러도 파일은 저장소 루트에 만들어져야 한다 (스펙 3절).
+    let (root, git_없음) = match resolve::find_root(&cwd) {
+        Ok(root) => (root, false),
+        Err(_) => (cwd, true),
+    };
+
+    let 만든것 = match init::init(&root) {
+        Ok(만든것) => 만든것,
+        // 실패는 전부 IO 다. 문서가 규칙을 어긴 것이 아니므로 환경 오류로 2 다.
+        Err(사유) => {
+            eprintln!("{사유}");
+            return 2;
+        }
+    };
+
+    // 하나도 만들지 않았으면 그렇다고 말한다. 침묵하면 무엇이 일어났는지 알 수 없다.
+    if 만든것.is_empty() {
+        eprintln!("이미 초기화되어 있습니다. 바꾼 것이 없습니다.");
+    }
+
+    // 여기서 안내하지 않으면 다음 명령인 `kang build` 가 `K050` 으로 막힌다.
+    if git_없음 {
+        eprintln!(
+            "이 디렉토리는 git 저장소가 아닙니다. kang build 는 저장소 루트를 프로젝트 루트로 삼으므로 git init 을 먼저 실행하세요."
+        );
+    }
+
+    0
 }
 
 /// import 의 rev 핀을 갱신하거나 삽입한다 (스펙 6.2).

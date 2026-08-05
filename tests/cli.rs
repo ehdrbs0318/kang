@@ -758,18 +758,35 @@ fn help_이_명령과_인자_형식과_종료코드를_전부_보여준다() {
         .split_once("아직 구현되지 않은 명령")
         .expect("미구현 명령을 따로 알려야 한다")
         .1;
-    for 명령 in ["kang init", "kang inspect"] {
-        assert!(
-            미구현_절.contains(명령),
-            "{명령} 이 미구현으로 표시되지 않았다: {stdout}"
-        );
-    }
+    assert!(
+        미구현_절.contains("kang inspect"),
+        "kang inspect 가 미구현으로 표시되지 않았다: {stdout}"
+    );
     // 구현된 명령이 미구현 목록에 남아 있으면 에이전트가 쓸 수 있는 명령을 쓰지 않는다.
-    for 명령 in ["kang show <", "kang bless <"] {
+    for 명령 in ["kang show <", "kang bless <", "kang init"] {
         assert!(
             !미구현_절.contains(명령),
             "{명령} 이 아직 미구현으로 표시되어 있다: {stdout}"
         );
+    }
+
+    // **양방향 게이트.** 도움말이 미구현이라 한 명령을 실제로 불러 본다. 목록만 검사하면
+    // 구현된 명령이 목록에 남아도(`init` 이 그랬다) 도움말이 조용히 거짓이 된다.
+    // 절의 끝은 첫 빈 줄이다 — 그 뒤의 `인자 문법` 예시에도 `kang` 줄이 있다.
+    let 미구현_명령들: Vec<&str> = 미구현_절
+        .lines()
+        .skip(1)
+        .take_while(|줄| !줄.trim().is_empty())
+        .filter_map(|줄| 줄.split_whitespace().nth(1))
+        .collect();
+    assert!(
+        !미구현_명령들.is_empty(),
+        "미구현 절을 읽지 못했다: {stdout}"
+    );
+    // 목록에 오른 명령마다 종료 코드 3 이어야 한다.
+    for 명령 in 미구현_명령들 {
+        let (_, stderr, 코드) = 실행(&root, &[명령]);
+        assert_eq!(코드, 3, "kang {명령} 이 3 이 아니다: {stderr}");
     }
     정리(&root);
 }
@@ -2690,5 +2707,282 @@ fn k034_의_fix_를_한_왕복에_적용하면_통과한다() {
     let (_, stderr, 코드) = 실행(&root, &["build"]);
     assert_eq!(코드, 0, "{stderr}");
     assert_eq!(stderr, "", "fix 를 적용하면 새 진단이 생기면 안 된다");
+    정리(&root);
+}
+
+// ---------------------------------------------------------------------------
+// init — 에이전트 진입점과 스킬 (스펙 6.1)
+// ---------------------------------------------------------------------------
+
+/// `init` 이 만드는 네 산출물. 스펙 6.1 의 표와 같은 순서다.
+const 산출물: [&str; 4] = [
+    ".claude/skills/kang/SKILL.md",
+    "AGENTS.md",
+    "CLAUDE.md",
+    "docs/example.kang",
+];
+
+/// 하나라도 빠지면 에이전트가 kang 의 존재를 모른 채 `.kang` 을 `cat` 한다.
+/// 만든 것을 이름으로 말해야 한다 — "만들었습니다" 만으로는 검증할 수 없다.
+#[test]
+fn 네_파일을_생성한다() {
+    let root = 임시_루트("init-four");
+    git_저장소로(&root);
+
+    let (stdout, stderr, 코드) = 실행(&root, &["init"]);
+
+    assert_eq!(코드, 0, "{stderr}");
+    assert_eq!(stdout, "", "init 은 파일을 만들 뿐 데이터를 내지 않는다");
+    // 네 산출물이 전부 실재하고, 비어 있지 않고, 이름으로 보고되어야 한다.
+    for 상대 in 산출물 {
+        assert!(root.join(상대).exists(), "{상대} 가 없다: {stderr}");
+        assert!(!읽기(&root, 상대).trim().is_empty(), "{상대} 가 비어 있다");
+        assert!(
+            stderr.contains(상대),
+            "{상대} 를 만들었다고 말하지 않았다: {stderr}"
+        );
+    }
+    정리(&root);
+}
+
+/// 스킬이 비어 있으면 파일만 생기고 원칙은 성립하지 않는다.
+/// 스펙 6.1 의 다섯 케이스와 명령 목록이 전부 있어야 한다.
+#[test]
+fn 생성된_skill_md_가_비어있지_않다() {
+    let root = 임시_루트("init-skill");
+    git_저장소로(&root);
+
+    let (_, stderr, 코드) = 실행(&root, &["init"]);
+    assert_eq!(코드, 0, "{stderr}");
+
+    let 스킬 = 읽기(&root, ".claude/skills/kang/SKILL.md");
+    // Claude 는 frontmatter 로 스킬을 찾는다. 없으면 파일이 있어도 로드되지 않는다.
+    assert!(스킬.starts_with("---\n"), "frontmatter 가 없다: {스킬}");
+    assert!(스킬.contains("name: kang"), "{스킬}");
+    // 다섯 케이스 (스펙 6.1 스킬 내용).
+    for 케이스 in [
+        "조회할 때",
+        "쓸 때",
+        "실패했을 때",
+        "이름을 바꿀 때",
+        "코드를 고칠 때",
+    ] {
+        assert!(스킬.contains(케이스), "케이스 {케이스} 가 없다: {스킬}");
+    }
+    // 케이스가 지시하는 명령이 전부 있어야 실행할 수 있다.
+    for 명령 in [
+        "kang build",
+        "kang keywords",
+        "kang refs",
+        "kang show",
+        "kang bless",
+    ] {
+        assert!(스킬.contains(명령), "{명령} 이 없다: {스킬}");
+    }
+    // 스킬 내용의 유일한 사본이므로 나머지 둘은 가리키기만 한다.
+    for 상대 in ["AGENTS.md", "CLAUDE.md"] {
+        let 내용 = 읽기(&root, 상대);
+        assert!(
+            내용.contains(".claude/skills/kang/SKILL.md"),
+            "{상대} 가 스킬을 가리키지 않는다: {내용}"
+        );
+        assert!(
+            !내용.contains("조회할 때"),
+            "{상대} 가 스킬 내용을 복제했다: {내용}"
+        );
+    }
+    정리(&root);
+}
+
+/// 기존 `CLAUDE.md` 를 덮어쓰면 그 프로젝트의 지침이 사라진다.
+#[test]
+fn 기존_claude_md_를_덮어쓰지_않고_섹션만_덧붙인다() {
+    let root = 임시_루트("init-append");
+    git_저장소로(&root);
+    // **개행으로 끝나지 않는 파일**이다. 그냥 이어 붙이면 마지막 줄에 달라붙는다.
+    쓰기(&root, "CLAUDE.md", "# 내 프로젝트\n\n기존 지침을 지키세요.");
+
+    let (_, stderr, 코드) = 실행(&root, &["init"]);
+
+    assert_eq!(코드, 0, "{stderr}");
+    let 내용 = 읽기(&root, "CLAUDE.md");
+    assert!(내용.contains("# 내 프로젝트"), "{내용}");
+    assert!(내용.contains("기존 지침을 지키세요."), "{내용}");
+    assert!(내용.contains("kang"), "kang 안내가 없다: {내용}");
+    // 마지막 줄에 달라붙지 않았는지 본다.
+    assert!(
+        !내용.contains("기존 지침을 지키세요.이"),
+        "개행 없이 붙었다: {내용}"
+    );
+    for 줄 in 내용.lines() {
+        assert!(
+            !(줄.contains("기존 지침") && 줄.contains("kang")),
+            "한 줄에 뭉쳤다: {내용}"
+        );
+    }
+    정리(&root);
+}
+
+/// 두 번 실행해도 같은 상태여야 한다. 그리고 건너뛴 것을 건너뛰었다고 말해야 한다.
+#[test]
+fn 이미_kang_섹션이_있으면_건너뛴다() {
+    let root = 임시_루트("init-twice");
+    git_저장소로(&root);
+
+    let (_, 첫_stderr, 첫_코드) = 실행(&root, &["init"]);
+    assert_eq!(첫_코드, 0, "{첫_stderr}");
+    let 첫_내용: Vec<String> = 산출물.iter().map(|상대| 읽기(&root, 상대)).collect();
+
+    let (stdout, stderr, 코드) = 실행(&root, &["init"]);
+
+    assert_eq!(코드, 0, "{stderr}");
+    assert_eq!(stdout, "");
+    // 파일이 바이트 단위로 같아야 한다 — 섹션이 두 번 붙으면 여기서 걸린다.
+    for (상대, 앞) in 산출물.iter().zip(&첫_내용) {
+        assert_eq!(&읽기(&root, 상대), 앞, "{상대} 가 바뀌었다");
+    }
+    // "만들었습니다" 라고 하면서 건너뛰면 검증하면 거짓이다.
+    assert!(
+        stderr.contains("건너"),
+        "건너뛴 것을 말하지 않았다: {stderr}"
+    );
+    for 상대 in 산출물 {
+        assert!(
+            stderr.contains(상대),
+            "{상대} 의 처리를 말하지 않았다: {stderr}"
+        );
+    }
+    정리(&root);
+}
+
+/// 이미 kang 을 쓰는 프로젝트에 예제 템플릿을 더하면 쓰레기가 생긴다.
+#[test]
+fn 이미_kang_파일이_있으면_예제를_만들지_않는다() {
+    let root = 임시_루트("init-has-kang");
+    git_저장소로(&root);
+    정상_문서(&root);
+
+    let (_, stderr, 코드) = 실행(&root, &["init"]);
+
+    assert_eq!(코드, 0, "{stderr}");
+    assert!(
+        !root.join("docs/example.kang").exists(),
+        "예제를 만들었다: {stderr}"
+    );
+    // 만들지 않았다는 사실도 말해야 한다.
+    assert!(stderr.contains("docs/example.kang"), "{stderr}");
+    assert!(stderr.contains("건너"), "{stderr}");
+    // 나머지 셋은 만들어져야 한다.
+    for 상대 in [".claude/skills/kang/SKILL.md", "AGENTS.md", "CLAUDE.md"] {
+        assert!(root.join(상대).exists(), "{상대} 가 없다: {stderr}");
+    }
+    정리(&root);
+}
+
+/// 도구가 만든 문서가 도구를 통과하지 못하면 그것이 첫 경험이다.
+#[test]
+fn init_직후_build_가_통과한다() {
+    let root = 임시_루트("init-build");
+    git_저장소로(&root);
+
+    let (_, init_stderr, init_코드) = 실행(&root, &["init"]);
+    assert_eq!(init_코드, 0, "{init_stderr}");
+
+    let (stdout, stderr, 코드) = 실행(&root, &["build"]);
+
+    assert_eq!(코드, 0, "{stderr}");
+    assert_eq!(stdout, "");
+    assert_eq!(stderr, "", "생성한 문서에 진단이 붙으면 안 된다");
+    정리(&root);
+}
+
+/// TTHW 측정 기준 — 세 명령이다. `init` 은 git 을 요구하지 않지만 `build` 는 요구한다.
+#[test]
+fn git_init_후_kang_init_과_build_세_명령으로_통과한다() {
+    let root = 임시_루트("init-tthw");
+
+    // 1. git init
+    git_저장소로(&root);
+    // 2. kang init
+    let (_, init_stderr, init_코드) = 실행(&root, &["init"]);
+    assert_eq!(init_코드, 0, "{init_stderr}");
+    // 3. kang build
+    let (stdout, stderr, 코드) = 실행(&root, &["build"]);
+
+    assert_eq!(코드, 0, "{stderr}");
+    assert_eq!(stdout, "");
+    assert_eq!(stderr, "", "세 명령 사이에 손으로 고칠 것이 없어야 한다");
+    정리(&root);
+}
+
+/// 갓 만든 디렉토리에서 종료 코드 2 로 죽으면 T0 벽이 된다.
+#[test]
+fn git_저장소가_아니어도_init_이_성공하고_git_init_을_안내한다() {
+    let root = 임시_루트("init-no-git");
+
+    let (stdout, stderr, 코드) = 실행(&root, &["init"]);
+
+    assert_eq!(코드, 0, "{stderr}");
+    assert_eq!(stdout, "");
+    // 현재 디렉토리를 루트로 삼는다.
+    for 상대 in 산출물 {
+        assert!(root.join(상대).exists(), "{상대} 가 없다: {stderr}");
+    }
+    assert!(stderr.contains("git init"), "안내가 없다: {stderr}");
+    // 환경 오류가 아니므로 사용법을 내지 않는다 (스펙 6절).
+    assert!(
+        !stderr.contains("종료 코드:"),
+        "사용법을 내면 에이전트가 철자를 의심한다: {stderr}"
+    );
+    정리(&root);
+}
+
+/// 다른 도구의 섹션을 건드리면 그 도구가 깨진다. 그리고 marker 를 **산문 안에 인용한**
+/// 파일은 아직 kang 안내를 갖지 않았으므로 덧붙여야 한다.
+#[test]
+fn 다른_도구_섹션이_있는_claude_md_에_kang_섹션만_덧붙인다() {
+    let root = 임시_루트("init-other-tool");
+    git_저장소로(&root);
+    // CLAUDE.md 의 marker 를 **산문 안에 인용한** 줄이 들어 있다. 인용은 지시가 아니므로
+    // 실제 안내는 덧붙어야 한다.
+    쓰기(
+        &root,
+        "CLAUDE.md",
+        "# 규칙\n\n## 다른 도구\n\n여기에 \"이 프로젝트의 문서는 kang 으로 유지보수된다\" 를 적으라고 적혀 있을 뿐입니다.\n\n## 배포\n\n배포 절차입니다.\n",
+    );
+    쓰기(
+        &root,
+        "AGENTS.md",
+        "## 다른 도구\n\n다른 도구의 지침입니다.\n",
+    );
+
+    let (_, stderr, 코드) = 실행(&root, &["init"]);
+    assert_eq!(코드, 0, "{stderr}");
+
+    // 다른 도구의 섹션은 그대로다.
+    for 상대 in ["CLAUDE.md", "AGENTS.md"] {
+        let 내용 = 읽기(&root, 상대);
+        assert!(내용.contains("## 다른 도구"), "{상대}: {내용}");
+        assert!(
+            내용.contains(".claude/skills/kang/SKILL.md"),
+            "{상대} 에 kang 안내가 없다: {내용}"
+        );
+    }
+    // 인용은 지시가 아니다 — 산문 인용이 있어도 실제 안내는 덧붙고 인용은 남는다.
+    let claude = 읽기(&root, "CLAUDE.md");
+    assert!(claude.contains("## 배포"), "배포 절이 사라졌다: {claude}");
+    assert!(claude.contains("적혀 있을 뿐입니다."), "{claude}");
+
+    // 다시 실행해도 한 번만 있어야 한다.
+    let (_, stderr, 코드) = 실행(&root, &["init"]);
+    assert_eq!(코드, 0, "{stderr}");
+    for 상대 in ["CLAUDE.md", "AGENTS.md"] {
+        let 내용 = 읽기(&root, 상대);
+        assert_eq!(
+            내용.matches(".claude/skills/kang/SKILL.md").count(),
+            1,
+            "{상대} 에 두 번 붙었다: {내용}"
+        );
+    }
     정리(&root);
 }

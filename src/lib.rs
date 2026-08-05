@@ -5,6 +5,7 @@ pub mod ast;
 pub mod bless;
 pub mod check;
 pub mod hash;
+pub mod init;
 pub mod parse;
 pub mod resolve;
 pub mod show;
