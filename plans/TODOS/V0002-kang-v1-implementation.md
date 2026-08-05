@@ -27,14 +27,13 @@ src/
   ast.rs       AST 타입 정의
   parse.rs     렉서 + 파서 (파일 1개 → Document)
   hash.rs      정규화 + rev 해시
-  resolve.rs   프로젝트 로드, 심볼 테이블, import 그래프
-  check.rs     진단 규칙 + 진단 출력
+  resolve.rs   프로젝트 로드, 심볼 테이블
+  check.rs     진단 규칙(순환 검출 포함) + 진단 출력
   yaml.rs      YAML 이미터
   show.rs      show 출력 구성 (재귀 임베드 + 중복 제거)
   bless.rs     rev 핀 갱신
   init.rs      에이전트 진입점 생성 (스킬·CLAUDE.md·AGENTS.md·첫 문서)
-assets/
-  SKILL.md     kang 스킬 원본. init 이 프로젝트로 복사한다
+  skill.md     kang 스킬 원본. include_str! 로 임베드된다
 .github/workflows/
   release.yml  태그 푸시 시 크로스 플랫폼 바이너리 빌드 및 릴리즈
 tests/
@@ -45,6 +44,8 @@ tests/
 ```
 
 책임 분리 기준: `parse`는 파일 하나만 안다. `resolve`는 프로젝트 전체를 안다. `check`는 규칙만 안다. `show`/`yaml`/`bless`는 출력과 수정만 한다.
+
+**경로 포맷팅은 한 곳에만 있다.** `list`·`keywords`·`refs`·`show`·진단이 전부 "전체 경로 문자열"을 만드는데, 각자 만들면 다섯 곳이 조금씩 어긋난다. `ast.rs` 에 `impl Display for DocPath` 와 `SymbolRef` 의 표시 함수를 두고 전부 그것만 쓴다. CLI 인자 파싱(`ImportAddress::parse`)도 같은 문법의 역방향이므로 같은 모듈에 둔다.
 
 ---
 
@@ -106,10 +107,13 @@ pub struct Location {
 }
 
 /// 진단이 제안하는 수정 하나. LLM 이 그대로 적용할 수 있어야 한다.
+/// **줄 번호를 좌표로 쓰지 않는다** (ADR-0003) — 첫 fix 를 적용하면
+/// 줄이 밀려 두 번째 fix 가 엉뚱한 곳을 가리킨다.
 pub struct Fix {
     pub doc: DocPath,
-    pub line: usize,
-    /// 해당 줄을 무엇으로 바꾸거나, 무엇을 덧붙일지.
+    /// 어디에 무엇을 적용할지 한 문장으로.
+    /// 예: "keyword `epoch` 선언 뒤에 `// iknow docs/core/draft.epoch` 추가".
+    /// 셸 명령이면 인용까지 포함한다.
     pub action: String,
 }
 
@@ -310,9 +314,6 @@ impl SymbolTable {
     /// 동의어도 이 색인에 들어간다 — 동의어와 같은 이름의 새 선언을 잡기 위해서다.
     pub fn by_name(&self, name: &str) -> &[SymbolId];
 
-    /// 이 이름이 어떤 keyword 의 동의어라면 그 정본 심볼을 돌려준다.
-    pub fn canonical_of_synonym(&self, name: &str) -> Option<SymbolId>;
-
     pub fn owner(&self, id: SymbolId) -> &DocPath;
     pub fn hash_source(&self, id: SymbolId) -> &str;
 }
@@ -343,10 +344,10 @@ impl SymbolTable {
 
 ---
 
-## Task 5: import 그래프 + 순환 검출
+## Task 5: 순환 검출
 
 **파일**
-- 수정: `src/resolve.rs`
+- 생성: `src/check.rs`
 - 테스트: `tests/check.rs`
 
 **인터페이스**
@@ -354,19 +355,16 @@ impl SymbolTable {
 - 산출:
 
 ```rust
-pub struct ImportGraph { /* 비공개 */ }
-
-impl ImportGraph {
-    /// 파일 단위 import 관계로 DAG 를 만든다. 순환이 있으면 체인 전체를 진단에 담는다.
-    pub fn build(project: &Project) -> (ImportGraph, Vec<Diagnostic>);
-}
+/// 파일 단위 import 관계를 DFS 로 훑어 순환을 검출한다.
+/// 그래프 값을 남기지 않는다 — v1 에 질의할 소비자가 없다.
+pub fn check_cycles(project: &Project) -> Vec<Diagnostic>;
 ```
 
 **구현 요점**
 - **노드는 파일이다.** 스펙 5.1 의 순환 규칙이 파일 단위이기 때문이다. 파일 그래프가 DAG 면 topic 그래프도 DAG 다 — topic 간선 T→U 는 반드시 file(T)→file(U) 를 동반하므로 파일 단위 금지가 더 강하다.
 - **`iknow` 는 간선이 아니다.** 상호 명시가 순환으로 잡히면 안 된다 (스펙 4.4). 간선은 `imports` 에서만 만든다.
 - 순환 검출은 DFS + 방문 색칠. 순환 발견 시 스택을 그대로 체인으로 출력하고 "공통 개념을 상위 파일로 추출하라"를 `fix` 에 담는다.
-- `ancestors()` 와 참조 전파는 **v2**다. 참조 전파는 코드가 topic 을 참조할 때 정의되는 규칙이고 코드 연동이 v2 이므로 v1 에 호출자가 없다. `show` 의 재귀 임베드는 `Document.imports` 를 직접 순회한다.
+- 그래프 값을 구조체로 남기지 않는다. `ancestors()` 를 v2 로 내린 뒤 질의 메서드가 없어져 `check.rs` 의 함수 하나로 충분하다. `ancestors()` 와 참조 전파는 **v2**다. 참조 전파는 코드가 topic 을 참조할 때 정의되는 규칙이고 코드 연동이 v2 이므로 v1 에 호출자가 없다. `show` 의 재귀 임베드는 `Document.imports` 를 직접 순회한다.
 
 - [ ] **Step 1: 실패하는 테스트 작성** — 시나리오 4개
   - `직접_순환을_검출한다`
@@ -408,6 +406,7 @@ pub fn report(diags: &[Diagnostic]) -> String;
 | 한 심볼에 두 개 이상 alias | error |
 | 서로 다른 파일이 같은 이름 심볼 선언, iknow 없음 | error |
 | **다른 파일이 어떤 keyword 의 동의어와 같은 이름으로 새 keyword 선언** | error |
+| **서로 다른 keyword 가 같은 동의어를 선언** | error — `iknow` 로 해소되지 않는다 |
 | iknow 가 관련 파일 전체를 상호 명시하지 않음 | error |
 | **iknow 대상 파일이나 심볼이 존재하지 않음** | error |
 
@@ -436,6 +435,8 @@ pub fn report(diags: &[Diagnostic]) -> String;
   - `iknow_대상이_없으면_에러다`
   - `계층이_다르면_같은_말단_이름도_충돌이_아니다`
   - `동의어와_같은_이름의_새_선언은_에러다`
+  - `두_keyword_가_같은_동의어를_선언하면_에러다`
+  - `동의어_충돌은_iknow_로_해소되지_않는다`
   - `진단이_관련_위치를_전부_담는다`
   - `셸_명령_fix_는_인용되어_출력된다`
   - `미해결_심볼_출력이_스펙_5_1_1_예시와_일치한다`
@@ -535,7 +536,7 @@ pub fn check_revs(project: &Project, table: &SymbolTable) -> Vec<Diagnostic>;
 - 테스트: `tests/cli.rs`
 
 **인터페이스**
-- 소비: `resolve::load`, `SymbolTable`, `ImportGraph`, `check::*`
+- 소비: `resolve::load`, `SymbolTable`, `check::*`
 - 산출: 실행 가능한 `kang` 바이너리
 
 ```rust
@@ -555,7 +556,7 @@ enum Command {
 
 /// 프로젝트를 로드하고 모든 진단을 돌린다.
 /// error 가 하나라도 있으면 Err 를 반환한다.
-fn compile() -> Result<(Project, SymbolTable, ImportGraph), Vec<Diagnostic>>;
+fn compile() -> Result<(Project, SymbolTable), Vec<Diagnostic>>;
 ```
 
 **인자 문법** (스펙 6.0)
@@ -616,7 +617,7 @@ fn compile() -> Result<(Project, SymbolTable, ImportGraph), Vec<Diagnostic>>;
 - 테스트: `tests/cli.rs`
 
 **인터페이스**
-- 소비: `Project`, `SymbolTable`, `ImportGraph`
+- 소비: `Project`, `SymbolTable`
 - 산출:
 
 ```rust
@@ -662,7 +663,7 @@ pub fn show(
 **출력 스키마** — 스펙 6.4 그대로. 최상위 키 순서는 `path`, `keywords`, `referencingKeywords`, `exceptions`, `covers`, `topics`.
 
 - keyword 항목은 `name`·`description`·`referencedBy` 와, `#` 로 연결된 상세 topic 이 있으면 **`detail`(그 topic 의 전체 경로)** 을 담는다. 파싱만 하고 버리지 않는다.
-- 재귀 임베드는 `ImportGraph` 가 아니라 `Document.imports` 를 직접 순회한다. 참조 전파는 v2 다.
+- 재귀 임베드는 `Document.imports` 를 직접 순회한다. 참조 전파는 v2 다.
 
 **중복 제거**: 이미 전개한 topic·키워드는 방문 집합에 넣고, 두 번째부터는 경로 문자열만 넣는다. **깊이 제한은 v1 에 두지 않는다** — 손댈 때는 읽기 시점 옵션이 아니라 빌드 시점 구조 린트로 만든다 (스펙 6.4).
 
@@ -764,6 +765,8 @@ pub fn bless(
   - `순환_import_를_만들면_체인이_출력된다`
   - `show_출력이_유효한_YAML_이다`
   - `error_상태에서는_어떤_조회도_출력되지_않는다`
+  - `빈_디렉토리에서_init_과_build_두_명령으로_통과한다`
+  - `진단_3종_출력이_스펙_5_1_1_예시와_문자단위로_일치한다`
 - [ ] **Step 3: `cargo test` 통과 확인**
 - [ ] **Step 4: `cargo clippy -- -D warnings` 통과 확인**
 - [ ] **Step 5: 커밋** — `test: 통합 검증과 fixture 프로젝트`
@@ -773,7 +776,7 @@ pub fn bless(
 ## Task 14: `kang init` — 에이전트 진입점과 스킬
 
 **파일**
-- 생성: `src/init.rs`, `assets/SKILL.md`
+- 생성: `src/init.rs`, `src/skill.md`
 - 수정: `src/main.rs`
 - 테스트: `tests/cli.rs`
 
@@ -785,6 +788,11 @@ pub fn bless(
 /// 현재 프로젝트에 에이전트 진입점을 만든다.
 /// 기존 파일은 덮어쓰지 않고 섹션만 덧붙인다.
 pub fn init(root: &Path) -> Result<Vec<PathBuf>, String>;
+
+/// 파일이 없으면 만들고, 있으면 marker 로 시작하는 섹션이 없을 때만 덧붙인다.
+/// 네 산출물이 전부 이 한 함수로 처리된다 — 복사·섹션 덧붙임·한 줄 덧붙임·
+/// 템플릿 생성은 전부 같은 규칙의 변형이다.
+fn ensure_section(path: &Path, marker: &str, content: &str) -> Result<bool, String>;
 ```
 
 **왜 필요한가**
@@ -797,12 +805,18 @@ kang 의 주 사용자는 다른 프로젝트에서 일하는 LLM 에이전트�
 
 | 파일 | 처리 |
 |---|---|
-| `.claude/skills/kang/SKILL.md` | `assets/SKILL.md` 복사. 이미 있으면 건너뛴다 |
-| `AGENTS.md` | kang 섹션 덧붙임. 이미 kang 섹션이 있으면 건너뛴다 |
+| `.claude/skills/kang/SKILL.md` | `src/skill.md` 를 임베드한 내용. 이미 있으면 건너뛴다. **스킬 내용의 유일한 사본** |
+| `AGENTS.md` | Codex 용. 내용을 복제하지 않고 `SKILL.md` 경로를 가리키는 섹션만 덧붙인다 |
 | `CLAUDE.md` | 한 줄 덧붙임 — "이 프로젝트의 문서는 kang 으로 유지보수된다. kang 스킬을 사용하여야 한다" |
 | `docs/example.kang` | frontmatter 가 채워진 첫 문서 템플릿. 이미 `.kang` 파일이 있으면 건너뛴다 |
 
 **저장소에 커밋되는 프로젝트 스코프 파일로 만든다.** 전역 스킬 설치를 요구하면 설치 단계가 늘고 clone 하는 사람마다 상태가 달라진다.
+
+**구현 요점**
+- `src/skill.md` 는 `include_str!("skill.md")` 로 **컴파일 타임에 바이너리에 임베드한다.** 릴리즈된 바이너리는 저장소 파일에 접근할 수 없다.
+- **스킬 내용은 `SKILL.md` 한 곳에만 쓴다.** `AGENTS.md`·`CLAUDE.md` 는 가리키기만 한다. 두 파일에 복제하면 kang 이 막으려는 SoT 분열이 kang 자신의 도구에서 일어난다.
+- **git 저장소를 요구하지 않는다.** `init` 은 갓 만든 디렉토리에서 실행되는 첫 명령이다. git 저장소가 아니면 현재 디렉토리를 루트로 삼고 `git init` 안내를 함께 출력한다. 여기서 종료 코드 2로 죽으면 T0 벽이 된다.
+- 생성한 `SKILL.md` 는 kang 버전이 올라가도 갱신되지 않는다. **알려진 한계다** — `init` 이 멱등 건너뛰기이므로 CLI 가 바뀌면 기존 저장소의 스킬이 낡는다. 사용자가 생긴 뒤 실측하고 판단한다.
 
 **스킬 내용** (스펙 6.1) — 케이스별 기대 동작을 기술한다.
 
@@ -819,8 +833,10 @@ kang 의 주 사용자는 다른 프로젝트에서 일하는 LLM 에이전트�
   - `이미_kang_파일이_있으면_예제를_만들지_않는다`
   - `init_직후_build_가_통과한다`
   - `생성된_SKILL_md_가_비어있지_않다`
+  - `git_저장소가_아니어도_init_이_성공하고_git_init_을_안내한다`
+  - `다른_도구_섹션이_있는_CLAUDE_md_에_kang_섹션만_덧붙인다`
 - [ ] **Step 2: `cargo test` — 실패 확인**
-- [ ] **Step 3: `assets/SKILL.md` 작성** — 위 다섯 케이스 전부
+- [ ] **Step 3: `src/skill.md` 작성** — 위 다섯 케이스 전부
 - [ ] **Step 4: `init.rs` 구현 (섹션 덧붙임, 멱등성)**
 - [ ] **Step 5: `main.rs` 에 `init` 서브커맨드 연결**
 - [ ] **Step 6: `cargo test` 통과 확인**
@@ -955,7 +971,7 @@ kang 의 소비자는 다른 프로젝트의 LLM 에이전트다. 그 프로젝�
 | Task 11 | `bless.rs` | Task 8 |
 | Task 12 | `tests/` | 전부 |
 | Task 13 | `.github/`, `README.md` | — |
-| Task 14 | `init.rs`, `assets/` | — |
+| Task 14 | `init.rs`, `skill.md` | — |
 
 ```
 Lane A: Task 1                          (독립, hash.rs)

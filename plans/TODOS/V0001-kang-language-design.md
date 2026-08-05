@@ -96,7 +96,7 @@ keyword `WorkflowName` also `workflowSlug`: 테넌트 안에서 워크플로를 
 ```
 
 - 동의어는 프로젝트 전역에서 정본 이름으로 해석된다. 본문에서 `` `workflowSlug` `` 라고 써도 같은 심볼이다.
-- **다른 파일이 동의어와 같은 이름으로 새 keyword 를 선언하면 error 다.** 동의어를 선언한 목적이 거기 있다.
+- **이름은 keyword 든 동의어든 전역에서 유일하다.** 어떤 조합으로 겹치든 error 이며 `iknow` 로 해소되지 않는다. 동의어의 목적이 흩어진 이름을 하나의 정본으로 모으는 것인데, 겹치는 순간 모으는 게 아니라 갈라지기 때문이다.
 - `import ... as` 의 alias 와 다르다. alias 는 참조하는 쪽이 선언하고 그 파일에서만 통하며 이름을 나눈다. 동의어는 owner 가 선언하고 전역이며 흩어진 이름을 정본으로 모은다.
 - 유사도 매칭이 아니다. owner 가 명시적으로 선언한 표기만 동의어다.
 
@@ -231,7 +231,7 @@ exception 은 본문이 없지만 의미는 **그것이 선언된 topic 의 맥�
 | import의 `rev` 핀이 대상의 현재 해시와 불일치 | error — 대상 경로와 `kang bless` 인자 형식을 출력. 무엇이 바뀌었는지는 `git diff`가 보여준다 |
 | import에 `rev` 핀이 없음 (세 종류 모두) | error — `kang bless` 가 삽입한다 (4.8) |
 | 서로 다른 파일이 같은 이름의 심볼을 선언 (iknow 없음) | error — 관련된 모든 파일 경로를 로그에 명시 |
-| 다른 파일이 어떤 keyword의 **동의어와 같은 이름**으로 새 keyword를 선언 | error — 동의어를 선언한 owner 경로를 로그에 명시 |
+| **동의어를 포함한 이름**이 전역에서 겹침 (keyword×동의어, 동의어×동의어) | error — 겹친 모든 owner 경로를 명시. `iknow` 로 해소되지 않는다 |
 | `iknow` 가 관련 파일 전체를 상호 명시하지 않음 | error — 누락된 파일 경로를 로그에 명시 |
 | `iknow` 대상 파일이나 심볼이 존재하지 않음 | error |
 | import 그래프에 순환 존재 | error — 순환 체인 전체를 출력하고 공통 개념 추출을 안내 |
@@ -261,7 +261,7 @@ error[K001]: 선언되지 않은 심볼 — `승격`
   `docs/core/baseline` 이 같은 이름을 선언하고 있습니다.
 
   fix:
-    docs/policy/regression.kang  파일 최상단에 추가
+    docs/policy/regression.kang  import 블록에 추가
       import `docs`/`core`/`baseline`.`승격` as `승격`
     그다음 실행
       kang bless docs/policy/regression --import 'docs/core/baseline.승격'
@@ -280,9 +280,13 @@ error[K012]: 같은 이름의 심볼이 여러 파일에서 선언됨 — `epoch
   다른 쪽을 import 하세요.
 
   fix:
-    docs/core/lease.kang:14  줄 끝에 `// iknow docs/core/draft.epoch` 추가
-    docs/core/draft.kang:8   줄 끝에 `// iknow docs/core/lease.epoch` 추가
+    docs/core/lease.kang  keyword `epoch` 선언 뒤에 `// iknow docs/core/draft.epoch` 추가
+    docs/core/draft.kang  keyword `epoch` 선언 뒤에 `// iknow docs/core/lease.epoch` 추가
 ```
+
+`fix` 한 항목은 **문서 경로와 한 문장**이다. 어디에 무엇을 적용할지가 그 문장 안에 있다.
+
+**`fix` 는 줄 번호를 좌표로 쓰지 않는다.** 에이전트가 첫 `fix` 를 적용하면 줄이 밀려 두 번째 `fix` 의 줄 번호가 틀린다. 무엇을 고칠지는 심볼과 선언으로 지정한다 ([ADR-0003](../../docs/adr/0003-symbolic-addressing-not-line-numbers.md)). 줄 번호는 `location` 에만 나타나며 그것은 "여기를 보라" 는 표시일 뿐 다음 명령의 인자가 아니다.
 
 **`rev` 불일치**
 
@@ -371,13 +375,17 @@ kang 의 주 사용자는 **다른 프로젝트에서 일하는 LLM 에이전트
 | 파일 | 역할 |
 |---|---|
 | `.claude/skills/kang/SKILL.md` | Claude 용 스킬. 케이스별 기대 동작 |
-| `AGENTS.md` | Codex 용 같은 내용 |
+| `AGENTS.md` | Codex 용. **내용을 복제하지 않고 `SKILL.md` 를 가리킨다** |
 | `CLAUDE.md` | 한 줄 진입점 — "이 프로젝트의 문서는 kang 으로 유지보수된다. kang 스킬을 사용하여야 한다" |
 | 첫 `.kang` 문서 | frontmatter 가 채워진 템플릿 |
 
 **저장소에 커밋되는 프로젝트 스코프 파일로 만든다.** 전역 스킬 설치를 요구하면 설치 단계가 늘고 clone 하는 사람마다 상태가 달라진다. 저장소에 들어 있으면 clone 하는 순간 따라온다.
 
+**스킬 내용은 `SKILL.md` 한 곳에만 있다.** `AGENTS.md` 와 `CLAUDE.md` 는 그것을 가리키기만 한다. 같은 내용을 두 파일에 복제하면 kang 이 막으려는 바로 그 SoT 분열이 kang 자신의 도구에서 일어난다.
+
 기존 `CLAUDE.md`·`AGENTS.md` 는 **덮어쓰지 않는다.** 섹션만 덧붙이고, 이미 kang 섹션이 있으면 건너뛴다.
+
+**`kang init` 은 git 저장소를 요구하지 않는다.** 프로젝트 루트가 git 루트라는 규칙(3절)은 문서를 해석하는 명령에만 적용된다. `init` 은 갓 만든 디렉토리에서 실행되는 첫 명령이므로, git 저장소가 아니면 현재 디렉토리를 루트로 삼아 파일을 만들고 **`git init` 을 안내하는 문구를 함께 출력한다.** 여기서 종료 코드 2로 죽으면 T0 에서 벽을 만든다.
 
 #### 스킬 내용
 
