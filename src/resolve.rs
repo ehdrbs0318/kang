@@ -36,7 +36,10 @@ pub struct Project {
 /// git 저장소가 아니면 그 사실을 진단으로 돌려준다.
 ///
 /// # 매개변수
-/// - `cwd`: 탐색을 시작할 디렉토리
+/// - `cwd`: 탐색을 시작할 디렉토리. **절대 경로여야 한다** —
+///   호출자는 `std::env::current_dir()` 의 결과를 넘긴다.
+///   경로를 정규화하지 않으므로 심볼릭 링크는 풀리지 않은 채 그대로 이어진다
+///   (루트와 문서 경로가 서로 어긋나지 않으므로 일관성에는 영향이 없다)
 ///
 /// # 반환값
 /// `.git` 을 가진 가장 가까운 상위 디렉토리
@@ -44,9 +47,15 @@ pub struct Project {
 /// # 오류
 /// 위로 끝까지 올라가도 `.git` 이 없으면 `K050` 진단
 pub fn find_root(cwd: &Path) -> Result<PathBuf, Diagnostic> {
-    // `.git` 은 디렉토리일 수도 파일일 수도 있다 — worktree 와 submodule 은 파일이다.
-    // 그래서 종류를 묻지 않고 존재만 본다.
     cwd.ancestors()
+        // 상대 경로의 마지막 조상은 **빈 경로**이고 `Path::new("").join(".git")` 은
+        // 프로세스 cwd 기준으로 해석된다. 걸러내지 않으면 cwd 가 저장소일 때
+        // 빈 루트를 성공으로 돌려주고, 그 뒤 load 가 경로 없는 진단을 낸다.
+        // 절대 경로의 마지막 조상은 `/` 이므로 영향이 없다.
+        .filter(|dir| !dir.as_os_str().is_empty())
+        // `.git` 은 디렉토리일 수도 파일일 수도 있다 — worktree 와 submodule 은 파일이다.
+        // 그래서 종류를 묻지 않고 존재만 본다. `is_dir()` 로 좁히면 그 저장소들이
+        // 통째로 K050 을 맞는다.
         .find(|dir| dir.join(".git").exists())
         .map(Path::to_path_buf)
         .ok_or_else(|| git_저장소_아님(cwd))
@@ -90,7 +99,7 @@ pub fn load(root: &Path) -> (Project, Vec<Diagnostic>) {
             Ok(source) => source,
             // kang 문서는 UTF-8 텍스트다. 아니면 파서가 볼 수 있는 것이 없다.
             Err(error) => {
-                diagnostics.push(utf8_아님(path, error.utf8_error().valid_up_to()));
+                diagnostics.push(utf8_아님(&file, path, error.utf8_error().valid_up_to()));
                 continue;
             }
         };
@@ -157,7 +166,9 @@ impl SymbolTable {
         // HashMap 의 나열 순서는 보장되지 않는다. 정렬해야 SymbolId 와 진단 순서가
         // 실행마다 같다.
         let mut 순서: Vec<&DocPath> = project.docs.keys().collect();
-        순서.sort_by_key(|doc| doc.to_string());
+        // DocPath 는 Vec<String> 래퍼이므로 조각을 그대로 비교한다.
+        // to_string() 으로 비교하면 비교마다 String 을 새로 할당한다.
+        순서.sort_by(|a, b| a.0.cmp(&b.0));
 
         let mut symbols: Vec<Symbol> = Vec::new();
         let mut by_name: HashMap<String, Vec<SymbolId>> = HashMap::new();
@@ -285,6 +296,11 @@ impl SymbolTable {
     /// 한 문서 안에서 쓸 수 있는 로컬 이름 → 심볼 매핑.
     /// 자기 파일이 선언한 심볼과 import 한 alias 를 합친 것이다.
     ///
+    /// **계층 keyword 의 키는 `.` 로 이은 전체 이름이다** (`"결제.상태"`).
+    /// 반면 [`crate::ast::Topic::refs`] 는 백틱 쌍 하나가 조각 하나이므로
+    /// `` `결제`.`상태` `` 는 `"결제"` 와 `"상태"` 두 항목으로 들어온다.
+    /// 조회하는 쪽이 인접 조각을 먼저 합쳐야 한다.
+    ///
     /// # 매개변수
     /// - `doc`: 스코프를 볼 문서
     ///
@@ -357,8 +373,7 @@ fn 심볼_추가(
 ///
 /// # 매개변수
 /// - `doc`: 대상 문서
-/// - `scope`: 채워 나가는 스코프
-/// - `묶인_줄`: 이름이 이 문서의 어느 줄에서 묶였는지
+/// - `scope`: 채워 나가는 스코프. 값에 이 문서에서 묶인 줄을 함께 담는다
 /// - `diagnostics`: 진단을 모을 곳
 /// - `name`: 묶을 로컬 이름
 /// - `line`: 묶는 줄 번호 (1-based)
@@ -372,8 +387,16 @@ fn 이름_묶기(
     id: SymbolId,
 ) {
     // 먼저 묶인 것을 남긴다. 나중 것으로 덮으면 앞의 선언이 조용히 사라진다.
-    if let Some(&(_, 먼저)) = scope.get(&name) {
-        diagnostics.push(이름_중복(doc, &name, 먼저, line));
+    if let Some(&(_, 기존)) = scope.get(&name) {
+        // 진단은 **파일에 나타난 순서**로 가리킨다. 자기 선언을 import 보다 먼저
+        // 도는 것은 컴파일러의 내부 사정이고, 스펙 4.7 은 import 를 파일 최상단에
+        // 두라고 하므로 정렬하지 않으면 흔한 배치에서 줄 번호가 거꾸로 나온다.
+        let (앞, 뒤) = if 기존 <= line {
+            (기존, line)
+        } else {
+            (line, 기존)
+        };
+        diagnostics.push(이름_중복(doc, &name, 앞, 뒤));
         return;
     }
     scope.insert(name, (id, line));
@@ -386,7 +409,7 @@ fn 이름_묶기(
 /// - `files`: 찾은 파일 경로를 모을 곳
 /// - `diagnostics`: 진단을 모을 곳
 fn 수집(dir: &Path, files: &mut Vec<PathBuf>, diagnostics: &mut Vec<Diagnostic>) {
-    let entries = match std::fs::read_dir(dir) {
+    let 읽기 = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
         // 디렉토리를 열지 못하면 그 아래 문서가 통째로 보이지 않는다. 조용히 넘기면
         // 사용자는 문서가 없는 것과 구분할 수 없다.
@@ -396,25 +419,33 @@ fn 수집(dir: &Path, files: &mut Vec<PathBuf>, diagnostics: &mut Vec<Diagnostic
         }
     };
 
+    // 항목을 먼저 모아 정렬한다. `수집` 은 `files.sort()` 보다 앞서 돌면서 진단을
+    // 직접 밀어 넣으므로, 여기서 정렬하지 않으면 읽을 수 없는 형제 디렉토리가 둘
+    // 이상일 때 **진단 순서가 실행마다 뒤집힌다.**
+    let mut entries: Vec<std::fs::DirEntry> = Vec::new();
+    for entry in 읽기 {
+        match entry {
+            Ok(entry) => entries.push(entry),
+            Err(error) => diagnostics.push(디렉토리_읽기_실패(dir, &error)),
+        }
+    }
+    entries.sort_by_key(std::fs::DirEntry::path);
+
     // 디렉토리 항목을 순회하며 하위 디렉토리는 파고들고 `.kang` 파일은 모은다.
     for entry in entries {
-        let entry = match entry {
-            Ok(entry) => entry,
-            Err(error) => {
-                diagnostics.push(디렉토리_읽기_실패(dir, &error));
-                continue;
-            }
-        };
-
         // 숨은 항목은 사용자의 문서가 아니다. `.git` 을 통째로 훑는 낭비도 여기서 막힌다.
+        // ponytail: `.gitignore` 는 보지 않는다. 무시된 디렉토리에 문서를 두는 일이
+        // 드물어서다. 순회가 실제로 느려지면 `git ls-files -z -- '*.kang'` 로 갈아탄다.
         if entry.file_name().to_string_lossy().starts_with('.') {
             continue;
         }
 
         let kind = match entry.file_type() {
             Ok(kind) => kind,
+            // 이 시점에는 그 항목이 파일인지 디렉토리인지 모른다. 디렉토리라고
+            // 단정한 진단을 내면 사라진 평범한 파일에 대해 거짓을 말한다.
             Err(error) => {
-                diagnostics.push(디렉토리_읽기_실패(&entry.path(), &error));
+                diagnostics.push(항목_종류_확인_실패(&entry.path(), &error));
                 continue;
             }
         };
@@ -440,7 +471,11 @@ fn 수집(dir: &Path, files: &mut Vec<PathBuf>, diagnostics: &mut Vec<Diagnostic
 /// # 반환값
 /// 확장자를 뗀 루트 기준 문서 경로
 fn 문서경로(root: &Path, file: &Path) -> DocPath {
-    let 상대 = file.strip_prefix(root).unwrap_or(file);
+    // 폴백을 두지 않는다. 접두사가 없다면 `수집` 이 루트 밖을 훑었다는 뜻이고,
+    // 그때 절대 경로를 문서 경로로 삼으면 틀린 주소가 조용히 프로젝트에 들어간다.
+    let 상대 = file
+        .strip_prefix(root)
+        .expect("수집 이 root 아래에서만 경로를 모으므로 접두사가 항상 붙는다");
     // ponytail: UTF-8 이 아닌 파일 이름은 대체 문자로 바뀌어 원본과 어긋난다.
     // DocPath 가 String 인 한 그렇고, 그런 이름의 문서는 백틱 주소로 쓸 수도 없다.
     // 실제로 나타나면 DocPath 를 OsString 기반으로 올린다.
@@ -462,6 +497,10 @@ fn 문서경로(root: &Path, file: &Path) -> DocPath {
 /// 디렉토리와 실행 위치는 문서가 아니므로 루트 기준 상대 경로로 줄일 수 없다.
 /// 전체 경로를 조각 하나에 그대로 담아 표시가 실제 경로와 어긋나지 않게 한다.
 ///
+/// **이 [`DocPath`] 는 문서 주소가 아니다.** 표시 외의 용도로 쓰면 안 된다 —
+/// [`Project::docs`] 의 키로 찾을 수 없고, 백틱 심볼 주소로 쓸 수도 없다.
+/// 조각이 언제나 하나이므로 `0.len() == 1` 로 구분할 수 있다.
+///
 /// # 매개변수
 /// - `path`: 가리킬 경로
 ///
@@ -469,6 +508,24 @@ fn 문서경로(root: &Path, file: &Path) -> DocPath {
 /// 전체 경로 문자열 하나를 담은 [`DocPath`]
 fn 경로_그대로(path: &Path) -> DocPath {
     DocPath(vec![path.display().to_string()])
+}
+
+/// 셸 명령에 들어갈 값을 작은따옴표로 감싼다.
+///
+/// 스펙 5.1.1 은 "셸 명령이면 **인용까지 포함한다**", 6.1 은 "인용 여부를 스스로
+/// 판단하게 두면 틀린다" 고 못박는다. 공백이 든 경로를 그대로 보간하면 셸이 인자를
+/// 쪼개, 원인을 알리는 대신 **새로운 잘못된 사실**을 준다.
+///
+/// 작은따옴표 안에서는 모든 문자가 문자 그대로다. 값에 든 `'` 만 예외이므로
+/// 그것을 `'\''`(따옴표 닫기 → 이스케이프된 따옴표 → 다시 열기)로 바꾼다.
+///
+/// # 매개변수
+/// - `value`: 인용할 값. 경로일 수도 심볼 이름일 수도 있다
+///
+/// # 반환값
+/// 셸에 그대로 붙여 넣을 수 있는 인용된 문자열
+pub(crate) fn 셸_인용(value: &str) -> String {
+    format!("'{}'", value.replace('\'', r"'\''"))
 }
 
 /// git 저장소를 찾지 못했다는 진단을 만든다.
@@ -522,7 +579,7 @@ fn 파일_읽기_실패(file: &Path, path: DocPath, error: &std::io::Error) -> D
             doc: None,
             action: format!(
                 "이 파일을 읽을 수 있는지 확인하세요: ls -l {}",
-                file.display()
+                셸_인용(&file.display().to_string())
             ),
         }],
     }
@@ -530,35 +587,51 @@ fn 파일_읽기_실패(file: &Path, path: DocPath, error: &std::io::Error) -> D
 
 /// 문서 파일이 UTF-8 이 아니라는 진단을 만든다.
 ///
+/// fix 가 편집이 아니라 셸인 이유: 이 파일은 텍스트로 열리지 않으므로 에디터로
+/// 고칠 수 없고, 형제 진단인 [`파일_읽기_실패`] 와 같은 `K051` 이므로 같은 모양이어야 한다.
+///
 /// # 매개변수
+/// - `file`: 그 파일의 전체 경로
 /// - `path`: 그 파일의 문서 경로
 /// - `valid_up_to`: UTF-8 로 읽히다 멈춘 바이트 위치
 ///
 /// # 반환값
 /// `K051` 진단
-fn utf8_아님(path: DocPath, valid_up_to: usize) -> Diagnostic {
+fn utf8_아님(file: &Path, path: DocPath, valid_up_to: usize) -> Diagnostic {
+    let 원본 = 셸_인용(&file.display().to_string());
+    let 임시 = 셸_인용(&format!("{}.utf8", file.display()));
     Diagnostic {
         severity: Severity::Error,
         code: "K051",
         message: format!("문서 파일이 UTF-8 이 아닙니다 — {path}"),
         locations: vec![Location {
-            doc: path.clone(),
+            doc: path,
             line: 0,
             note: format!("바이트 {valid_up_to} 부터 UTF-8 로 디코딩되지 않습니다."),
         }],
-        fixes: vec![Fix {
-            kind: FixKind::Edit,
-            doc: Some(path),
-            action: "이 파일을 UTF-8 로 다시 저장하세요. kang 문서는 UTF-8 텍스트입니다."
-                .to_string(),
-        }],
+        // 원본 인코딩은 컴파일러가 알 수 없으므로 먼저 확인하고 그 다음 변환한다.
+        // `fixes` 는 순서 있는 목록이며 앞에서부터 적용한다 (스펙 5.1.1).
+        fixes: vec![
+            Fix {
+                kind: FixKind::Shell,
+                doc: None,
+                action: format!("이 파일의 원본 인코딩을 확인하세요: file -I {원본}"),
+            },
+            Fix {
+                kind: FixKind::Shell,
+                doc: None,
+                action: format!(
+                    "확인한 인코딩을 -f 에 넣어 UTF-8 로 변환하세요: iconv -f <확인한 인코딩> -t UTF-8 {원본} > {임시} && mv {임시} {원본}"
+                ),
+            },
+        ],
     }
 }
 
 /// 디렉토리를 순회하지 못했다는 진단을 만든다.
 ///
 /// # 매개변수
-/// - `dir`: 읽으려던 경로
+/// - `dir`: 읽으려던 디렉토리 경로
 /// - `error`: 발생한 IO 오류
 ///
 /// # 반환값
@@ -581,7 +654,42 @@ fn 디렉토리_읽기_실패(dir: &Path, error: &std::io::Error) -> Diagnostic 
             doc: None,
             action: format!(
                 "이 디렉토리를 읽을 수 있는지 확인하세요: ls -ld {}",
-                dir.display()
+                셸_인용(&dir.display().to_string())
+            ),
+        }],
+    }
+}
+
+/// 디렉토리 항목의 종류를 확인하지 못했다는 진단을 만든다.
+///
+/// 이 시점에는 그 항목이 파일인지 디렉토리인지 **모른다.** 디렉토리라고 단정하면
+/// 순회 중 사라진 평범한 `.kang` 파일에 대해 진단이 거짓을 말하게 된다.
+///
+/// # 매개변수
+/// - `path`: 종류를 묻던 항목의 경로
+/// - `error`: 발생한 IO 오류
+///
+/// # 반환값
+/// `K051` 진단
+fn 항목_종류_확인_실패(path: &Path, error: &std::io::Error) -> Diagnostic {
+    Diagnostic {
+        severity: Severity::Error,
+        code: "K051",
+        message: format!(
+            "항목의 종류를 확인하지 못해 건너뛰었습니다 — {}",
+            path.display()
+        ),
+        locations: vec![Location {
+            doc: 경로_그대로(path),
+            line: 0,
+            note: format!("운영체제가 알린 원인: {error}"),
+        }],
+        fixes: vec![Fix {
+            kind: FixKind::Shell,
+            doc: None,
+            action: format!(
+                "이 경로가 무엇인지 확인하세요: ls -l {}",
+                셸_인용(&path.display().to_string())
             ),
         }],
     }
@@ -592,28 +700,30 @@ fn 디렉토리_읽기_실패(dir: &Path, error: &std::io::Error) -> Diagnostic 
 /// # 매개변수
 /// - `doc`: 대상 문서
 /// - `name`: 겹친 로컬 이름
-/// - `먼저`: 먼저 묶인 줄 번호 (1-based)
-/// - `나중`: 다시 묶인 줄 번호 (1-based)
+/// - `앞`: 파일에서 앞선 줄 번호 (1-based)
+/// - `뒤`: 파일에서 뒤따르는 줄 번호 (1-based)
 ///
 /// # 반환값
 /// `K052` 진단
-fn 이름_중복(doc: &DocPath, name: &str, 먼저: usize, 나중: usize) -> Diagnostic {
+fn 이름_중복(doc: &DocPath, name: &str, 앞: usize, 뒤: usize) -> Diagnostic {
     Diagnostic {
         severity: Severity::Error,
         code: "K052",
         message: format!(
             "한 문서 안에서 이름 `{name}` 이 두 번 묶였습니다. 본문의 `{name}` 이 어느 쪽을 가리키는지 정할 수 없습니다."
         ),
+        // 스펙 5.1.1 의 `K012` 예시와 같은 모양이다 — 순서를 주장하지 않고
+        // "여기 / 여기도" 로만 가리킨다. 어느 쪽이 원인인지는 컴파일러가 알 수 없다.
         locations: vec![
             Location {
                 doc: doc.clone(),
-                line: 먼저,
-                note: format!("여기서 `{name}` 이 먼저 묶였습니다."),
+                line: 앞,
+                note: format!("여기서 `{name}` 이 묶였습니다."),
             },
             Location {
                 doc: doc.clone(),
-                line: 나중,
-                note: format!("여기서 `{name}` 이 다시 묶였습니다."),
+                line: 뒤,
+                note: format!("여기서도 `{name}` 이 묶였습니다."),
             },
         ],
         fixes: vec![Fix {
