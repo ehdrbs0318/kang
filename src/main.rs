@@ -18,6 +18,7 @@ use kang::check;
 use kang::resolve::{self, Project, SymbolTable};
 use kang::show::{self, ShowTarget};
 use std::io::Write;
+use std::path::PathBuf;
 
 /// `--help` 와 사용법 오류가 함께 쓰는 도움말.
 ///
@@ -128,11 +129,13 @@ fn main() {
 /// 찍는 자리를 하나로 둔다.
 ///
 /// # 반환값
-/// 파싱된 프로젝트와 전역 심볼 테이블
+/// 프로젝트 루트와, 파싱된 프로젝트와 전역 심볼 테이블.
+/// **루트를 함께 돌려준다** — [`축복`] 이 문서 파일 경로를 조립하려면 필요하고,
+/// 여기서 이미 찾았으므로 부르는 쪽이 다시 찾으면 같은 일을 두 번 한다
 ///
 /// # 오류
 /// [`Severity::Error`] 진단이 하나라도 나오면 그때까지 모은 진단 전부
-fn parse_project() -> Result<(Project, SymbolTable), Vec<Diagnostic>> {
+fn parse_project() -> Result<(PathBuf, Project, SymbolTable), Vec<Diagnostic>> {
     // 현재 디렉토리를 잃은 프로세스는 어떤 문서 경로도 해석할 수 없다. 진단 코드를
     // 새로 만들지 않고 환경 오류로 즉시 끝낸다.
     let cwd = match std::env::current_dir() {
@@ -165,7 +168,7 @@ fn parse_project() -> Result<(Project, SymbolTable), Vec<Diagnostic>> {
     }
 
     진단_마감(진단들)?;
-    Ok((project, table))
+    Ok((root, project, table))
 }
 
 /// [`parse_project`] 에 진단 규칙 전부를 이어 돌린다.
@@ -179,7 +182,8 @@ fn parse_project() -> Result<(Project, SymbolTable), Vec<Diagnostic>> {
 /// # 오류
 /// [`Severity::Error`] 진단이 하나라도 나오면 그때까지 모은 진단 전부
 fn compile() -> Result<(Project, SymbolTable), Vec<Diagnostic>> {
-    let (project, table) = parse_project()?;
+    // 루트는 조회 명령에 쓸모가 없다. 파일을 고쳐 쓰는 `bless` 만 필요로 한다.
+    let (_root, project, table) = parse_project()?;
 
     // 검사 **사이**의 순서는 구조 → 이름 → 상태 → 핀이다. 앞의 것이 틀리면 뒤의 것을
     // 읽을 이유가 없는 순서다 — 순환이 있으면 문서 구조부터 갈라야 하고, 이름이
@@ -283,7 +287,7 @@ fn 축복(문서: &str, 심볼: &str) -> i32 {
         }
     };
 
-    let (project, table) = match parse_project() {
+    let (root, project, table) = match parse_project() {
         Ok(결과) => 결과,
         Err(진단들) => return 종료_코드(&진단들),
     };
@@ -291,12 +295,21 @@ fn 축복(문서: &str, 심볼: &str) -> i32 {
     let path = DocPath(경로_조각(Some(문서)));
     // 실패는 전부 "그런 문서·import·대상이 없다" 또는 IO 다. 문서가 규칙을 어긴 것이
     // 아니므로 1 이 아니라 2 다 — `refs`·`show` 가 없는 주소에 주는 코드와 같다.
-    if let Err(사유) = bless::bless(&project, &table, &path, &addr) {
-        eprintln!("rev 핀을 갱신하지 못했습니다 — 문서 {문서}, import {심볼}: {사유}");
-        return 2;
-    }
+    let 고쳤나 = match bless::bless(&project, &table, &root, &path, &addr) {
+        Ok(고쳤나) => 고쳤나,
+        Err(사유) => {
+            eprintln!("rev 핀을 갱신하지 못했습니다 — 문서 {문서}, import {심볼}: {사유}");
+            return 2;
+        }
+    };
 
-    eprintln!("rev 핀을 갱신했습니다 — 문서 {문서}, import {심볼}");
+    // **바뀐 게 없는데 갱신했다고 하면 검증하면 거짓이다.** 스펙 4.8·6.2 는 삽입과
+    // 갱신을 편집으로 부르고, 이미 맞는 핀에 재실행하는 것은 그 어느 쪽도 아니다.
+    if 고쳤나 {
+        eprintln!("rev 핀을 갱신했습니다 — 문서 {문서}, import {심볼}");
+    } else {
+        eprintln!("이미 최신 핀입니다. 바꾼 것이 없습니다 — 문서 {문서}, import {심볼}");
+    }
     0
 }
 

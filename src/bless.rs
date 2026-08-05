@@ -22,7 +22,9 @@
 
 use crate::ast::{DocPath, SymbolKind, SymbolRef};
 use crate::hash;
-use crate::resolve::{self, Project, SymbolTable};
+use crate::parse::parse_document;
+use crate::resolve::{Project, SymbolTable};
+use std::path::Path;
 
 /// 갱신 대상 import 를 가리키는 주소. `docs/A.결제` 를 파싱한 결과다.
 /// 줄 번호를 쓰지 않는다 (ADR-0003).
@@ -109,21 +111,33 @@ impl ImportAddress {
 /// `doc` 안에서 `addr` 이 가리키는 import 의 rev 핀을 현재 해시로 맞춘다.
 /// 핀이 있으면 갱신하고 없으면 삽입한다 (스펙 4.8).
 ///
-/// **주소는 심볼이다** (ADR-0003). 줄 번호는 이 호출 안에서 방금 파싱한 결과에서만
-/// 쓰므로 사용자가 문서를 고쳐 줄이 밀려도 엉뚱한 핀을 바꾸지 않는다.
+/// **주소는 심볼이다** (ADR-0003). 그리고 **편집할 좌표는 지금 쓰려는 바이트에서만
+/// 나온다** — 읽어 들인 원문을 다시 파싱해 그 결과의 줄 번호로 고친다.
+///
+/// `project` 의 줄 번호를 쓰면 안 된다. 그것은 **앞선 읽기**에서 나온 좌표이고, 그
+/// 사이에 파일이 바뀌면 낡는다. 낡은 좌표가 우연히 다른 `import ` 접두 줄(코드펜스 안의
+/// 사용자 산문 등)을 가리키면 거기에 핀이 박히고, 그 줄은 topic 본문이므로 **그 topic 의
+/// 해시가 바뀌어** 그것을 import 한 하위 문서까지 무너진다. 그러고도 bless 는 성공을
+/// 알린다. 재파싱은 그 창을 닫는다 — 편집할 줄이 정의상 방금 읽은 바이트에서 나온다.
+///
+/// 재파싱이 실패한다는 것은 곧 **파일이 바뀌었다**는 뜻이다. 같은 바이트가 앞서
+/// `parse_project` 를 통과했기 때문이다.
 ///
 /// 같은 심볼을 여러 줄이 import 하는 것은 `K004` 가 잡는 error 지만 파싱은 통과하므로
 /// 여기까지 올 수 있다. 그때는 **맞는 줄을 전부** 갱신한다 — 하나만 고치면 나머지 줄의
 /// `K020` 을 해소할 방법이 없어져 빌드가 영원히 깨진 채로 남는다.
 ///
-/// 바꿀 것이 없으면 파일을 열지 않는다. `bless` 를 두 번 돌리면 두 번째는 아무것도
-/// 하지 않는다.
-///
 /// # 매개변수
-/// - `project`: 파싱을 마친 프로젝트
+/// - `project`: 파싱을 마친 프로젝트. 대상 문서가 이 프로젝트의 것인지만 본다
 /// - `table`: 전역 심볼 테이블. 해시 입력을 여기서 얻는다
+/// - `root`: 프로젝트 루트. [`DocPath`] 는 루트 기준이다
 /// - `doc`: 고쳐 쓸 문서
 /// - `addr`: 갱신할 import 의 주소
+///
+/// # 반환값
+/// 파일을 실제로 고쳤으면 `true`, 이미 맞는 핀이라 쓰지 않았으면 `false`.
+/// **부르는 쪽이 "갱신했다" 와 "이미 최신이다" 를 구분해 말해야 한다** — 아무 바이트도
+/// 바뀌지 않았는데 갱신했다고 하면 검증하면 거짓이다.
 ///
 /// # 오류
 /// 문서가 없거나, 그 문서에 그 import 가 없거나, 대상 심볼이 없거나,
@@ -131,12 +145,13 @@ impl ImportAddress {
 pub fn bless(
     project: &Project,
     table: &SymbolTable,
+    root: &Path,
     doc: &DocPath,
     addr: &ImportAddress,
-) -> Result<(), String> {
-    let Some(document) = project.docs.get(doc) else {
+) -> Result<bool, String> {
+    if !project.docs.contains_key(doc) {
         return Err("그런 문서가 없습니다. kang list 로 문서 경로를 확인하세요.".to_string());
-    };
+    }
 
     // 대상이 없으면 해시할 것이 없다. 핀을 지어내면 `K021` 이 영원히 남는다.
     let Some(대상) = table.resolve(&addr.target) else {
@@ -148,9 +163,20 @@ pub fn bless(
     // 함수·같은 입력이어야 방금 넣은 핀을 build 가 거부하지 않는다.
     let 새_핀 = hash::rev(table.hash_source(대상));
 
-    let 파일 = 문서_파일(doc)?;
+    // [`DocPath`] 의 Display 는 `/` 로 잇는다. 조각을 하나씩 join 하지 않는 이유는
+    // 마지막 조각에 `.` 이 든 문서(`docs/a.b`)에서 확장자 API 가 이름을 잘라내서다.
+    let 파일 = root.join(format!("{doc}.kang"));
     let 원문 = std::fs::read_to_string(&파일)
         .map_err(|오류| format!("문서 파일을 읽지 못했습니다 ({}) — {오류}", 파일.display()))?;
+
+    // 고칠 줄을 **방금 읽은 바이트**에서 다시 찾는다. BOM 은 디코딩 아티팩트이므로
+    // 로더와 같은 방법으로 벗긴다 — 줄 1 안에 있으므로 줄 번호는 달라지지 않는다.
+    let Ok(현재) = parse_document(doc.clone(), 원문.strip_prefix('\u{feff}').unwrap_or(&원문))
+    else {
+        return Err(
+            "문서 파일을 다시 읽었더니 파싱되지 않습니다. kang 이 도는 중에 파일이 바뀐 것으로 보이니 kang build 로 다시 확인하세요.".to_string()
+        );
+    };
 
     // 줄 단위로 다시 조립한다. 오프셋을 직접 다루지 않으므로 한 파일에서 여러 자리를
     // 고쳐도 뒤의 자리가 밀리지 않는다. `split_inclusive` 는 줄 끝 문자를 조각에
@@ -158,22 +184,17 @@ pub fn bless(
     let mut 줄들: Vec<String> = 원문.split_inclusive('\n').map(str::to_string).collect();
     let mut 고친_줄 = 0;
     // 이 문서의 import 를 훑어 주소가 가리키는 것을 전부 찾는다.
-    for import in &document.imports {
+    for import in &현재.imports {
         // 이름이 아니라 심볼로 맞춘다. `` `결제`.`상태` `` 와 `결제.상태` 는 같은 심볼이다.
         if table.resolve(&import.target) != Some(대상) {
             continue;
         }
-        // 파서가 준 줄 번호는 1-based 이고, 이 원문은 그 파싱과 같은 파일이다.
+        // 줄 번호는 1-based 이고 이 원문과 같은 바이트에서 나왔으므로 범위 안이다.
+        // 그래도 인덱싱으로 패닉하지 않는다 — 파일을 쓰는 층이다.
         let 자리 = import.line - 1;
-        // **파싱과 이 읽기 사이에 파일이 바뀌었을 수 있다.** 그 자리가 더 이상 import
-        // 줄이 아닌데 핀을 박으면 사용자 문서가 망가진다. 좌표를 믿지 않고 확인한다 —
-        // 이 명령만이 사용자 파일을 고쳐 쓰므로 여기서 틀리면 되돌릴 곳이 없다.
-        let Some(줄) = 줄들
-            .get(자리)
-            .filter(|줄| 줄.trim_start().starts_with("import "))
-        else {
+        let Some(줄) = 줄들.get(자리) else {
             return Err(format!(
-                "{}번째 줄이 더 이상 import 줄이 아닙니다. 파일이 kang 실행 중에 바뀐 것으로 보이니 kang build 로 다시 확인하세요.",
+                "{}번째 줄을 파일에서 찾지 못했습니다. kang build 로 다시 확인하세요.",
                 import.line
             ));
         };
@@ -190,35 +211,13 @@ pub fn bless(
     }
 
     let 새_원문 = 줄들.concat();
-    // 이미 맞는 핀이면 파일을 건드리지 않는다. 두 번째 bless 는 아무것도 하지 않는다.
+    // 이미 맞는 핀이면 쓰지 않는다. 두 번째 bless 는 파일을 바꾸지 않는다.
     if 새_원문 == 원문 {
-        return Ok(());
+        return Ok(false);
     }
 
-    쓰기_원자적으로(&파일, &새_원문)
-}
-
-/// 문서 경로를 실제 파일 경로로 바꾼다.
-///
-/// [`DocPath`] 는 프로젝트 루트 기준이므로 루트를 다시 찾아야 한다. 호출자가 이미
-/// 프로젝트를 읽었다면 루트 찾기는 반드시 성공하며, 값을 넘겨받는 대신 여기서 찾는 것이
-/// 호출 경로 전체의 반환 타입을 바꾸지 않는 가장 짧은 길이다.
-///
-/// # 매개변수
-/// - `doc`: 루트 기준 문서 경로
-///
-/// # 반환값
-/// `<루트>/<문서 경로>.kang`
-///
-/// # 오류
-/// 현재 디렉토리를 잃었거나 git 저장소가 아니면 그 사정을 담은 문장
-fn 문서_파일(doc: &DocPath) -> Result<std::path::PathBuf, String> {
-    let cwd = std::env::current_dir()
-        .map_err(|오류| format!("현재 디렉토리를 확인하지 못했습니다 — {오류}"))?;
-    let root = resolve::find_root(&cwd).map_err(|진단| 진단.message)?;
-    // 조각을 하나씩 join 하지 않는다 — 마지막 조각에 `.` 이 든 문서(`docs/a.b`)에서
-    // 확장자 API 가 이름의 일부를 잘라낸다. [`DocPath`] 의 Display 는 `/` 로 잇는다.
-    Ok(root.join(format!("{doc}.kang")))
+    쓰기_원자적으로(&파일, &새_원문)?;
+    Ok(true)
 }
 
 /// import 줄 하나의 rev 핀 자리만 갈아 끼운다.
@@ -267,28 +266,54 @@ fn 핀_박기(줄: &str, 옛_핀: Option<&str>, 새_핀: &str) -> Result<String,
 /// 임시 파일 확장자는 `.bless` 다. `.kang` 으로 끝나면 동시에 도는 다른 kang 프로세스가
 /// 그것을 문서로 읽는다.
 ///
+/// **rename 은 임시 파일의 inode 를 문서 자리에 올린다.** 그래서 파일 mode 를 옮겨
+/// 심는다 — 아무것도 하지 않으면 사용자가 정한 권한이 `0666 & !umask` 로 갈린다.
+///
 /// ponytail: `fsync` 를 부르지 않으므로 전원이 나가면 rename 이 디스크에 닿기 전일 수
 /// 있다. 막는 것은 "쓰다 만 파일" 이지 "전원 장애" 다. 파일 하나와 디렉토리를 함께
 /// 동기화하는 비용이 정당해지면 그때 올린다.
 ///
-/// ponytail: 임시 파일 이름에 프로세스 id 를 넣지 않는다. 같은 문서에 `bless` 두 개를
-/// 동시에 돌리는 시나리오가 없어서다. 생기면 이름에 id 를 붙인다.
+/// ponytail: mode 만 옮기고 xattr·ACL·하드링크는 옮기지 않는다. 새 inode 를 올리는
+/// 방식의 대가이며, 이것들이 문제가 되면 임시 파일 없이 제자리에 쓰는 방식으로 원자성을
+/// 포기하는 대신 파일 잠금을 들여야 한다. 문서 파일에 xattr 를 다는 사례가 나오면 올린다.
+///
+/// ponytail: 임시 파일 이름에 프로세스 id 를 넣지 않는다. `K020` 은 import 하나마다
+/// 별도 fix 를 내므로(`check.rs`) 같은 문서를 겨냥한 명령 두 줄이 동시에 돌 수 있다.
+/// 이름이 같으면 겹친 한쪽이 `exit 2` 로 **시끄럽게** 실패하고, 그 실패는 다음
+/// `kang build` 의 `K020` 이 같은 fix 로 다시 알려 스펙 4.8 3단계가 자가 복구한다.
+/// id 를 붙이면 두 rename 이 모두 성공해 "나중 쪽이 이기고 앞선 쪽은 성공했다고 착각"
+/// 하는 **조용한 유실**로 바뀐다. 잠금이 필요해지면 그때 올린다.
 ///
 /// # 매개변수
 /// - `파일`: 바꿔 쓸 파일
 /// - `내용`: 새 내용 전체
 ///
 /// # 오류
-/// 임시 파일을 쓰지 못하거나 옮기지 못하면 그 사정을 담은 문장
-fn 쓰기_원자적으로(파일: &std::path::Path, 내용: &str) -> Result<(), String> {
+/// 임시 파일을 쓰지 못하거나 옮기지 못하면 그 사정을 담은 문장.
+/// **실패한 경로를 지목한다** — 멀쩡한 파일을 지목하면 사용자가 엉뚱한 곳을 뒤진다
+fn 쓰기_원자적으로(파일: &Path, 내용: &str) -> Result<(), String> {
     let 임시 = 파일.with_extension("kang.bless");
 
-    let 결과 = std::fs::write(&임시, 내용).and_then(|()| std::fs::rename(&임시, 파일));
     // 실패한 자리에 임시 파일이 남으면 사용자 저장소에 쓰레기가 쌓인다.
-    if let Err(오류) = 결과 {
+    if let Err(오류) = std::fs::write(&임시, 내용) {
         let _ = std::fs::remove_file(&임시);
         return Err(format!(
-            "문서 파일에 쓰지 못했습니다 ({}) — {오류}",
+            "임시 파일에 쓰지 못했습니다 ({}) — {오류}",
+            임시.display()
+        ));
+    }
+
+    // mode 를 못 옮기는 것은 편집을 포기할 이유가 아니다. 핀을 넣는 것이 주 목적이고
+    // 권한은 사용자가 다시 줄 수 있다.
+    if let Ok(메타) = std::fs::metadata(파일) {
+        let _ = std::fs::set_permissions(&임시, 메타.permissions());
+    }
+
+    if let Err(오류) = std::fs::rename(&임시, 파일) {
+        let _ = std::fs::remove_file(&임시);
+        return Err(format!(
+            "임시 파일을 문서 자리로 옮기지 못했습니다 ({} → {}) — {오류}",
+            임시.display(),
             파일.display()
         ));
     }

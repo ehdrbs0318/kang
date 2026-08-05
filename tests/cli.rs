@@ -1450,6 +1450,10 @@ fn bless_는_멱등하다() {
         &["bless", "docs/top", "--import", "docs/base#기초 정책"],
     );
     let 첫_번째 = 읽기(&root, "docs/top.kang");
+    let 첫_mtime = fs::metadata(root.join("docs/top.kang"))
+        .and_then(|메타| 메타.modified())
+        .expect("mtime 을 읽을 수 있어야 한다");
+
     let (_, stderr, 코드) = 실행(
         &root,
         &["bless", "docs/top", "--import", "docs/base#기초 정책"],
@@ -1457,6 +1461,15 @@ fn bless_는_멱등하다() {
 
     assert_eq!(코드, 0, "{stderr}");
     assert_eq!(읽기(&root, "docs/top.kang"), 첫_번째);
+    // 바이트만 보면 "다시 써서 같은 내용이 되었다" 와 구분되지 않는다. 두 번째 bless 는
+    // 아예 쓰지 않아야 한다.
+    assert_eq!(
+        fs::metadata(root.join("docs/top.kang"))
+            .and_then(|메타| 메타.modified())
+            .expect("mtime 을 읽을 수 있어야 한다"),
+        첫_mtime,
+        "바꿀 것이 없는데 파일을 다시 썼다"
+    );
     정리(&root);
 }
 
@@ -1767,4 +1780,215 @@ fn 바이너리_경로() -> String {
         Ok(기존) => format!("{dir}:{기존}"),
         Err(_) => dir,
     }
+}
+
+/// **좌표는 지금 쓰려는 바이트에서 나와야 한다** (ADR-0003).
+///
+/// `bless` 는 파일을 두 번 읽는다 — 프로젝트를 세울 때 한 번, 고쳐 쓰기 직전에 한 번.
+/// 그 사이에 파일이 바뀌면 첫 읽기의 줄 번호가 낡는다. 낡은 좌표가 우연히 다른
+/// `import ` 접두 줄(코드펜스 안의 사용자 산문 등)을 가리키면 **거기에 핀이 박히고**
+/// bless 는 성공을 알린다. 되돌릴 곳이 없다.
+///
+/// 이 창은 바이너리로 결정적으로 재현할 수 없다(두 읽기 사이에 끼어들 수 없다).
+/// 그래서 라이브러리를 직접 불러 그 사이를 벌린다.
+#[test]
+fn bless_가_파싱_이후_바뀐_파일에서_옛_줄_번호를_쓰지_않는다() {
+    let root = 임시_루트("bless-toctou");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/base.kang",
+        "---\ndescription: 기초\n---\n\n## 기초 정책\n\n바탕이다.\n",
+    );
+    // 진짜 import 는 10행이다.
+    쓰기(
+        &root,
+        "docs/top.kang",
+        "---\ndescription: 꼭대기\n---\n\n\n\n\n\n\nimport `docs`/`base`#`기초 정책` as `기초`\n\n## 꼭대기 정책\n\n`기초` 를 따른다.\n",
+    );
+
+    let (project, _) = kang::resolve::load(&root);
+    let (table, _) = kang::resolve::SymbolTable::build(&project);
+
+    // 여기서 파일이 바뀐다. 진짜 import 는 5행으로 올라오고, **10행은 코드펜스 안의
+    // 사용자 산문**이 된다 — 파서가 정상적으로 무시하는, `import ` 로 시작하지만 선언이
+    // 아닌 줄이다. 낡은 좌표 10 이 접두 검사만으로는 이 줄을 통과시킨다.
+    // 그 줄은 topic 본문이므로 핀이 박히면 **그 topic 의 해시가 바뀌어** 이 topic 을
+    // import 한 하위 문서까지 K021 로 무너진다.
+    let 바뀐_원문 = "---\ndescription: 꼭대기\n---\n\nimport `docs`/`base`#`기초 정책` as `기초`\n\n## 꼭대기 정책\n\n```\nimport `docs`/`base`#`기초 정책` as `가짜`\n```\n\n`기초` 를 따른다.\n";
+    쓰기(&root, "docs/top.kang", 바뀐_원문);
+
+    let addr = kang::bless::ImportAddress::parse("docs/base#기초 정책")
+        .expect("주소를 파싱할 수 있어야 한다");
+    let 결과 = kang::bless::bless(
+        &project,
+        &table,
+        &root,
+        &DocPath(vec!["docs".to_string(), "top".to_string()]),
+        &addr,
+    );
+
+    // 바뀐 파일에서도 진짜 import 는 5행에 있다. 거부하든 새 좌표로 고치든,
+    // **펜스 안의 사용자 산문은 절대 바뀌어서는 안 된다.**
+    let 결과_원문 = 읽기(&root, "docs/top.kang");
+    assert!(
+        결과_원문.contains("import `docs`/`base`#`기초 정책` as `가짜`\n"),
+        "펜스 안의 사용자 산문에 핀이 박혔다: {결과_원문}"
+    );
+    // 그리고 성공을 알렸다면 진짜 import 가 실제로 핀을 받았어야 한다.
+    if 결과.is_ok() {
+        let 기초_핀 = 핀(&root, &["docs", "base"], SymbolKind::Topic, "기초 정책");
+        assert!(
+            결과_원문.contains(&format!("as `기초` rev \"{기초_핀}\"")),
+            "성공이라 했는데 진짜 import 는 미핀이다: {결과_원문}"
+        );
+    }
+    정리(&root);
+}
+
+/// 파일이 바뀌어 import 가 **다른 줄로 옮겨간** 경우, 거부가 아니라 새 좌표로
+/// 올바르게 고쳐야 한다. 거부만 하면 정상 워크플로(문서를 고친 뒤 bless)가 막힌다.
+#[test]
+fn bless_가_파싱_이후_옮겨간_import_를_새_좌표에서_찾는다() {
+    let root = 임시_루트("bless-toctou-moved");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/base.kang",
+        "---\ndescription: 기초\n---\n\n## 기초 정책\n\n바탕이다.\n",
+    );
+    쓰기(
+        &root,
+        "docs/top.kang",
+        "---\ndescription: 꼭대기\n---\n\nimport `docs`/`base`#`기초 정책` as `기초`\n\n## 꼭대기 정책\n\n`기초` 를 따른다.\n",
+    );
+
+    let (project, _) = kang::resolve::load(&root);
+    let (table, _) = kang::resolve::SymbolTable::build(&project);
+
+    // frontmatter 에 줄이 늘어 import 가 5행 → 6행으로 밀렸다.
+    쓰기(
+        &root,
+        "docs/top.kang",
+        "---\ndescription: 꼭대기\ntags: []\n---\n\nimport `docs`/`base`#`기초 정책` as `기초`\n\n## 꼭대기 정책\n\n`기초` 를 따른다.\n",
+    );
+
+    let addr = kang::bless::ImportAddress::parse("docs/base#기초 정책")
+        .expect("주소를 파싱할 수 있어야 한다");
+    let 결과 = kang::bless::bless(
+        &project,
+        &table,
+        &root,
+        &DocPath(vec!["docs".to_string(), "top".to_string()]),
+        &addr,
+    );
+
+    assert!(결과.is_ok(), "{결과:?}");
+    let 기초_핀 = 핀(&root, &["docs", "base"], SymbolKind::Topic, "기초 정책");
+    assert_eq!(
+        읽기(&root, "docs/top.kang"),
+        format!(
+            "---\ndescription: 꼭대기\ntags: []\n---\n\nimport `docs`/`base`#`기초 정책` as `기초` rev \"{기초_핀}\"\n\n## 꼭대기 정책\n\n`기초` 를 따른다.\n"
+        )
+    );
+    정리(&root);
+}
+
+/// **원자성은 모듈 주석이 계약으로 선언한 신뢰 경계다.** 쓰기가 실패하면 원본은
+/// 한 바이트도 바뀌지 않아야 한다. 제자리에서 덮어쓰면 이 단언이 깨진다.
+///
+/// 문서 디렉토리에서 쓰기 권한을 뺏어 임시 파일 생성을 실패시킨다.
+#[test]
+#[cfg(unix)]
+fn bless_는_쓰기가_실패하면_원본을_건드리지_않는다() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = 임시_루트("bless-atomic");
+    git_저장소로(&root);
+    핀_없는_프로젝트(&root);
+    let 원본 = 읽기(&root, "docs/top.kang");
+
+    let docs = root.join("docs");
+    fs::set_permissions(&docs, fs::Permissions::from_mode(0o555))
+        .expect("권한을 바꿀 수 있어야 한다");
+
+    // root 로 실행하면 권한 비트가 무시되어 시나리오 자체가 성립하지 않는다.
+    if fs::write(docs.join("probe"), "x").is_ok() {
+        let _ = fs::remove_file(docs.join("probe"));
+        let _ = fs::set_permissions(&docs, fs::Permissions::from_mode(0o755));
+        정리(&root);
+        return;
+    }
+
+    let (stdout, stderr, 코드) = 실행(
+        &root,
+        &["bless", "docs/top", "--import", "docs/base#기초 정책"],
+    );
+
+    let _ = fs::set_permissions(&docs, fs::Permissions::from_mode(0o755));
+    assert_eq!(코드, 2, "{stderr}");
+    assert_eq!(stdout, "");
+    assert_eq!(
+        읽기(&root, "docs/top.kang"),
+        원본,
+        "쓰기에 실패했는데 원본이 바뀌었다 — 제자리 덮어쓰기다"
+    );
+    정리(&root);
+}
+
+/// 스펙 5.1.1 의 정신: 진단은 검증하면 참인 사실만 말해야 한다. 아무 바이트도 바뀌지
+/// 않았는데 "갱신했습니다" 라고 하면 거짓이다.
+#[test]
+fn bless_가_무변경과_갱신을_구분해_알린다() {
+    let root = 임시_루트("bless-said-what");
+    git_저장소로(&root);
+    핀_없는_프로젝트(&root);
+
+    let (_, 첫_stderr, 코드) = 실행(
+        &root,
+        &["bless", "docs/top", "--import", "docs/base#기초 정책"],
+    );
+    assert_eq!(코드, 0, "{첫_stderr}");
+    assert!(첫_stderr.contains("갱신"), "{첫_stderr}");
+
+    let (_, 둘째_stderr, 코드) = 실행(
+        &root,
+        &["bless", "docs/top", "--import", "docs/base#기초 정책"],
+    );
+    assert_eq!(코드, 0, "{둘째_stderr}");
+    assert!(
+        !둘째_stderr.contains("갱신했습니다"),
+        "아무것도 안 바꿨는데 갱신했다고 말한다: {둘째_stderr}"
+    );
+    assert!(둘째_stderr.contains("이미"), "{둘째_stderr}");
+    정리(&root);
+}
+
+/// rename 은 임시 파일의 inode 를 문서 자리에 올리므로, 아무것도 하지 않으면 문서의
+/// 파일 mode 가 새 파일의 것으로 갈린다. 문서 권한은 사용자가 정한 것이다.
+#[test]
+#[cfg(unix)]
+fn bless_가_문서의_파일_권한을_보존한다() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = 임시_루트("bless-mode");
+    git_저장소로(&root);
+    핀_없는_프로젝트(&root);
+    let 문서 = root.join("docs/top.kang");
+    fs::set_permissions(&문서, fs::Permissions::from_mode(0o600))
+        .expect("권한을 바꿀 수 있어야 한다");
+
+    let (_, stderr, 코드) = 실행(
+        &root,
+        &["bless", "docs/top", "--import", "docs/base#기초 정책"],
+    );
+
+    assert_eq!(코드, 0, "{stderr}");
+    let mode = fs::metadata(&문서)
+        .expect("문서가 있어야 한다")
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(mode, 0o600, "파일 mode 가 {mode:o} 로 바뀌었다");
+    정리(&root);
 }
