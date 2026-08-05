@@ -192,21 +192,27 @@ pub fn parse_document(path: DocPath, source: &str) -> Result<Document, Vec<Diagn
             continue;
         }
 
-        // 나머지 줄은 현재 topic 의 본문이다. topic 밖의 줄은 이 태스크에서 다루지 않는다.
-        let Some(topic) = topics.last_mut() else {
-            continue;
-        };
-        push_body_line(topic, raw);
+        // 나머지 줄은 현재 topic 의 본문이다.
+        if let Some(topic) = topics.last_mut() {
+            push_body_line(topic, raw);
+        }
 
-        // 본문의 백틱 쌍은 전부 심볼 참조다.
+        // 본문의 백틱 쌍은 전부 심볼 참조다. topic 밖의 줄도 짝 검사만은 받는다 —
+        // 받지 않으면 첫 `##` 이전 구간이 검사 없는 사각지대가 된다.
         match scan_symbols(raw) {
             // 빈 백틱 쌍은 가리키는 심볼이 없다.
             Some(symbols) if symbols.iter().any(String::is_empty) => {
                 diagnostics.push(빈_심볼(&path, line_no));
             }
-            Some(symbols) => topic
-                .refs
-                .extend(symbols.into_iter().map(|symbol| (symbol, line_no))),
+            // ponytail: topic 밖 줄의 심볼 이름은 담을 자리가 AST 에 없어 버린다.
+            // 짝 검사만 남는다. 그 구간에 서술을 두는 문법이 생기면 그때 올린다.
+            Some(symbols) => {
+                if let Some(topic) = topics.last_mut() {
+                    topic
+                        .refs
+                        .extend(symbols.into_iter().map(|symbol| (symbol, line_no)));
+                }
+            }
             None => diagnostics.push(백틱_짝_없음(&path, line_no)),
         }
     }

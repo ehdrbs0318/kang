@@ -987,6 +987,26 @@ import `docs`/``.`결제`
     assert_eq!(diagnostics[0].locations[0].line, 5);
 }
 
+/// topic 밖의 줄도 백틱 짝 검사를 받는다.
+/// 받지 않으면 첫 `##` 이전 구간이 검사 없는 사각지대가 된다.
+#[test]
+fn topic_밖의_짝없는_백틱도_에러다() {
+    let source = r#"---
+description: 결제 정책 문서
+---
+
+`짝없음
+
+## 결제의 방법
+"#;
+
+    let diagnostics = parse::parse_document(문서경로(), source).unwrap_err();
+
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(diagnostics[0].code, "K104");
+    assert_eq!(diagnostics[0].locations[0].line, 5);
+}
+
 /// kang 에는 주석 문법이 없으므로 알 수 없는 modifier 는 조용히 버리지 않는다.
 #[test]
 fn 알_수_없는_modifier_는_에러다() {
