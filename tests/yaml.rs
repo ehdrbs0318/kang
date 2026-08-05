@@ -45,9 +45,40 @@ fn 한글_이름과_주소는_인용하지_않는다() {
     assert_eq!(scalar("결제의 방법"), "결제의 방법");
     assert_eq!(scalar("docs/a#결제의 방법"), "docs/a#결제의 방법");
     assert_eq!(scalar("docs/a.결제수단.카드"), "docs/a.결제수단.카드");
-    // 스키마의 bool 자리는 평문이어야 한다.
-    assert_eq!(scalar("true"), "true");
-    assert_eq!(scalar("false"), "false");
+}
+
+/// 스키마의 bool 자리는 사용자 문자열을 거치지 않는다.
+///
+/// [`scalar`] 에 `true`/`false` 인용 면제를 두면 그 두 글자를 **이름으로** 가진 심볼이
+/// bool 로 나간다. `pair` 는 모든 값을 [`scalar`] 로 보내므로 면제는 이름·경로까지 샌다.
+#[test]
+fn flag_은_bool_을_그대로_낸다() {
+    let mut e = Emitter::new();
+    e.flag("uncoded", false);
+    e.flag("pending", true);
+    assert_eq!(e.finish(), "uncoded: false\npending: true");
+}
+
+/// 파서가 거부하거나 다르게 읽는 입력을 한자리에 모은다.
+///
+/// **의존성 금지로 Rust 쪽에 YAML 파서를 넣을 수 없다.** 그래서 손으로 적은 기대 문자열이
+/// 유일한 방어선인데, 사람이 모르는 규칙은 그것을 그대로 통과한다. 이 목록이 그 자리를
+/// 대신한다 — 규칙을 하나 알게 될 때마다 여기에 한 줄씩 는다.
+#[test]
+fn 적대적_입력이_평문으로_새지_않는다() {
+    // `=` 는 YAML 1.1 의 value 키다. PyYAML 의 SafeConstructor 에 생성자가 없어
+    // **문서 전체**가 거부된다. 이름과 description 둘 다 이 값을 가질 수 있다.
+    assert_eq!(scalar("="), "\"=\"");
+    // 사용자 문자열 "true" 는 이름이지 bool 이 아니다.
+    assert_eq!(scalar("true"), "\"true\"");
+    assert_eq!(scalar("false"), "\"false\"");
+    // U+2028·U+2029 는 Cc 가 아니라 Zl·Zp 라 `char::is_control` 이 놓친다.
+    // 파서는 줄바꿈으로 읽으므로 평문으로 새면 매핑이 그 자리에서 끊긴다.
+    assert_eq!(scalar("줄\u{2028}구분"), "\"줄\\u2028구분\"");
+    assert_eq!(scalar("문단\u{2029}구분"), "\"문단\\u2029구분\"");
+    // 제어 문자는 눈에 보이지 않으므로 코드로 적는다.
+    assert_eq!(scalar("벨\u{7}소리"), "\"벨\\x07소리\"");
+    assert_eq!(scalar("줄넘김\u{85}문자"), "\"줄넘김\\x85문자\"");
 }
 
 /// 다른 타입으로 읽힐 표기는 인용한다. 인용하지 않으면 이름이 숫자나 null 이 된다.
@@ -111,6 +142,44 @@ fn literal_scalar_가_본문의_들여쓰기를_보존한다() {
     assert_eq!(
         e.finish(),
         "topic: |2-\n    ## 들여쓴 제목\n\n  - 목록\n    - 중첩"
+    );
+}
+
+/// literal scalar 에는 이스케이프 수단이 없다. 본문에 파서가 거부하거나 줄로 읽는
+/// 문자가 있으면 인용 스칼라로 물러나는 것 외에 방법이 없다.
+///
+/// 터미널 출력을 문서에 붙여 넣는 것은 흔하고, 그 안의 ANSI 이스케이프가 이것을 발동한다.
+#[test]
+fn 파싱을_깨는_본문은_인용_스칼라로_물러난다() {
+    let mut 제어 = Emitter::new();
+    제어.block("topic", "## 제목\n\n출력은 \u{1b}[31m빨강\u{1b}[0m 이다.");
+    assert_eq!(
+        제어.finish(),
+        "topic: \"## 제목\\n\\n출력은 \\x1b[31m빨강\\x1b[0m 이다.\""
+    );
+
+    // U+2028 은 `split('\n')` 이 줄로 세지 않아 들여쓰기가 붙지 않는데, 파서는 줄바꿈으로
+    // 읽는다. 들여쓰기 0 인 줄이 생겨 블록이 거기서 끝난다.
+    let mut 줄구분 = Emitter::new();
+    줄구분.block("topic", "## 제목\n본문\u{2028}이어짐");
+    assert_eq!(줄구분.finish(), "topic: \"## 제목\\n본문\\u2028이어짐\"");
+
+    // `\r` 도 파서가 줄바꿈으로 읽는다. `str::lines()` 가 줄 끝의 것만 떼므로 줄 가운데의
+    // `\r` 은 본문에 남는다.
+    let mut 복귀 = Emitter::new();
+    복귀.block("topic", "## 제목\n본\r문");
+    assert_eq!(복귀.finish(), "topic: \"## 제목\\n본\\r문\"");
+}
+
+/// 탭과 `---` 는 흔한 마크다운이다. 여기서 물러나면 본문 대부분이 한 줄짜리 인용
+/// 스칼라로 떨어져 `show` 가 읽기 나빠진다.
+#[test]
+fn 탭과_구분선은_literal_scalar_로_남는다() {
+    let mut e = Emitter::new();
+    e.block("topic", "## 제목\n\n---\n\n\t들여쓴 코드");
+    assert_eq!(
+        e.finish(),
+        "topic: |2-\n  ## 제목\n\n  ---\n\n  \t들여쓴 코드"
     );
 }
 

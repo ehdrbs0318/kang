@@ -131,11 +131,14 @@ pub fn show(project: &Project, table: &SymbolTable, target: &ShowTarget) -> Stri
 
     // 이 파일(또는 topic)이 정의한 예외와 그 커버 내용.
     //
-    // **이 두 절은 방문 집합에 참여하지 않는다.** 중복 제거의 대체물은 전체 주소이고,
-    // 그 주소가 가리키는 자리를 찾을 수 있어야 뜻이 있다. 예외·커버 항목은 **예외**로
-    // 주소가 붙으므로(`name` 과 `path`) topic 주소로 가리켜도 닿을 곳이 없다. 대신
-    // 여기서 붙는 본문은 항목마다 정확히 하나이고 재귀하지 않으므로, 방문 집합이 막는
-    // 폭발(다이아몬드·순환)이 여기서는 일어나지 않는다.
+    // **이 두 절은 방문 집합에 참여하지 않는다.** 여기서 붙는 본문은 항목마다 정확히
+    // 하나이고 재귀하지 않으므로, 방문 집합이 막는 폭발(다이아몬드·순환)이 일어나지 않는다.
+    // 반대로 참여시키면 **얕고 재귀하지 않는 이 절이 주소를 선점해**, 아래 `topics` 의
+    // 재귀 임베드 트리가 통째로 포인터 한 줄로 사라진다.
+    //
+    // 덧붙여 `covers` 항목은 **예외**로 주소가 붙으므로(`name` 과 `path`) topic 주소로
+    // 가리켜도 닿을 곳이 없다. `exceptions` 는 `coveredBy` 로 topic 주소를 이미 찍으므로
+    // 그 항목에는 해당하지 않는다.
     let mut 예외들: Vec<Emitter> = Vec::new();
     for topic in &대상_토픽 {
         for exception in &topic.exceptions {
@@ -200,9 +203,11 @@ struct 선언자리<'a> {
 /// [`SymbolTable`] 은 식별자로부터 **종류와 이름을 돌려주지 않고** [`SymbolId`] 는
 /// 해시할 수 없으므로, 되찾아야 하는 것을 선형 목록으로 들고 다닌다.
 ///
-/// ponytail: 조회가 선형 탐색이라 전체가 O(심볼 × 참조) 다. 문서 프로젝트의 심볼 수가
-/// 수천을 넘지 않는 동안은 무해하다. 실측이 이것을 지목하면 `resolve` 에 식별자 기반
-/// 조회를 열어 색인 자체를 없앤다.
+/// ponytail: 조회가 선형 탐색이라 전체가 O(심볼 × 참조) 다. 여기에 [`뷰::커버하는_topic`]
+/// 의 O(예외 × 문서) 가 더 붙는다 — 예외마다 프로젝트의 topic 을 전부 훑으며 스코프를 뜬다.
+/// 1600문서·예외 60개에서 0.146s 라 v1 에서는 무해하다. 실측이 이 둘 중 하나를 지목하면
+/// `resolve` 에 식별자 기반 조회를 열어 색인 자체를 없애고, 커버는 한 번의 순회로
+/// `(예외 → 커버 topic)` 표를 만들어 색인에 함께 싣는다.
 struct 뷰<'a> {
     /// 컴파일을 통과한 프로젝트.
     project: &'a Project,
@@ -358,16 +363,17 @@ impl<'a> 뷰<'a> {
 
         // 상세 topic 은 선택이다 (스펙 4.3). 있으면 전체 경로로 담는다 — 파싱만 하고
         // 버리면 조회한 쪽이 상세 설명에 닿을 길이 없다.
-        if let Some(detail) = &keyword.detail {
-            let 주소 = self
+        //
+        // **해석되지 않으면 키를 내지 않는다.** `{owner}#{detail}` 로 지어내면 없는 주소를
+        // 사실처럼 말하게 된다. 미해결 상세 마커는 `K001` 이 이미 잡으므로(`check.rs` 의
+        // `참조.push(.. "keyword 상세 마커")`) 컴파일을 통과한 문서에서는 늘 해석된다.
+        if let Some(detail) = &keyword.detail
+            && let Some(주소) = self
                 .table
                 .scope(owner)
                 .get(detail)
                 .and_then(|&id| self.주소(id))
-                // 상세 마커의 미해결은 `K001` 이 이미 잡으므로 컴파일을 통과한 문서에서는
-                // 해석된다. 그래도 단정하지 않고 topic 주소로 적는다 — `#` 로 연결하는
-                // 자리이므로 그것이 가장 가까운 사실이다.
-                .unwrap_or_else(|| format!("{owner}#{detail}"));
+        {
             e.pair("detail", &주소);
         }
 
@@ -413,7 +419,7 @@ impl<'a> 뷰<'a> {
     ) -> Emitter {
         let mut e = Emitter::new();
         e.pair("name", 이름);
-        e.pair("uncoded", if topic.uncoded { "true" } else { "false" });
+        e.flag("uncoded", topic.uncoded);
         e.block("topic", &topic.body);
         // 아무것도 참조하지 않는 topic 에 빈 `references` 를 달지 않는다.
         if let Some(참조) = self.참조_묶음(doc, topic, 방문) {
@@ -516,7 +522,7 @@ impl<'a> 뷰<'a> {
     fn 예외_항목(&self, doc: &DocPath, exception: &Exception) -> Emitter {
         let mut e = Emitter::new();
         e.pair("name", &exception.name);
-        e.pair("pending", if exception.pending { "true" } else { "false" });
+        e.flag("pending", exception.pending);
 
         let 대상 = self.table.resolve(&SymbolRef {
             doc: doc.clone(),
