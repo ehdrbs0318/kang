@@ -2573,3 +2573,97 @@ fn 병합_천장은_같은_줄의_두_이름을_한_이름으로_읽는다() {
     assert_eq!(상위, "", "상위 조각은 소비되어 남지 않는다");
     정리(&root);
 }
+
+/// **C1 의 회귀 테스트를 `resolve.rs` 진단까지 넓힌다.** `check.rs` 진단만 덮으면
+/// `K050`·`K051` 의 `[shell]` fix 가 산문으로 시작하는 갭이 다시 열린다.
+///
+/// `K050` 은 저장소 밖 첫 실행에서 바로 나므로 에이전트의 T0 접점이다.
+#[test]
+fn k050_의_fix_를_그대로_실행하면_저장소가_생긴다() {
+    let root = 임시_루트("k050-fix-왕복");
+    // git 저장소로 만들지 않는다. 그것이 `K050` 의 조건이다.
+
+    let (_, stderr, 코드) = 실행(&root, &["build"]);
+    assert_eq!(코드, 2, "{stderr}");
+    assert!(stderr.contains("K050"), "{stderr}");
+    assert_eq!(fix_적용(&root, &stderr), 1, "{stderr}");
+
+    // 저장소가 생겼으므로 루트 탐색이 통과한다. 문서는 아직 없다.
+    let (_, stderr, 코드) = 실행(&root, &["build"]);
+    assert_eq!(코드, 0, "{stderr}");
+    assert!(!stderr.contains("K050"), "{stderr}");
+    정리(&root);
+}
+
+/// `K051`(UTF-8 아님) 의 fix 도 그대로 실행할 수 있어야 한다.
+///
+/// 이 진단의 처방은 **인코딩을 확인한 뒤 변환**인데 변환 명령의 `-f` 인자는 확인
+/// 결과에 달려 있어 진단 시점에 알 수 없다. 그래서 `[shell]` 로 낼 수 있는 것은
+/// 확인 명령 하나뿐이고, 변환 방법은 `message` 가 말한다.
+#[test]
+fn k051_의_fix_를_그대로_실행하면_인코딩을_확인한다() {
+    let root = 임시_루트("k051-fix-왕복");
+    git_저장소로(&root);
+    fs::create_dir_all(root.join("docs")).expect("디렉토리를 만들 수 있어야 한다");
+    // EUC-KR 바이트열. UTF-8 로 디코딩되지 않는다.
+    fs::write(
+        root.join("docs/a.kang"),
+        b"---\ndescription: \xB1\xE2\xC3\xCA\n---\n",
+    )
+    .expect("파일을 쓸 수 있어야 한다");
+
+    let (_, stderr, 코드) = 실행(&root, &["build"]);
+    assert_eq!(코드, 1, "{stderr}");
+    assert!(stderr.contains("K051"), "{stderr}");
+    // 적용 가능한 명령은 하나다. 자리를 채워야 도는 템플릿은 fix 가 아니다.
+    assert_eq!(fix_적용(&root, &stderr), 1, "{stderr}");
+    // 변환 방법은 message 가 말한다 — 진단이 그것을 잃으면 안 된다.
+    assert!(stderr.contains("iconv"), "{stderr}");
+    정리(&root);
+}
+
+/// **J1 의 결론.** 컴파일러가 대상 문서를 아는 진단은 `bless` 를 짝지어 **1왕복**에
+/// 닫아야 한다. `K034` 는 cover 줄이 있는 문서를 알면서(`check.rs` 의 `c.doc`) 짝짓지
+/// 않아 `K001` 과 같은 상황에서 2왕복이었다.
+///
+/// `K030`·`K031` 은 어느 topic 이 정책인지 사람이 정하므로 문서를 모른다 — 거기서
+/// bless 를 짝지으면 진단이 문서 이름을 지어낸다. 그래서 그 둘은 2왕복이 정본이다.
+#[test]
+fn k034_의_fix_를_한_왕복에_적용하면_통과한다() {
+    let root = 임시_루트("k034-1왕복");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: A\n---\n\n## 정책\n\n본문이다.\n\nexception `무료 상품`\n",
+    );
+    // cover 는 있으나 import 가 없다.
+    쓰기(
+        &root,
+        "docs/b.kang",
+        "---\ndescription: B\n---\n\n## 처리\n\n하나다.\n\ncover `무료 상품`\n",
+    );
+
+    let (_, stderr, 코드) = 실행(&root, &["build"]);
+    assert_eq!(코드, 1, "{stderr}");
+    assert!(stderr.contains("error[K034]"), "{stderr}");
+    // 진단이 지시한 import 줄을 그대로 넣는다 — `[edit]` 은 산문이므로 손으로 적용한다.
+    let 줄 = "import `docs`/`a`!`무료 상품`";
+    assert!(
+        stderr.contains(&format!("import 블록에 다음 줄을 추가하세요: {줄}")),
+        "{stderr}"
+    );
+    쓰기(
+        &root,
+        "docs/b.kang",
+        &format!("---\ndescription: B\n---\n\n{줄}\n\n## 처리\n\n하나다.\n\ncover `무료 상품`\n"),
+    );
+    // 그리고 같은 진단이 낸 셸 fix 를 그대로 실행한다.
+    assert_eq!(fix_적용(&root, &stderr), 1, "{stderr}");
+
+    // 한 왕복으로 끝나야 한다. `K020` 이 새로 뜨면 2왕복이다 (스펙 V0001:417).
+    let (_, stderr, 코드) = 실행(&root, &["build"]);
+    assert_eq!(코드, 0, "{stderr}");
+    assert_eq!(stderr, "", "fix 를 적용하면 새 진단이 생기면 안 된다");
+    정리(&root);
+}

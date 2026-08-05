@@ -3131,8 +3131,9 @@ fn k034_는_후보가_여럿이면_문서를_단정하지_않는다() {
 
     assert_eq!(코드들(&diagnostics), vec!["K030", "K030", "K034"]);
     let k034 = &diagnostics[2];
-    // 후보 둘을 각각 조건절과 함께 준다. 마지막은 이름 수정/줄 삭제 안내다.
-    assert_eq!(k034.fixes.len(), 3);
+    // 후보마다 "import 를 쓰고 → 핀을 붙인다" 두 수정이 짝을 이룬다. 마지막은 이름
+    // 수정/줄 삭제 안내다.
+    assert_eq!(k034.fixes.len(), 5);
     assert!(
         k034.fixes[0].action.contains("docs/a 가 같은 개념이라면"),
         "{:?}",
@@ -3145,10 +3146,20 @@ fn k034_는_후보가_여럿이면_문서를_단정하지_않는다() {
         "{:?}",
         k034.fixes[0].action
     );
+    assert_eq!(k034.fixes[1].kind, FixKind::Shell);
+    assert_eq!(
+        k034.fixes[1].action,
+        "kang bless 'docs/c' --import 'docs/a!무료 상품'"
+    );
     assert!(
-        k034.fixes[1].action.contains("docs/b 가 같은 개념이라면"),
+        k034.fixes[2].action.contains("docs/b 가 같은 개념이라면"),
         "{:?}",
-        k034.fixes[1].action
+        k034.fixes[2].action
+    );
+    assert_eq!(k034.fixes[3].kind, FixKind::Shell);
+    assert_eq!(
+        k034.fixes[3].action,
+        "kang bless 'docs/c' --import 'docs/b!무료 상품'"
     );
     정리(&root);
 }
@@ -3172,11 +3183,17 @@ fn k034_는_후보가_하나면_조건절을_붙이지_않는다() {
     let diagnostics = 예외_검사(&root);
 
     let k034 = &diagnostics[1];
-    assert_eq!(k034.fixes.len(), 2);
+    // import 수정과 그 핀을 붙이는 bless, 그리고 이름 수정/줄 삭제 안내.
+    assert_eq!(k034.fixes.len(), 3);
     assert!(
         !k034.fixes[0].action.contains("같은 개념이라면"),
         "{:?}",
         k034.fixes[0].action
+    );
+    assert_eq!(k034.fixes[1].kind, FixKind::Shell);
+    assert_eq!(
+        k034.fixes[1].action,
+        "kang bless 'docs/b' --import 'docs/a!무료 상품'"
     );
     정리(&root);
 }

@@ -544,13 +544,16 @@ fn git_저장소_아님(cwd: &Path) -> Diagnostic {
         locations: vec![Location {
             doc: 경로_그대로(cwd),
             line: 0,
-            note: "이 디렉토리에서 위로 올라가며 .git 을 찾았지만 없었습니다.".to_string(),
+            // 대안은 여기 적는다 — 그것은 지시이지 실행할 명령이 아니다.
+            note: "이 디렉토리에서 위로 올라가며 .git 을 찾았지만 없었습니다. 이미 있는 git 저장소를 루트로 쓰려면 그 저장소 안의 디렉토리로 이동해 다시 실행하세요.".to_string(),
         }],
+        // **`action` 은 명령만이다** (스펙 6.0). `kang` 을 이 디렉토리에서 불렀으므로
+        // 여기를 루트로 삼겠다는 것이 기본 의도이고, `git init` 이 그 의도의 정확한
+        // 표현이다. 인자를 붙이지 않는 것이 그래서 옳다 — 현재 디렉토리가 답이다.
         fixes: vec![Fix {
             kind: FixKind::Shell,
             doc: None,
-            action: "프로젝트 루트가 될 디렉토리에서 git init 을 실행하거나, 이미 있는 git 저장소 안에서 kang 을 실행하세요."
-                .to_string(),
+            action: "git init".to_string(),
         }],
     }
 }
@@ -577,10 +580,8 @@ fn 파일_읽기_실패(file: &Path, path: DocPath, error: &std::io::Error) -> D
         fixes: vec![Fix {
             kind: FixKind::Shell,
             doc: None,
-            action: format!(
-                "이 파일을 읽을 수 있는지 확인하세요: ls -l {}",
-                셸_인용(&file.display().to_string())
-            ),
+            // `action` 은 명령만이다. 무엇을 왜 확인하는지는 `message` 와 note 가 말한다.
+            action: format!("ls -l {}", 셸_인용(&file.display().to_string())),
         }],
     }
 }
@@ -603,28 +604,23 @@ fn utf8_아님(file: &Path, path: DocPath, valid_up_to: usize) -> Diagnostic {
     Diagnostic {
         severity: Severity::Error,
         code: "K051",
-        message: format!("문서 파일이 UTF-8 이 아닙니다 — {path}"),
+        // 변환 방법은 여기 적는다. **명령으로 낼 수 없기 때문이다** — `-f` 에 넣을 원본
+        // 인코딩은 첫 fix 를 실행한 뒤에야 알 수 있고, 자리를 비워 두면 셸이 `<인코딩>`
+        // 을 입력 리다이렉션으로 읽어 터진다. 채워야 도는 템플릿은 fix 가 아니다.
+        message: format!(
+            "문서 파일이 UTF-8 이 아닙니다 — {path}. fix 로 원본 인코딩을 확인한 뒤 그 값을 -f 에 넣어 변환하세요: iconv -f <원본 인코딩> -t UTF-8 {원본} > {임시} && mv {임시} {원본}"
+        ),
         locations: vec![Location {
             doc: path,
             line: 0,
             note: format!("바이트 {valid_up_to} 부터 UTF-8 로 디코딩되지 않습니다."),
         }],
-        // 원본 인코딩은 컴파일러가 알 수 없으므로 먼저 확인하고 그 다음 변환한다.
-        // `fixes` 는 순서 있는 목록이며 앞에서부터 적용한다 (스펙 5.1.1).
-        fixes: vec![
-            Fix {
-                kind: FixKind::Shell,
-                doc: None,
-                action: format!("이 파일의 원본 인코딩을 확인하세요: file -I {원본}"),
-            },
-            Fix {
-                kind: FixKind::Shell,
-                doc: None,
-                action: format!(
-                    "확인한 인코딩을 -f 에 넣어 UTF-8 로 변환하세요: iconv -f <확인한 인코딩> -t UTF-8 {원본} > {임시} && mv {임시} {원본}"
-                ),
-            },
-        ],
+        // 그래서 `[shell]` 로 낼 수 있는 것은 확인 명령 하나뿐이다.
+        fixes: vec![Fix {
+            kind: FixKind::Shell,
+            doc: None,
+            action: format!("file -I {원본}"),
+        }],
     }
 }
 
@@ -652,10 +648,8 @@ fn 디렉토리_읽기_실패(dir: &Path, error: &std::io::Error) -> Diagnostic 
         fixes: vec![Fix {
             kind: FixKind::Shell,
             doc: None,
-            action: format!(
-                "이 디렉토리를 읽을 수 있는지 확인하세요: ls -ld {}",
-                셸_인용(&dir.display().to_string())
-            ),
+            // `action` 은 명령만이다.
+            action: format!("ls -ld {}", 셸_인용(&dir.display().to_string())),
         }],
     }
 }
@@ -687,10 +681,8 @@ fn 항목_종류_확인_실패(path: &Path, error: &std::io::Error) -> Diagnosti
         fixes: vec![Fix {
             kind: FixKind::Shell,
             doc: None,
-            action: format!(
-                "이 경로가 무엇인지 확인하세요: ls -l {}",
-                셸_인용(&path.display().to_string())
-            ),
+            // `action` 은 명령만이다.
+            action: format!("ls -l {}", 셸_인용(&path.display().to_string())),
         }],
     }
 }

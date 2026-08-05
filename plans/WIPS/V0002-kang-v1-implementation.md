@@ -877,11 +877,13 @@ pub fn bless(
 
 - **참조 병합 천장의 실제 빈도를 측정하라.** Task 6 절의 "알려진 한계" 참조 — 두 이름을 따로 언급한 본문이 병합되면 뒤 조각의 import 가 `K003` 으로 오인된다. 도그푸딩 코퍼스에서 얼마나 자주 발생하는지 재고 승급 여부를 정하라.
 
-- [x] **Step 3: `cargo test` 통과 확인** — 290 passed (275 → 290)
+- [x] **Step 3: `cargo test` 통과 확인** — 293 passed (275 → 290 → 293)
 - [x] **Step 4: `cargo clippy -- -D warnings` 통과 확인** — `--all-targets` 로 clean, `cargo fmt --check` 도 clean
 - [x] **Step 5: 커밋** — 판정 J1~J4 와 이월 검증 결과는 `.superpowers/sdd/V0002-kang-v1-implementation/task-12-report.md`
-  - C1(렌더된 `[shell]` fix 를 그대로 실행할 수 없음) 은 `check.rs` 3자리를 고쳐 해소. **`resolve.rs` 의 6자리(`K050`·`K051`)는 파일 동결로 남았다** — 리포트의 C1 전수 조사 표 참조
-  - M8(주소 파싱 통합) 은 `참조들` 이 `ImportAddress::parse` 를 쓰게 하고 `조회` 를 같은 분할 순서로 맞췄다. `main.rs` 606 → 597 줄
+  - C1(렌더된 `[shell]` fix 를 그대로 실행할 수 없음) — 저장소의 **아홉 자리를 전부** 고쳤다. `check.rs` 3자리(`K020`·`K021`·`K001`) + `resolve.rs` 6자리(`K050`·`K051`×5). `K050` 의 `action` 은 `git init`, 대안은 `note` 로
+  - **`utf8_아님` 의 둘째 fix 는 삭제했다** — `-f` 인자가 첫 fix 실행 뒤에야 정해지므로 명령으로 낼 수 없다. 변환 레시피는 `message` 로. **명령이 아닌 것을 `Shell` 로 낸 것이 C1 의 근본 원인이다**
+  - M8(주소 파싱 통합) 은 `참조들` 이 `ImportAddress::parse` 를 쓰게 하고 `조회` 를 같은 분할 순서로 맞췄다. `main.rs` 606 → 597 줄. **통합하니 셋 중 `show` 하나가 정본에서 벗어나 있던 것이 드러났다**
+  - J1 의 결론대로 `K034` 에 `bless` 를 짝지어 **1왕복**으로 닫았다. `K030`·`K031` 은 핀을 붙일 문서를 몰라 2왕복이 정본이다
 
 ---
 
