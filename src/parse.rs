@@ -51,8 +51,8 @@ pub fn parse_document(path: DocPath, source: &str) -> Result<Document, Vec<Diagn
 
     let mut keywords: Vec<Keyword> = Vec::new();
     let mut topics: Vec<Topic> = Vec::new();
-    // 열려 있는 코드 펜스의 시작 줄. 닫히면 None 으로 돌아간다.
-    let mut fence_open: Option<usize> = None;
+    // 열려 있는 코드 펜스의 (시작 줄, 백틱 개수). 닫히면 None 으로 돌아간다.
+    let mut fence_open: Option<(usize, usize)> = None;
 
     // frontmatter 다음 줄부터 끝까지 순회하며 keyword 선언과 topic 을 모은다.
     for (index, raw) in lines.iter().enumerate().skip(body_start) {
@@ -60,12 +60,15 @@ pub fn parse_document(path: DocPath, source: &str) -> Result<Document, Vec<Diagn
         let trimmed = raw.trim_start();
 
         // 코드 펜스 경계와 그 안쪽은 심볼 해석도 topic 분할도 하지 않는다 (스펙 4.2).
-        let fence_marker = trimmed.starts_with("```");
+        let fence_run = trimmed.bytes().take_while(|&byte| byte == b'`').count();
+        let fence_marker = fence_run >= 3;
         if fence_marker {
-            // 열려 있으면 닫고, 닫혀 있으면 이 줄에서 연다.
             fence_open = match fence_open {
-                Some(_) => None,
-                None => Some(line_no),
+                // 여는 펜스보다 짧은 런은 닫지 못한다. 4-백틱 블록 안의 3-백틱 줄은
+                // 마크다운을 설명하는 문서에서 흔하고, 닫는 것으로 세면 오탐이 난다.
+                Some((_, open_run)) if fence_run >= open_run => None,
+                Some(open) => Some(open),
+                None => Some((line_no, fence_run)),
             };
         }
         if fence_marker || fence_open.is_some() {
@@ -75,8 +78,13 @@ pub fn parse_document(path: DocPath, source: &str) -> Result<Document, Vec<Diagn
             continue;
         }
 
-        // `## ` 는 새 topic 의 시작이다. `###` 이하는 topic 본문의 마크다운 헤딩이다.
-        if let Some(heading) = trimmed.strip_prefix("## ") {
+        // `##` 는 새 topic 의 시작이다. `###` 이하는 topic 본문의 마크다운 헤딩이다.
+        // 뒤의 공백을 요구하면 `##` 와 `##<탭>제목` 이 이름 검사를 통째로 빠져나가
+        // 선언 줄이 본문에 섞인다.
+        if let Some(heading) = trimmed
+            .strip_prefix("##")
+            .filter(|rest| !rest.starts_with('#'))
+        {
             let name = heading.trim();
             // 헤딩 줄은 바로 아래에서 continue 하므로 짝 검사(K104)를 아예 받지 않는다.
             // 폴백이 없으므로 여기의 두 판정이 유일한 방어선이다.
@@ -129,7 +137,7 @@ pub fn parse_document(path: DocPath, source: &str) -> Result<Document, Vec<Diagn
     }
 
     // 닫히지 않은 펜스는 나머지 줄을 통째로 삼켜 topic 분할과 참조 수집을 조용히 끈다.
-    if let Some(line) = fence_open {
+    if let Some((line, _)) = fence_open {
         diagnostics.push(펜스_미종료(&path, line));
     }
 
@@ -231,7 +239,8 @@ fn parse_keyword_line(path: &DocPath, rest: &str, line_no: usize) -> Result<Keyw
     let definition_part = rest[colon + 1..].trim();
 
     // 이름은 백틱으로 감싼 조각들이며 `.` 로 계층을 이룬다.
-    let names = scan_symbols(name_part).unwrap_or_default();
+    // `colon` 은 백틱 밖에서 찾았으므로 그 앞은 반드시 균형이 맞는다.
+    let names = scan_symbols(name_part).expect("백틱 밖의 `:` 앞은 균형이 맞는다");
     if names.is_empty() {
         return Err(keyword_문법_오류(
             path,
@@ -241,10 +250,21 @@ fn parse_keyword_line(path: &DocPath, rest: &str, line_no: usize) -> Result<Keyw
     }
 
     // 줄 끝의 `#`상세 topic`` 은 선택이다. 없으면 전부가 한 줄 정의다.
-    let (definition, detail) = match definition_part.rfind("#`") {
-        Some(marker) => {
+    // 마커는 공백 뒤에만 온다 (스펙 4.3 예시). 이 조건이 없으면 `C#` 같은 심볼의
+    // `#` 와 그 닫는 백틱이 마커로 오인되어 합법 선언이 거부된다.
+    // ponytail: 심볼 이름이 ` #` 로 끝나고 그 뒤가 심볼 하나로 깔끔히 끝나는
+    // 경우(`` `A #`B` ``)는 여전히 오인한다. 그 표기가 실제로 나타나면 마커 탐색을
+    // find_definition_colon 처럼 백틱 안팎을 추적하는 스캔으로 올린다.
+    let marker = definition_part
+        .rfind("#`")
+        .filter(|&marker| definition_part[..marker].ends_with(' '));
+
+    let (definition, detail) = match marker.and_then(|marker| {
+        // 뒤쪽이 심볼 하나로 파싱되지 않으면 그 `#` 는 애초에 마커가 아니었다.
+        scan_symbols(&definition_part[marker + 1..]).map(|symbols| (marker, symbols))
+    }) {
+        Some((marker, mut tail_symbols)) => {
             let tail = &definition_part[marker + 1..];
-            let mut tail_symbols = scan_symbols(tail).unwrap_or_default();
             // 마커 뒤는 상세 심볼 하나로 끝나야 한다. 텍스트가 더 남아 있는데도
             // 마커로 인정하면 그 텍스트가 정의에서 조용히 사라진다.
             if tail_symbols.len() != 1 || !tail.ends_with('`') {
@@ -270,8 +290,10 @@ fn parse_keyword_line(path: &DocPath, rest: &str, line_no: usize) -> Result<Keyw
 
     // 정의 안의 백틱도 심볼 참조다 (스펙 4.2 "본문과 선언부의 모든 백틱").
     // 이름과 상세 topic 은 각각 name·detail 이 이미 들고 있으므로 refs 에 넣지 않는다.
+    // 마커가 인정되면 tail 은 정확히 한 쌍이므로, 균형 잡힌 definition_part 에서
+    // 잘라낸 앞부분도 반드시 균형이 맞는다.
     let refs = scan_symbols(definition)
-        .unwrap_or_default()
+        .expect("균형 잡힌 정의에서 한 쌍을 뗀 나머지도 균형이 맞는다")
         .into_iter()
         .map(|symbol| (symbol, line_no))
         .collect();

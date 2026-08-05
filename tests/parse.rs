@@ -111,6 +111,27 @@ keyword `환불`: `결제` 를 되돌리는 행위 #`환불의 상세`
     assert_eq!(doc.keywords[0].detail, Some("환불의 상세".to_string()));
 }
 
+/// 심볼 이름 안의 `#` 는 상세 마커가 아니다. `C#`·`F#` 같은 이름이 현실적이다.
+/// 마커는 공백 뒤에만 오므로 이름 끝의 `#` 와 그 닫는 백틱을 마커로 오인하면 안 된다.
+#[test]
+fn 샾이_든_심볼을_상세_마커로_오인하지_않는다() {
+    let source = r#"---
+description: 결제 정책 문서
+---
+
+keyword `언어`: `C#` 과 `F#` 을 뜻한다
+"#;
+
+    let doc = parse::parse_document(문서경로(), source).unwrap();
+
+    assert_eq!(
+        doc.keywords[0].refs,
+        vec![("C#".to_string(), 5), ("F#".to_string(), 5)]
+    );
+    assert_eq!(doc.keywords[0].detail, None);
+    assert_eq!(doc.keywords[0].definition, "`C#` 과 `F#` 을 뜻한다");
+}
+
 /// 상세 마커는 줄 끝의 선택 항목이다. 뒤에 텍스트가 남으면 정의가 조용히 잘리므로 error 다.
 #[test]
 fn 줄_끝이_아닌_상세_마커는_에러다() {
@@ -275,10 +296,45 @@ description: 결제 정책 문서
 
     let diagnostics = parse::parse_document(문서경로(), source).unwrap_err();
 
+    assert_eq!(diagnostics.len(), 1);
     assert_eq!(diagnostics[0].code, "K108");
     assert_eq!(diagnostics[0].severity, Severity::Error);
     assert_eq!(diagnostics[0].locations[0].line, 7);
     assert!(!diagnostics[0].fixes.is_empty());
+}
+
+/// 여는 펜스보다 짧은 백틱 런은 펜스를 닫지 못한다.
+/// 4-백틱 블록 안에 3-백틱 줄을 담는 것은 마크다운을 설명하는 문서에서 흔하다.
+#[test]
+fn 네개짜리_펜스는_세개짜리로_닫히지_않는다() {
+    let source = r#"---
+description: 결제 정책 문서
+---
+
+## 마크다운 안내
+
+````markdown
+```rust
+````
+"#;
+
+    let doc = parse::parse_document(문서경로(), source).unwrap();
+
+    assert_eq!(doc.topics.len(), 1);
+    assert!(doc.topics[0].body.contains("```rust"));
+}
+
+/// `##` 뒤에 공백이 없어도 topic 헤딩이다. 아니면 이름 검사를 통째로 빠져나가
+/// 선언 줄이 본문에 섞여 Task 8 의 rev 해시에 들어간다.
+#[test]
+fn 공백_없는_이중샾도_헤딩_이름_검사를_받는다() {
+    let source = "---\ndescription: 결제 정책 문서\n---\n\n##\n\n본문이다.\n";
+
+    let diagnostics = parse::parse_document(문서경로(), source).unwrap_err();
+
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(diagnostics[0].code, "K107");
+    assert_eq!(diagnostics[0].locations[0].line, 5);
 }
 
 /// 이름이 빈 topic 은 CLI 로 주소를 댈 수 없다 — K105 가 막는 것과 같은 부류다.
@@ -351,7 +407,7 @@ description: 결제 정책 문서
 
 /// topic 헤딩에 백틱이 있으면 error 여야 한다.
 /// 백틱이 든 헤딩은 CLI 인자로 주소를 댈 수 없다 (스펙 6.0).
-/// 짝이 맞는 백틱은 K104 로 잡히지 않으므로 K105 만이 막는다.
+/// 헤딩 줄은 짝이 맞든 아니든 K104 를 아예 받지 않으므로 이 판정만이 막는다.
 #[test]
 fn topic_헤딩에_백틱이_있으면_에러다() {
     let source = r#"---
