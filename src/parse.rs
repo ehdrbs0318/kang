@@ -15,14 +15,16 @@
 //! | `K106` | 코드 펜스가 닫히지 않음 |
 //! | `K107` | topic 헤딩에 이름이 없음 |
 //! | `K108` | 백틱 쌍 안이 비어 있음 |
+//! | `K109` | import 선언 문법이 올바르지 않음 |
+//! | `K110` | modifier 문법이 올바르지 않음 |
+//! | `K111` | exception / cover 선언 문법이 올바르지 않음 |
 
 use crate::ast::{
-    Diagnostic, DocPath, Document, Fix, FixKind, Keyword, KeywordName, Location, Severity, Topic,
+    Diagnostic, DocPath, Document, Exception, Fix, FixKind, Import, Keyword, KeywordName, Location,
+    Severity, SymbolKind, SymbolRef, Topic,
 };
 
 /// 소스 한 파일을 Document 로 파싱한다.
-///
-/// `imports` / `exceptions` / `covers` / `iknow` / `uncoded` 는 Task 3 이 채운다.
 ///
 /// # 매개변수
 /// - `path`: 프로젝트 루트 기준 문서 경로
@@ -49,6 +51,7 @@ pub fn parse_document(path: DocPath, source: &str) -> Result<Document, Vec<Diagn
         }
     };
 
+    let mut imports: Vec<Import> = Vec::new();
     let mut keywords: Vec<Keyword> = Vec::new();
     let mut topics: Vec<Topic> = Vec::new();
     // 열려 있는 코드 펜스의 (시작 줄, 백틱 개수). 닫히면 None 으로 돌아간다.
@@ -85,21 +88,45 @@ pub fn parse_document(path: DocPath, source: &str) -> Result<Document, Vec<Diagn
             .strip_prefix("##")
             .filter(|rest| !rest.starts_with('#'))
         {
-            let name = heading.trim();
+            // modifier 를 **먼저** 잘라낸다. 순서를 반대로 하면 `// iknow` 대상의 백틱이
+            // K105 로 오인되어 스펙 4.4 가 보장하는 합법 문서가 거부된다.
+            let (heading_text, modifier) = split_modifier(heading);
+            let name = heading_text.trim();
+
             // 헤딩 줄은 바로 아래에서 continue 하므로 짝 검사(K104)를 아예 받지 않는다.
             // 폴백이 없으므로 여기의 두 판정이 유일한 방어선이다.
-            if heading.contains('`') {
+            if heading_text.contains('`') {
                 // 백틱이 든 이름은 CLI 인자로 주소를 댈 수 없다 (스펙 6.0).
                 diagnostics.push(헤딩_백틱(&path, name, line_no));
             } else if name.is_empty() {
                 // 이름이 없는 topic 도 같은 이유로 주소를 댈 수 없다.
                 diagnostics.push(헤딩_이름_없음(&path, line_no));
             }
+
+            // modifier 는 선언이지 서술이 아니므로 본문에서도 빠진다 (스펙 4.8).
+            // 다만 본문 계약은 "헤딩 포함 원문" 이라 헤딩 줄 자체는 남는다.
+            // `heading` 은 `raw` 의 접미사이므로 길이 차이로 잘라낼 자리를 얻는다.
+            let body = raw[..raw.len() - heading.len() + heading_text.len()].trim_end();
+
+            // topic 헤딩은 `// uncoded` 를 받을 수 있는 유일한 자리다 (스펙 4.5).
+            let (uncoded, iknow) = match modifier {
+                Some(text) => match 백틱_검사(&path, text, line_no)
+                    .and_then(|_| parse_modifier(&path, text, line_no, true))
+                {
+                    Ok(parsed) => parsed,
+                    Err(diagnostic) => {
+                        diagnostics.push(diagnostic);
+                        (false, Vec::new())
+                    }
+                },
+                None => (false, Vec::new()),
+            };
+
             topics.push(Topic {
                 name: name.to_string(),
-                body: raw.to_string(),
-                uncoded: false,
-                iknow: Vec::new(),
+                body: body.to_string(),
+                uncoded,
+                iknow,
                 refs: Vec::new(),
                 exceptions: Vec::new(),
                 covers: Vec::new(),
@@ -108,10 +135,58 @@ pub fn parse_document(path: DocPath, source: &str) -> Result<Document, Vec<Diagn
             continue;
         }
 
+        // import 는 파일 최상단의 선언이다 (스펙 4.7). 첫 topic 이후의 같은 낱말은
+        // 서술 본문이므로 선언으로 가로채지 않는다.
+        if topics.is_empty()
+            && let Some(rest) = trimmed.strip_prefix("import ")
+        {
+            match parse_import_line(&path, rest, line_no) {
+                Ok(import) => imports.push(import),
+                Err(diagnostic) => diagnostics.push(diagnostic),
+            }
+            continue;
+        }
+
         // keyword 선언은 서술이 아니라 선언이므로 topic 본문에 담지 않는다 (스펙 4.8).
         if let Some(rest) = trimmed.strip_prefix("keyword ") {
             match parse_keyword_line(&path, rest, line_no) {
                 Ok(keyword) => keywords.push(keyword),
+                Err(diagnostic) => diagnostics.push(diagnostic),
+            }
+            continue;
+        }
+
+        // exception 선언도 서술이 아니므로 본문에서 빠진다 (스펙 4.8).
+        if let Some(rest) = trimmed.strip_prefix("exception ") {
+            // exception 의 의미는 그것을 선언한 topic 의 맥락에서 나오고 rev 핀도
+            // 그 topic 의 해시다 (스펙 4.8). topic 밖에서는 선언이 성립하지 않는다.
+            let Some(topic) = topics.last_mut() else {
+                diagnostics.push(선언_문법_오류(
+                    &path,
+                    line_no,
+                    "exception 은 topic 안에서만 선언할 수 있습니다. 이 선언은 어떤 topic 의 맥락에도 속하지 않습니다.".to_string(),
+                ));
+                continue;
+            };
+            match parse_exception_line(&path, rest, line_no) {
+                Ok(exception) => topic.exceptions.push(exception),
+                Err(diagnostic) => diagnostics.push(diagnostic),
+            }
+            continue;
+        }
+
+        // cover 선언도 마찬가지다.
+        if let Some(rest) = trimmed.strip_prefix("cover ") {
+            let Some(topic) = topics.last_mut() else {
+                diagnostics.push(선언_문법_오류(
+                    &path,
+                    line_no,
+                    "cover 는 topic 안에서만 선언할 수 있습니다. 이 선언은 어떤 topic 의 맥락에도 속하지 않습니다.".to_string(),
+                ));
+                continue;
+            };
+            match parse_cover_line(&path, rest, line_no) {
+                Ok(name) => topic.covers.push((name, line_no)),
                 Err(diagnostic) => diagnostics.push(diagnostic),
             }
             continue;
@@ -149,7 +224,7 @@ pub fn parse_document(path: DocPath, source: &str) -> Result<Document, Vec<Diagn
     Ok(Document {
         path,
         description,
-        imports: Vec::new(),
+        imports,
         keywords,
         topics,
     })
@@ -214,8 +289,13 @@ fn parse_frontmatter(
 /// 파싱한 [`Keyword`]
 ///
 /// # 오류
-/// 백틱 짝이 맞지 않으면 `K104`, 이름이나 한 줄 정의가 없으면 `K103` 진단
+/// 백틱 짝이 맞지 않으면 `K104`, 이름이나 한 줄 정의가 없으면 `K103`,
+/// modifier 가 올바르지 않으면 `K110` 진단
 fn parse_keyword_line(path: &DocPath, rest: &str, line_no: usize) -> Result<Keyword, Diagnostic> {
+    // modifier 를 먼저 가른다. `// iknow` 대상은 한 줄 정의가 아니므로 rev 해시의
+    // 입력(스펙 4.8)에 섞이면 핀이 조용히 어긋난다.
+    let (rest, modifier) = split_modifier(rest);
+
     // 이름과 정의 양쪽의 백틱이 모두 닫혀 있어야 구분자를 신뢰할 수 있다.
     // 빈 백틱 쌍은 가리키는 심볼이 없다. 이름·정의·상세 어디에 있든 마찬가지다.
     백틱_검사(path, rest, line_no)?;
@@ -294,14 +374,350 @@ fn parse_keyword_line(path: &DocPath, rest: &str, line_no: usize) -> Result<Keyw
         .map(|symbol| (symbol, line_no))
         .collect();
 
+    // keyword 선언은 `// uncoded` 를 받지 않는다 — 대응 코드 유무는 topic 의 속성이다.
+    let iknow = match modifier {
+        Some(text) => {
+            백틱_검사(path, text, line_no)?;
+            parse_modifier(path, text, line_no, false)?.1
+        }
+        None => Vec::new(),
+    };
+
     Ok(Keyword {
         name: KeywordName(names),
         definition: definition.to_string(),
         detail,
-        iknow: Vec::new(),
+        iknow,
         refs,
         line: line_no,
     })
+}
+
+/// `import ` 접두사를 뗀 나머지를 [`Import`] 로 파싱한다.
+///
+/// `as` 와 `rev` 는 각각 선택이며 세 종류의 심볼 모두 핀을 가질 수 있다 (스펙 4.7).
+///
+/// # 매개변수
+/// - `path`: 진단에 담을 문서 경로
+/// - `rest`: `import ` 뒤의 나머지 텍스트
+/// - `line_no`: 선언이 등장한 줄 번호 (1-based)
+///
+/// # 반환값
+/// 파싱한 [`Import`]
+///
+/// # 오류
+/// 백틱 짝이 맞지 않으면 `K104`, 빈 백틱 쌍이면 `K108`,
+/// 대상·별칭·핀 문법이 맞지 않으면 `K109` 진단
+fn parse_import_line(path: &DocPath, rest: &str, line_no: usize) -> Result<Import, Diagnostic> {
+    // import 줄의 심볼 주소는 백틱으로 쓰므로 짝 검사를 반드시 받아야 한다.
+    백틱_검사(path, rest, line_no)?;
+    let rest = rest.trim();
+
+    // `rev "<핀>"` 은 줄 끝의 선택 토큰이다. 백틱 밖에서만 찾아 별칭 안의 낱말과 구분한다.
+    let (rest, rev) = match find_outside_backticks(rest, " rev ") {
+        Some(at) => {
+            let value = rest[at + " rev ".len()..].trim();
+            // 핀은 큰따옴표로 감싼다. 벗기지 못한 것을 그대로 담으면 따옴표가 해시에 섞인다.
+            let Some(value) = value.strip_prefix('"').and_then(|v| v.strip_suffix('"')) else {
+                return Err(import_문법_오류(
+                    path,
+                    line_no,
+                    format!("rev 핀 {value} 이 큰따옴표로 감싸여 있지 않습니다."),
+                ));
+            };
+            (&rest[..at], Some(value.to_string()))
+        }
+        None => (rest, None),
+    };
+
+    // `as `<별칭>`` 도 선택이다. 별칭은 백틱으로 감싼 이름 하나다.
+    let (target, alias) = match find_outside_backticks(rest, " as ") {
+        Some(at) => {
+            let alias = rest[at + " as ".len()..].trim();
+            let names = scan_symbols(alias).unwrap_or_default();
+            match names.as_slice() {
+                [name] if alias == format!("`{name}`") => (&rest[..at], Some(name.clone())),
+                _ => {
+                    return Err(import_문법_오류(
+                        path,
+                        line_no,
+                        format!("as 뒤의 별칭 \"{alias}\" 이 백틱으로 감싼 이름 하나가 아닙니다."),
+                    ));
+                }
+            }
+        }
+        None => (rest, None),
+    };
+
+    let target = parse_symbol_ref(target.trim())
+        .map_err(|message| import_문법_오류(path, line_no, message))?;
+
+    Ok(Import {
+        target,
+        alias,
+        rev,
+        line: line_no,
+    })
+}
+
+/// `exception ` 접두사를 뗀 나머지를 [`Exception`] 으로 파싱한다.
+///
+/// # 매개변수
+/// - `path`: 진단에 담을 문서 경로
+/// - `rest`: `exception ` 뒤의 나머지 텍스트
+/// - `line_no`: 선언이 등장한 줄 번호 (1-based)
+///
+/// # 반환값
+/// 파싱한 [`Exception`]
+///
+/// # 오류
+/// 백틱 짝이 맞지 않으면 `K104`, 빈 백틱 쌍이면 `K108`,
+/// 선언 문법이 맞지 않으면 `K111`, modifier 가 올바르지 않으면 `K110` 진단
+fn parse_exception_line(
+    path: &DocPath,
+    rest: &str,
+    line_no: usize,
+) -> Result<Exception, Diagnostic> {
+    // modifier 를 먼저 가른다. iknow 대상의 백틱이 선언 문법 검사에 섞이면 안 된다.
+    let (declaration, modifier) = split_modifier(rest);
+    let names = 백틱_검사(path, declaration, line_no)?;
+    let declaration = declaration.trim();
+
+    // `pending` 은 선택 토큰이다. 정규 표기와 대조해 그 밖의 텍스트가 조용히 사라지는 것을 막는다.
+    let (name, pending) = match names.as_slice() {
+        [name] if declaration == format!("`{name}`") => (name.clone(), false),
+        [name] if declaration == format!("`{name}` pending") => (name.clone(), true),
+        _ => {
+            return Err(선언_문법_오류(
+                path,
+                line_no,
+                format!(
+                    "exception 선언 \"{declaration}\" 이 `이름` 또는 `이름` pending 형식이 아닙니다."
+                ),
+            ));
+        }
+    };
+
+    // exception 선언도 `// iknow` 를 받는 세 자리 중 하나다 (스펙 4.4).
+    let iknow = match modifier {
+        Some(text) => {
+            백틱_검사(path, text, line_no)?;
+            parse_modifier(path, text, line_no, false)?.1
+        }
+        None => Vec::new(),
+    };
+
+    Ok(Exception {
+        name,
+        pending,
+        iknow,
+        line: line_no,
+    })
+}
+
+/// `cover ` 접두사를 뗀 나머지에서 커버 대상 이름을 읽는다.
+///
+/// `cover` 는 `// iknow` 가 붙는 자리가 아니다 — 스펙 4.4 는 keyword·topic 헤딩·exception
+/// 셋만 든다.
+///
+/// # 매개변수
+/// - `path`: 진단에 담을 문서 경로
+/// - `rest`: `cover ` 뒤의 나머지 텍스트
+/// - `line_no`: 선언이 등장한 줄 번호 (1-based)
+///
+/// # 반환값
+/// 커버 대상 이름
+///
+/// # 오류
+/// 백틱 짝이 맞지 않으면 `K104`, 빈 백틱 쌍이면 `K108`, 선언 문법이 맞지 않으면 `K111` 진단
+fn parse_cover_line(path: &DocPath, rest: &str, line_no: usize) -> Result<String, Diagnostic> {
+    let names = 백틱_검사(path, rest, line_no)?;
+    let declaration = rest.trim();
+
+    // 대상은 백틱으로 감싼 이름 하나다. 뒤에 텍스트가 남으면 조용히 버리지 않는다.
+    match names.as_slice() {
+        [name] if declaration == format!("`{name}`") => Ok(name.clone()),
+        _ => Err(선언_문법_오류(
+            path,
+            line_no,
+            format!("cover 선언 \"{declaration}\" 이 `이름` 형식이 아닙니다. 대상은 하나입니다."),
+        )),
+    }
+}
+
+/// modifier 텍스트(`//` 뒤)를 해석한다.
+///
+/// # 매개변수
+/// - `path`: 진단에 담을 문서 경로
+/// - `text`: `//` 뒤의 텍스트. 앞뒤 공백이 제거되어 있어야 한다
+/// - `line_no`: modifier 가 붙은 줄 번호 (1-based)
+/// - `allow_uncoded`: `uncoded` 를 받을 수 있는 자리인지. topic 헤딩만 참이다
+///
+/// # 반환값
+/// `(uncoded 여부, iknow 대상들)`
+///
+/// # 오류
+/// 알 수 없는 modifier·대상 없는 `iknow`·자리에 맞지 않는 `uncoded` 면 `K110` 진단
+fn parse_modifier(
+    path: &DocPath,
+    text: &str,
+    line_no: usize,
+    allow_uncoded: bool,
+) -> Result<(bool, Vec<SymbolRef>), Diagnostic> {
+    // kang 에는 주석 문법이 없으므로 빈 modifier 는 오타다.
+    if text.is_empty() {
+        return Err(modifier_문법_오류(
+            path,
+            line_no,
+            "`//` 뒤에 modifier 가 없습니다.".to_string(),
+        ));
+    }
+
+    // `// uncoded` 는 대응 코드가 없는 것이 정상인 topic 을 표시한다 (스펙 4.5).
+    if text == "uncoded" {
+        if !allow_uncoded {
+            return Err(modifier_문법_오류(
+                path,
+                line_no,
+                "`// uncoded` 는 topic 헤딩에만 붙습니다.".to_string(),
+            ));
+        }
+        return Ok((true, Vec::new()));
+    }
+
+    // ponytail: 한 줄에 modifier 하나만 받는다. 스펙 4.4·4.5 의 예시가 전부 하나뿐이라
+    // `// uncoded // iknow …` 는 문법이 아니다. 둘을 함께 붙일 일이 생기면 그때 올린다.
+    let targets = match text.strip_prefix("iknow") {
+        // `iknow` 뒤에는 공백으로 구분한 대상 목록이 온다. `iknowX` 는 다른 낱말이다.
+        Some(targets) if targets.is_empty() || targets.starts_with(char::is_whitespace) => {
+            targets.trim()
+        }
+        _ => {
+            return Err(modifier_문법_오류(
+                path,
+                line_no,
+                format!("알 수 없는 modifier 입니다: \"{text}\""),
+            ));
+        }
+    };
+
+    // 대상이 없는 `iknow` 는 아무것도 인지하지 않는다.
+    if targets.is_empty() {
+        return Err(modifier_문법_오류(
+            path,
+            line_no,
+            "`// iknow` 에 대상이 없습니다.".to_string(),
+        ));
+    }
+
+    let mut iknow = Vec::new();
+    let mut rest = targets;
+
+    // 대상은 쉼표로 나열한다 (스펙 4.4). 백틱 안의 쉼표는 심볼 이름의 일부다.
+    loop {
+        let (piece, next) = match find_outside_backticks(rest, ",") {
+            Some(at) => (&rest[..at], Some(&rest[at + 1..])),
+            None => (rest, None),
+        };
+        iknow.push(
+            parse_symbol_ref(piece.trim())
+                .map_err(|message| modifier_문법_오류(path, line_no, message))?,
+        );
+        match next {
+            Some(next) => rest = next,
+            None => break,
+        }
+    }
+
+    Ok((false, iknow))
+}
+
+/// 심볼 주소 하나를 [`SymbolRef`] 로 파싱한다. import 대상과 iknow 대상이 같은 문법이다.
+///
+/// 문서 경로와 심볼 이름은 첫 `.`·`#`·`!` 가 가르며 그 구분자가 종류를 정한다.
+/// `.` 는 그 뒤로 키워드 계층에도 쓰이므로 첫 번째만 경계다 (스펙 4.1).
+///
+/// # 매개변수
+/// - `text`: `` `docs`/`A`.`결제` `` 형태의 주소. 앞뒤 공백이 제거되어 있어야 한다
+///
+/// # 반환값
+/// 파싱한 [`SymbolRef`]
+///
+/// # 오류
+/// 문법이 맞지 않으면 무엇이 틀렸는지 알리는 한 문장. 호출자가 자기 진단 코드로 감싼다
+fn parse_symbol_ref(text: &str) -> Result<SymbolRef, String> {
+    let Some((at, separator, kind)) = [
+        (".", SymbolKind::Keyword),
+        ("#", SymbolKind::Topic),
+        ("!", SymbolKind::Exception),
+    ]
+    .into_iter()
+    .filter_map(|(separator, kind)| {
+        find_outside_backticks(text, separator).map(|at| (at, separator, kind))
+    })
+    .min_by_key(|&(at, _, _)| at) else {
+        return Err(format!(
+            "심볼 주소 \"{text}\" 에 keyword `.` · topic `#` · exception `!` 구분자가 없습니다."
+        ));
+    };
+
+    // 구분자를 백틱 밖에서 찾았으므로 그 앞뒤는 각각 백틱 균형이 맞는다.
+    let (Some(doc), Some(name)) = (
+        scan_symbols(&text[..at]),
+        scan_symbols(&text[at + separator.len()..]),
+    ) else {
+        return Err(format!("심볼 주소 \"{text}\" 의 백틱 짝이 맞지 않습니다."));
+    };
+
+    if doc.is_empty() {
+        return Err(format!("심볼 주소 \"{text}\" 에 문서 경로가 없습니다."));
+    }
+    if name.is_empty() {
+        return Err(format!("심볼 주소 \"{text}\" 에 심볼 이름이 없습니다."));
+    }
+    // 계층을 갖는 것은 keyword 뿐이다 (스펙 4.3).
+    if kind != SymbolKind::Keyword && name.len() > 1 {
+        return Err(format!(
+            "`{separator}` 뒤에는 이름 조각이 하나만 옵니다. 계층은 keyword 의 `.` 만 갖습니다."
+        ));
+    }
+
+    // 읽어낸 결과로 정규 표기를 되만들어 원문과 대조한다. 어긋난 원문을 통과시키면
+    // 그 차이가 어디에도 남지 않고 조용히 사라진다.
+    // 무엇이 틀렸는지 단정하지 않고 "이렇게 읽혔다" 만 말한다 — 잉여 텍스트일 수도,
+    // 자리가 틀린 구분자일 수도 있어서 원인을 특정하면 진단이 거짓말을 한다.
+    let canonical = format!(
+        "{}{separator}{}",
+        백틱_결합(&doc, "/"),
+        백틱_결합(&name, ".")
+    );
+    if canonical != text {
+        return Err(format!(
+            "심볼 주소 \"{text}\" 가 `{canonical}` 로 읽혔습니다. 경로는 `/`, keyword 진입과 계층은 `.`, topic 은 `#`, exception 은 `!` 로만 잇습니다."
+        ));
+    }
+
+    Ok(SymbolRef {
+        doc: DocPath(doc),
+        kind,
+        name,
+    })
+}
+
+/// 이름 조각들을 각각 백틱으로 감싸고 `separator` 로 잇는다.
+///
+/// # 매개변수
+/// - `names`: 이름 조각들
+/// - `separator`: 조각 사이에 넣을 구분자
+///
+/// # 반환값
+/// `` `a`/`b` `` 형태의 문자열
+fn 백틱_결합(names: &[String], separator: &str) -> String {
+    names
+        .iter()
+        .map(|name| format!("`{name}`"))
+        .collect::<Vec<String>>()
+        .join(separator)
 }
 
 /// 한 줄의 백틱 쌍을 검사하고 그 안의 이름들을 돌려준다.
@@ -325,6 +741,32 @@ fn 백틱_검사(path: &DocPath, text: &str, line_no: usize) -> Result<Vec<Strin
         return Err(빈_심볼(path, line_no));
     }
     Ok(symbols)
+}
+
+/// 선언 줄을 선언부와 modifier 부로 가른다.
+///
+/// modifier 의 `//` 는 **공백 뒤에만** 온다. 이 조건이 없으면 `https://` 같은 본문
+/// 표기를 modifier 로 가로채 합법 문서를 "알 수 없는 modifier" 로 거부한다.
+///
+/// # 매개변수
+/// - `text`: 선언 줄에서 `keyword `·`##` 등의 접두사를 뗀 나머지
+///
+/// # 반환값
+/// `(선언부, modifier 텍스트)`. modifier 가 없으면 두 번째가 `None`
+fn split_modifier(text: &str) -> (&str, Option<&str>) {
+    let mut base = 0;
+
+    // 백틱 밖의 `//` 를 앞에서부터 훑는다. 백틱 밖에서 찾았다는 것은 그 앞의 백틱이
+    // 균형을 이룬다는 뜻이므로, 후보를 지나 이어서 스캔해도 안팎 판정이 어긋나지 않는다.
+    while let Some(offset) = find_outside_backticks(&text[base..], "//") {
+        let at = base + offset;
+        if text[..at].ends_with(char::is_whitespace) {
+            return (&text[..at], Some(text[at + 2..].trim()));
+        }
+        base = at + 2;
+    }
+
+    (text, None)
 }
 
 /// 한 줄에서 백틱 쌍 안의 심볼 이름을 등장 순서대로 뽑는다.
@@ -605,6 +1047,87 @@ fn keyword_문법_오류(path: &DocPath, line: usize, message: String) -> Diagno
             kind: FixKind::Edit,
             doc: Some(path.clone()),
             action: "이 줄을 `keyword `<이름>`: <한 줄 정의>` 형식으로 고치세요. 상세 설명이 필요하면 줄 끝에 `#`<topic 이름>`` 을 붙입니다".to_string(),
+        }],
+    }
+}
+
+/// import 선언 문법이 올바르지 않다는 진단을 만든다.
+///
+/// # 매개변수
+/// - `path`: 대상 문서 경로
+/// - `line`: 선언이 있는 줄 번호
+/// - `message`: 무엇이 틀렸는지 알리는 한 문장
+///
+/// # 반환값
+/// `K109` 진단
+fn import_문법_오류(path: &DocPath, line: usize, message: String) -> Diagnostic {
+    Diagnostic {
+        severity: Severity::Error,
+        code: "K109",
+        message,
+        locations: vec![Location {
+            doc: path.clone(),
+            line,
+            note: "이 import 선언".to_string(),
+        }],
+        fixes: vec![Fix {
+            kind: FixKind::Edit,
+            doc: Some(path.clone()),
+            action: "이 줄을 `import `<경로>`/`<문서>`.`<keyword>`` 형식으로 고치세요. topic 은 `#`, exception 은 `!` 로 가리킵니다. 별칭은 ` as `<별칭>``, 핀은 ` rev \"<해시>\"` 로 덧붙입니다".to_string(),
+        }],
+    }
+}
+
+/// modifier 문법이 올바르지 않다는 진단을 만든다.
+///
+/// # 매개변수
+/// - `path`: 대상 문서 경로
+/// - `line`: modifier 가 붙은 줄 번호
+/// - `message`: 무엇이 틀렸는지 알리는 한 문장
+///
+/// # 반환값
+/// `K110` 진단
+fn modifier_문법_오류(path: &DocPath, line: usize, message: String) -> Diagnostic {
+    Diagnostic {
+        severity: Severity::Error,
+        code: "K110",
+        message,
+        locations: vec![Location {
+            doc: path.clone(),
+            line,
+            note: "이 줄의 modifier".to_string(),
+        }],
+        fixes: vec![Fix {
+            kind: FixKind::Edit,
+            doc: Some(path.clone()),
+            action: "이 줄 끝의 modifier 를 `// iknow `<경로>`/`<문서>`.`<이름>`` 로 고치세요. 대상이 여럿이면 쉼표로 나열합니다. topic 헤딩이라면 `// uncoded` 도 쓸 수 있습니다. kang 에는 주석 문법이 없으므로 그 밖의 `//` 는 지우세요".to_string(),
+        }],
+    }
+}
+
+/// exception / cover 선언 문법이 올바르지 않다는 진단을 만든다.
+///
+/// # 매개변수
+/// - `path`: 대상 문서 경로
+/// - `line`: 선언이 있는 줄 번호
+/// - `message`: 무엇이 틀렸는지 알리는 한 문장
+///
+/// # 반환값
+/// `K111` 진단
+fn 선언_문법_오류(path: &DocPath, line: usize, message: String) -> Diagnostic {
+    Diagnostic {
+        severity: Severity::Error,
+        code: "K111",
+        message,
+        locations: vec![Location {
+            doc: path.clone(),
+            line,
+            note: "이 exception / cover 선언".to_string(),
+        }],
+        fixes: vec![Fix {
+            kind: FixKind::Edit,
+            doc: Some(path.clone()),
+            action: "이 줄을 `exception `<이름>`` (정책이 아직 없으면 뒤에 ` pending`) 또는 `cover `<이름>`` 형식으로 고치고, `##` 헤딩으로 시작하는 topic 안에 두세요".to_string(),
         }],
     }
 }

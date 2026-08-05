@@ -1,5 +1,6 @@
-// `parse::parse_document` 의 frontmatter / keyword / topic 파싱을 검증하는 통합 테스트.
-use kang::ast::{DocPath, Severity};
+// `parse::parse_document` 의 frontmatter / keyword / topic / import / exception /
+// cover / modifier 파싱을 검증하는 통합 테스트.
+use kang::ast::{DocPath, Severity, SymbolKind};
 use kang::parse;
 
 /// 테스트가 공용으로 쓰는 문서 경로 `docs/A`.
@@ -498,6 +499,582 @@ description: 결제 정책 문서
     assert_eq!(diagnostics[0].severity, Severity::Error);
     assert_eq!(diagnostics[0].locations[0].line, 5);
     assert!(!diagnostics[0].fixes.is_empty());
+}
+
+/// 마지막 구분자가 `.` 이면 keyword import 다.
+#[test]
+fn keyword_import_를_읽는다() {
+    let source = r#"---
+description: 결제 정책 문서
+---
+
+import `docs`/`A`.`결제`
+"#;
+
+    let doc = parse::parse_document(문서경로(), source).unwrap();
+
+    assert_eq!(doc.imports.len(), 1);
+    assert_eq!(
+        doc.imports[0].target.doc,
+        DocPath(vec!["docs".to_string(), "A".to_string()])
+    );
+    assert_eq!(doc.imports[0].target.kind, SymbolKind::Keyword);
+    assert_eq!(doc.imports[0].target.name, vec!["결제".to_string()]);
+    assert_eq!(doc.imports[0].alias, None);
+    assert_eq!(doc.imports[0].rev, None);
+    assert_eq!(doc.imports[0].line, 5);
+}
+
+/// 마지막 구분자가 `#` 이면 topic import 다.
+#[test]
+fn topic_import_를_읽는다() {
+    let source = r#"---
+description: 결제 정책 문서
+---
+
+import `docs`/`A`#`상품의 정보`
+"#;
+
+    let doc = parse::parse_document(문서경로(), source).unwrap();
+
+    assert_eq!(doc.imports.len(), 1);
+    assert_eq!(
+        doc.imports[0].target.doc,
+        DocPath(vec!["docs".to_string(), "A".to_string()])
+    );
+    assert_eq!(doc.imports[0].target.kind, SymbolKind::Topic);
+    assert_eq!(doc.imports[0].target.name, vec!["상품의 정보".to_string()]);
+}
+
+/// 마지막 구분자가 `!` 이면 exception import 다. 경로 조각은 여러 개일 수 있다.
+#[test]
+fn exception_import_를_읽는다() {
+    let source = r#"---
+description: 결제 정책 문서
+---
+
+import `docs`/`details`/`payment`!`무료 상품에 대한 청구서`
+"#;
+
+    let doc = parse::parse_document(문서경로(), source).unwrap();
+
+    assert_eq!(doc.imports.len(), 1);
+    assert_eq!(
+        doc.imports[0].target.doc,
+        DocPath(vec![
+            "docs".to_string(),
+            "details".to_string(),
+            "payment".to_string()
+        ])
+    );
+    assert_eq!(doc.imports[0].target.kind, SymbolKind::Exception);
+    assert_eq!(
+        doc.imports[0].target.name,
+        vec!["무료 상품에 대한 청구서".to_string()]
+    );
+}
+
+/// 첫 `.` 이후는 전부 키워드 이름 조각이다.
+#[test]
+fn 계층_키워드_import_를_읽는다() {
+    let source = r#"---
+description: 결제 정책 문서
+---
+
+import `docs`/`A`.`결제수단`.`카드`
+"#;
+
+    let doc = parse::parse_document(문서경로(), source).unwrap();
+
+    assert_eq!(
+        doc.imports[0].target.doc,
+        DocPath(vec!["docs".to_string(), "A".to_string()])
+    );
+    assert_eq!(doc.imports[0].target.kind, SymbolKind::Keyword);
+    assert_eq!(
+        doc.imports[0].target.name,
+        vec!["결제수단".to_string(), "카드".to_string()]
+    );
+}
+
+/// `as` 는 이 문서 안에서만 통하는 다른 이름을 준다.
+#[test]
+fn as_alias_를_읽는다() {
+    let source = r#"---
+description: 결제 정책 문서
+---
+
+import `docs`/`A`.`결제` as `A 결제`
+"#;
+
+    let doc = parse::parse_document(문서경로(), source).unwrap();
+
+    assert_eq!(doc.imports[0].alias, Some("A 결제".to_string()));
+    assert_eq!(doc.imports[0].rev, None);
+    assert_eq!(doc.imports[0].target.name, vec!["결제".to_string()]);
+}
+
+/// `rev` 는 참조 시점 내용의 해시 핀이다. 큰따옴표 안의 값만 담는다.
+#[test]
+fn rev_핀을_읽는다() {
+    let source = r#"---
+description: 결제 정책 문서
+---
+
+import `docs`/`A`.`결제` as `A 결제` rev "a3f9c1"
+"#;
+
+    let doc = parse::parse_document(문서경로(), source).unwrap();
+
+    assert_eq!(doc.imports[0].alias, Some("A 결제".to_string()));
+    assert_eq!(doc.imports[0].rev, Some("a3f9c1".to_string()));
+}
+
+/// `as` 와 `rev` 는 각각 선택이다. alias 없이 핀만 붙일 수 있어야 한다.
+#[test]
+fn as_없이_rev_만_있는_import_를_읽는다() {
+    let source = r#"---
+description: 결제 정책 문서
+---
+
+import `docs`/`A`#`상품의 정보` rev "7b21e0"
+"#;
+
+    let doc = parse::parse_document(문서경로(), source).unwrap();
+
+    assert_eq!(doc.imports[0].alias, None);
+    assert_eq!(doc.imports[0].rev, Some("7b21e0".to_string()));
+    assert_eq!(doc.imports[0].target.kind, SymbolKind::Topic);
+}
+
+/// exception 도 rev 핀을 가질 수 있다 (스펙 4.7 "세 종류 모두").
+#[test]
+fn exception_import_도_rev_핀을_읽는다() {
+    let source = r#"---
+description: 결제 정책 문서
+---
+
+import `docs`/`A`!`해외 결제` as `A 해외 결제` rev "e91b04"
+"#;
+
+    let doc = parse::parse_document(문서경로(), source).unwrap();
+
+    assert_eq!(doc.imports[0].target.kind, SymbolKind::Exception);
+    assert_eq!(doc.imports[0].alias, Some("A 해외 결제".to_string()));
+    assert_eq!(doc.imports[0].rev, Some("e91b04".to_string()));
+}
+
+/// `exception` 선언과 `pending` 표시를 topic 본문 안에서 읽어야 한다.
+#[test]
+fn exception_과_pending_을_읽는다() {
+    let source = r#"---
+description: 결제 정책 문서
+---
+
+## 결제 청구서와 결제의 관계
+
+모든 `청구서` 는 `결제` 에 의해 생겨난다.
+
+exception `무료 상품에 대한 청구서`
+exception `해외 결제` pending
+"#;
+
+    let doc = parse::parse_document(문서경로(), source).unwrap();
+
+    assert_eq!(doc.topics[0].exceptions.len(), 2);
+    assert_eq!(doc.topics[0].exceptions[0].name, "무료 상품에 대한 청구서");
+    assert!(!doc.topics[0].exceptions[0].pending);
+    assert_eq!(doc.topics[0].exceptions[0].line, 9);
+    assert_eq!(doc.topics[0].exceptions[1].name, "해외 결제");
+    assert!(doc.topics[0].exceptions[1].pending);
+    assert_eq!(doc.topics[0].exceptions[1].line, 10);
+}
+
+/// `cover` 는 다른 문서의 예외를 다루는 정책임을 이름과 줄로 기록한다.
+#[test]
+fn cover_를_읽는다() {
+    let source = r#"---
+description: 결제 정책 문서
+---
+
+## 무료상품 결제일 때 청구서
+
+무료상품은 0원 기록만 남긴다.
+
+cover `무료상품 청구서 예외`
+"#;
+
+    let doc = parse::parse_document(문서경로(), source).unwrap();
+
+    assert_eq!(
+        doc.topics[0].covers,
+        vec![("무료상품 청구서 예외".to_string(), 9)]
+    );
+}
+
+/// exception·cover 줄은 서술이 아니라 선언이므로 본문에서 빠진다 (스펙 4.8).
+/// 포함하면 예외를 하나 추가하는 것만으로 무관한 커버 문서가 전부 깨진다.
+#[test]
+fn exception_과_cover_줄은_body_에서_빠진다() {
+    let source = r#"---
+description: 결제 정책 문서
+---
+
+## 결제 청구서
+
+모든 `청구서` 는 `결제` 로 생긴다.
+
+exception `무료 상품에 대한 청구서`
+cover `해외 결제 예외`
+"#;
+
+    let doc = parse::parse_document(문서경로(), source).unwrap();
+
+    assert_eq!(
+        doc.topics[0].body,
+        "## 결제 청구서\n\n모든 `청구서` 는 `결제` 로 생긴다.\n"
+    );
+    // 선언의 이름은 exceptions·covers 가 들고 있으므로 refs 에 중복해 넣지 않는다.
+    assert_eq!(
+        doc.topics[0].refs,
+        vec![("청구서".to_string(), 7), ("결제".to_string(), 7)]
+    );
+}
+
+/// exception 선언에도 `// iknow` 가 붙는다 (스펙 4.4 "세 자리").
+#[test]
+fn exception_선언에도_iknow_가_붙는다() {
+    let source = r#"---
+description: 결제 정책 문서
+---
+
+## 결제 청구서
+
+exception `해외 결제` // iknow `docs`/`B`!`해외 결제`
+"#;
+
+    let doc = parse::parse_document(문서경로(), source).unwrap();
+
+    assert_eq!(doc.topics[0].exceptions[0].name, "해외 결제");
+    assert!(!doc.topics[0].exceptions[0].pending);
+    assert_eq!(doc.topics[0].exceptions[0].iknow.len(), 1);
+    assert_eq!(
+        doc.topics[0].exceptions[0].iknow[0].doc,
+        DocPath(vec!["docs".to_string(), "B".to_string()])
+    );
+    assert_eq!(
+        doc.topics[0].exceptions[0].iknow[0].kind,
+        SymbolKind::Exception
+    );
+    assert_eq!(
+        doc.topics[0].exceptions[0].iknow[0].name,
+        vec!["해외 결제".to_string()]
+    );
+}
+
+/// exception 은 선언된 topic 의 맥락에서 의미가 나온다 (스펙 4.8).
+/// topic 밖의 선언은 맥락도 해시도 없으므로 error 다.
+#[test]
+fn topic_밖의_exception_은_에러다() {
+    let source = r#"---
+description: 결제 정책 문서
+---
+
+exception `해외 결제`
+"#;
+
+    let diagnostics = parse::parse_document(문서경로(), source).unwrap_err();
+
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(diagnostics[0].code, "K111");
+    assert_eq!(diagnostics[0].severity, Severity::Error);
+    assert_eq!(diagnostics[0].locations[0].line, 5);
+    assert!(!diagnostics[0].fixes.is_empty());
+}
+
+/// `// iknow` 는 쉼표로 여러 대상을 나열한다.
+#[test]
+fn iknow_대상_목록을_쉼표로_읽는다() {
+    let source = r#"---
+description: 결제 정책 문서
+---
+
+keyword `금액`: 청구되는 원화 액수 // iknow `docs`/`B`.`금액`, `docs`/`C`.`금액`
+"#;
+
+    let doc = parse::parse_document(문서경로(), source).unwrap();
+
+    assert_eq!(doc.keywords[0].iknow.len(), 2);
+    assert_eq!(
+        doc.keywords[0].iknow[0].doc,
+        DocPath(vec!["docs".to_string(), "B".to_string()])
+    );
+    assert_eq!(doc.keywords[0].iknow[0].kind, SymbolKind::Keyword);
+    assert_eq!(doc.keywords[0].iknow[0].name, vec!["금액".to_string()]);
+    assert_eq!(
+        doc.keywords[0].iknow[1].doc,
+        DocPath(vec!["docs".to_string(), "C".to_string()])
+    );
+    assert_eq!(doc.keywords[0].iknow[1].name, vec!["금액".to_string()]);
+}
+
+/// `// iknow` 는 keyword 의 한 줄 정의에도 참조에도 섞이면 안 된다.
+/// 한 줄 정의는 rev 해시의 입력이므로(스펙 4.8) 섞이면 핀이 조용히 어긋난다.
+#[test]
+fn iknow_는_keyword_한줄정의와_참조에서_빠진다() {
+    let source = r#"---
+description: 결제 정책 문서
+---
+
+keyword `금액`: 청구되는 원화 액수 // iknow `docs`/`B`.`금액`
+"#;
+
+    let doc = parse::parse_document(문서경로(), source).unwrap();
+
+    assert_eq!(doc.keywords[0].definition, "청구되는 원화 액수");
+    assert!(doc.keywords[0].refs.is_empty());
+    assert_eq!(doc.keywords[0].iknow.len(), 1);
+}
+
+/// 상세 topic 마커는 modifier 를 뗀 뒤의 줄 끝을 본다.
+/// modifier 를 남긴 채 마커를 찾으면 뒤에 텍스트가 남았다며 합법 선언을 K103 으로 거부한다.
+#[test]
+fn 상세_마커와_iknow_가_한_줄에_같이_온다() {
+    let source = r#"---
+description: 결제 정책 문서
+---
+
+keyword `금액`: 청구되는 원화 액수 #`금액의 상세` // iknow `docs`/`B`.`금액`
+"#;
+
+    let doc = parse::parse_document(문서경로(), source).unwrap();
+
+    assert_eq!(doc.keywords[0].definition, "청구되는 원화 액수");
+    assert_eq!(doc.keywords[0].detail, Some("금액의 상세".to_string()));
+    assert_eq!(doc.keywords[0].iknow.len(), 1);
+}
+
+/// `iknow` 는 부인이지 참조가 아니다 — 그래프 간선을 만들지 않는다 (스펙 4.4).
+#[test]
+fn iknow_대상은_imports_에_들어가지_않는다() {
+    let source = r#"---
+description: 결제 정책 문서
+---
+
+keyword `금액`: 청구되는 원화 액수 // iknow `docs`/`B`.`금액`
+
+## 결제의 방법 // iknow `docs`/`B`#`결제의 방법`
+"#;
+
+    let doc = parse::parse_document(문서경로(), source).unwrap();
+
+    assert!(doc.imports.is_empty());
+    assert_eq!(doc.keywords[0].iknow.len(), 1);
+    assert_eq!(doc.topics[0].iknow.len(), 1);
+}
+
+/// topic 헤딩의 `// iknow` 대상은 백틱을 쓴다 (스펙 4.4).
+/// modifier 를 먼저 잘라내지 않으면 이 합법 문서가 K105 로 거부된다.
+#[test]
+fn iknow_가_붙은_topic_헤딩은_합법이며_이름에서_빠진다() {
+    let source = r#"---
+description: 결제 정책 문서
+---
+
+## 결제의 방법 // iknow `docs`/`B`#`결제의 방법`
+
+사용자는 결제를 한다.
+"#;
+
+    let doc = parse::parse_document(문서경로(), source).unwrap();
+
+    assert_eq!(doc.topics[0].name, "결제의 방법");
+    assert_eq!(doc.topics[0].iknow.len(), 1);
+    assert_eq!(
+        doc.topics[0].iknow[0].doc,
+        DocPath(vec!["docs".to_string(), "B".to_string()])
+    );
+    assert_eq!(doc.topics[0].iknow[0].kind, SymbolKind::Topic);
+    assert_eq!(doc.topics[0].iknow[0].name, vec!["결제의 방법".to_string()]);
+}
+
+/// `// uncoded` 는 이름에서도 본문에서도 빠진다. 본문은 헤딩 줄을 남긴다.
+#[test]
+fn uncoded_modifier_는_body_에서_제외된다() {
+    let source = r#"---
+description: 결제 정책 문서
+---
+
+## 조직의 문서 검토 절차 // uncoded
+
+본문이다.
+"#;
+
+    let doc = parse::parse_document(문서경로(), source).unwrap();
+
+    assert!(doc.topics[0].uncoded);
+    assert_eq!(doc.topics[0].name, "조직의 문서 검토 절차");
+    assert_eq!(doc.topics[0].body, "## 조직의 문서 검토 절차\n\n본문이다.");
+}
+
+/// 구분자가 `/` 뿐이면 어떤 심볼을 가리키는지 알 수 없다.
+#[test]
+fn 구분자가_없는_import_는_에러다() {
+    let source = r#"---
+description: 결제 정책 문서
+---
+
+import `docs`/`A`
+"#;
+
+    let diagnostics = parse::parse_document(문서경로(), source).unwrap_err();
+
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(diagnostics[0].code, "K109");
+    assert_eq!(diagnostics[0].severity, Severity::Error);
+    assert_eq!(diagnostics[0].locations[0].line, 5);
+    assert!(!diagnostics[0].fixes.is_empty());
+}
+
+/// import 대상 뒤에 정체 모를 텍스트가 남으면 조용히 버리지 않고 error 다.
+#[test]
+fn import_대상_뒤의_잉여_텍스트는_에러다() {
+    let source = r#"---
+description: 결제 정책 문서
+---
+
+import `docs`/`A`.`결제` 쓰레기
+"#;
+
+    let diagnostics = parse::parse_document(문서경로(), source).unwrap_err();
+
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(diagnostics[0].code, "K109");
+    assert_eq!(diagnostics[0].locations[0].line, 5);
+}
+
+/// import 줄의 심볼 주소는 백틱으로 쓰므로 짝 검사를 반드시 받아야 한다.
+#[test]
+fn import_줄의_짝없는_백틱은_에러다() {
+    let source = r#"---
+description: 결제 정책 문서
+---
+
+import `docs`/`A`.`결제
+"#;
+
+    let diagnostics = parse::parse_document(문서경로(), source).unwrap_err();
+
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(diagnostics[0].code, "K104");
+    assert_eq!(diagnostics[0].locations[0].line, 5);
+}
+
+/// import 경로의 빈 백틱 쌍은 가리키는 문서가 없다.
+#[test]
+fn import_대상의_빈_백틱은_에러다() {
+    let source = r#"---
+description: 결제 정책 문서
+---
+
+import `docs`/``.`결제`
+"#;
+
+    let diagnostics = parse::parse_document(문서경로(), source).unwrap_err();
+
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(diagnostics[0].code, "K108");
+    assert_eq!(diagnostics[0].locations[0].line, 5);
+}
+
+/// kang 에는 주석 문법이 없으므로 알 수 없는 modifier 는 조용히 버리지 않는다.
+#[test]
+fn 알_수_없는_modifier_는_에러다() {
+    let source = r#"---
+description: 결제 정책 문서
+---
+
+## 결제의 방법 // 메모
+"#;
+
+    let diagnostics = parse::parse_document(문서경로(), source).unwrap_err();
+
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(diagnostics[0].code, "K110");
+    assert_eq!(diagnostics[0].severity, Severity::Error);
+    assert_eq!(diagnostics[0].locations[0].line, 5);
+    assert!(!diagnostics[0].fixes.is_empty());
+}
+
+/// 대상이 하나도 없는 `// iknow` 는 아무것도 인지하지 않는다.
+#[test]
+fn iknow_대상이_없으면_에러다() {
+    let source = r#"---
+description: 결제 정책 문서
+---
+
+## 결제의 방법 // iknow
+"#;
+
+    let diagnostics = parse::parse_document(문서경로(), source).unwrap_err();
+
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(diagnostics[0].code, "K110");
+    assert_eq!(diagnostics[0].locations[0].line, 5);
+}
+
+/// `uncoded` 는 topic 헤딩 전용이다. keyword 에 붙으면 조용히 무시하지 않는다.
+#[test]
+fn keyword_에_붙은_uncoded_는_에러다() {
+    let source = r#"---
+description: 결제 정책 문서
+---
+
+keyword `결제`: 대금을 지불하는 행위 // uncoded
+"#;
+
+    let diagnostics = parse::parse_document(문서경로(), source).unwrap_err();
+
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(diagnostics[0].code, "K110");
+    assert_eq!(diagnostics[0].locations[0].line, 5);
+}
+
+/// modifier 만 있고 이름이 없는 헤딩은 여전히 주소를 댈 수 없다.
+#[test]
+fn modifier_만_있고_이름이_없는_헤딩은_에러다() {
+    let source = r#"---
+description: 결제 정책 문서
+---
+
+## // uncoded
+"#;
+
+    let diagnostics = parse::parse_document(문서경로(), source).unwrap_err();
+
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(diagnostics[0].code, "K107");
+    assert_eq!(diagnostics[0].locations[0].line, 5);
+}
+
+/// modifier 는 공백 뒤의 `//` 다. `https://` 같은 본문 표기를 가로채면
+/// 합법 문서가 "알 수 없는 modifier" 로 거부된다.
+#[test]
+fn 본문의_두_슬래시는_modifier_가_아니다() {
+    let source = r#"---
+description: 결제 정책 문서
+---
+
+keyword `주소`: https://example.com 형식의 문자열
+"#;
+
+    let doc = parse::parse_document(문서경로(), source).unwrap();
+
+    assert_eq!(
+        doc.keywords[0].definition,
+        "https://example.com 형식의 문자열"
+    );
+    assert!(doc.keywords[0].iknow.is_empty());
 }
 
 /// 문서 경로는 `/` 로 이은 전체 경로 하나로만 출력된다.
