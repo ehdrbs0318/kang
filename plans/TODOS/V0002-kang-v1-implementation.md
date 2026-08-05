@@ -11,7 +11,7 @@
 ## 전역 제약
 
 - 스펙 원본은 `plans/DONES/V0001-kang-language-design.md` (완료 시 이동). 모든 규칙의 근거는 여기다.
-- **의존성 추가 금지.** `sha2` 외에 크레이트를 넣지 않는다. 인자 파싱과 YAML 출력은 직접 쓴다 — v1에는 플래그가 하나도 없고 YAML 스키마가 고정이다.
+- **의존성 추가 금지.** `sha2` 외에 크레이트를 넣지 않는다. 인자 파싱과 YAML 출력은 직접 쓴다 — v1의 플래그는 `bless --import` 하나뿐이고 YAML 스키마가 고정이다.
 - `kang build` 기본 심각도는 **error**. error 발생 시 종료 코드 1, 조회 명령은 아무것도 출력하지 않는다.
 - 주석은 한글 TSDoc 대응 규격(rustdoc `///`)으로 작성한다. 함수·구조체·enum 전부.
 - 로깅 규칙 적용 대상 아님 — CLI 단발 실행이라 로그 레벨 시스템을 두지 않는다. 진단 출력이 그 역할을 한다.
@@ -32,6 +32,9 @@ src/
   yaml.rs      YAML 이미터
   show.rs      show 출력 구성 (재귀 임베드 + 중복 제거)
   bless.rs     rev 핀 갱신
+  init.rs      에이전트 진입점 생성 (스킬·CLAUDE.md·AGENTS.md·첫 문서)
+assets/
+  SKILL.md     kang 스킬 원본. init 이 프로젝트로 복사한다
 .github/workflows/
   release.yml  태그 푸시 시 크로스 플랫폼 바이너리 빌드 및 릴리즈
 tests/
@@ -414,7 +417,7 @@ pub fn report(diags: &[Diagnostic]) -> String;
 - 동의어 충돌 진단은 동의어를 선언한 owner 경로를 `locations` 에 담는다.
 - 사용 여부는 topic 별로 추적한다. 파일 전체에서 한 번이라도 쓰였으면 통과.
 
-**진단 출력 포맷** — 이 태스크에서 확정한다. LLM 이 스스로 고치는 유일한 입력이므로 여기서 흔들리면 안 된다.
+**진단 출력 포맷** — **스펙 5.1.1 에 완성된 예시 3건이 있다.** 그대로 따른다. 즉흥으로 정하지 않는다.
 
 - 모든 진단은 `code`(`K001` 형식), `message`, `locations`(최소 1개), `fixes` 를 갖는다.
 - `locations` 각 항목은 문서 경로·줄 번호·`note`(그 위치가 왜 관련되는지)를 갖는다. 순환 체인과 iknow 누락이 다중 위치의 대표 사례다.
@@ -435,8 +438,11 @@ pub fn report(diags: &[Diagnostic]) -> String;
   - `동의어와_같은_이름의_새_선언은_에러다`
   - `진단이_관련_위치를_전부_담는다`
   - `셸_명령_fix_는_인용되어_출력된다`
+  - `미해결_심볼_출력이_스펙_5_1_1_예시와_일치한다`
+  - `iknow_누락_출력이_스펙_5_1_1_예시와_일치한다`
+  - `rev_불일치_출력이_스펙_5_1_1_예시와_일치한다`
 - [ ] **Step 2: `cargo test` — 실패 확인**
-- [ ] **Step 3: 진단 출력 포맷 확정과 `report` 구현**
+- [ ] **Step 3: `report` 구현** — 스펙 5.1.1 의 예시 3건과 문자 단위로 일치해야 한다
 - [ ] **Step 4: `check_symbols` 의 8개 규칙 구현**
 - [ ] **Step 5: `cargo test` 통과 확인**
 - [ ] **Step 6: 커밋** — `feat: 심볼 진단 규칙`
@@ -535,6 +541,7 @@ pub fn check_revs(project: &Project, table: &SymbolTable) -> Vec<Diagnostic>;
 ```rust
 /// 서브커맨드를 파싱한다.
 enum Command {
+    Init,
     Build,
     /// kang bless <문서> --import <심볼>
     Bless { doc: String, import: String },
@@ -542,6 +549,8 @@ enum Command {
     Keywords(Option<String>),
     Refs(String),
     Show(String),
+    /// v2 기능. 종료 코드 3 으로 "아직 구현되지 않았다" 를 알린다.
+    Inspect,
 }
 
 /// 프로젝트를 로드하고 모든 진단을 돌린다.
@@ -554,14 +563,27 @@ fn compile() -> Result<(Project, SymbolTable, ImportGraph), Vec<Diagnostic>>;
 - `kang refs docs/A.결제`, `kang show 'docs/A#결제의 방법'` 처럼 `/`·`.`·`#`·`!` 만으로 파싱한다.
 - 공백이 있는 이름은 셸 인용이 필요하다. 정상 규약이다.
 
-**출력 규칙** (스펙 6.2)
+**출력 규칙** (스펙 6.3)
 - 한 라인이 의미론적 완결성을 갖는다. 경로는 항상 전체 경로, 계층 축약 없음.
 - `kang list [경로]` → `docs/A: {description}`
 - `kang keywords [경로]` → `docs/A.결제: 사용자가 상품 대금을 지불하는 행위`
 - `kang refs <키워드>` → `docs/A#결제의 방식`
 - `keywords` 스코프는 **경로 스코프만** 지원한다.
 
+**종료 코드** (스펙 6절)
+
+| 코드 | 의미 |
+|---|---|
+| 0 | 성공 |
+| 1 | 컴파일 error 존재 |
+| 2 | 사용법 오류 (알 수 없는 명령, 인자 부족, git 저장소 아님) |
+| 3 | v2 기능 호출 (`kang inspect`) |
+
+에이전트는 종료 코드로 분기한다. 1과 2를 섞으면 "문서를 고쳐야 한다" 와 "명령을 잘못 썼다" 를 구분할 수 없다.
+
 **핵심 규칙**: 조회 명령은 전부 `compile()` 을 먼저 거친다. error가 있으면 진단만 출력하고 종료 코드 1로 끝낸다. 문서는 한 줄도 출력하지 않는다.
+
+**`--help` 는 에이전트의 첫 접점이다.** 인자를 틀린 에이전트가 다음에 하는 일이 `kang --help` 다. 여기서 명령·인자 형식·종료 코드를 전부 보여줘야 재시도가 성공한다. 사용법 오류 시에도 같은 텍스트를 출력한다.
 
 `ponytail:` 인자 파싱을 직접 쓴다. 플래그는 `bless --import` 하나뿐이라 `match` 로 충분하다. 플래그가 늘면 clap 으로 교체.
 
@@ -576,6 +598,8 @@ fn compile() -> Result<(Project, SymbolTable, ImportGraph), Vec<Diagnostic>>;
   - `알_수_없는_서브커맨드는_사용법을_출력하고_종료코드_2_다`
   - `인자가_부족하면_사용법을_출력한다`
   - `kang_파일이_0개면_그렇다고_알린다`
+  - `inspect_는_v2_안내와_함께_종료코드_3_이다`
+  - `help_이_명령과_인자_형식과_종료코드를_전부_보여준다`
 - [ ] **Step 2: `cargo test` — 실패 확인**
 - [ ] **Step 3: 서브커맨드 디스패치와 `compile()` 구현**
 - [ ] **Step 4: `build` / `list` / `keywords` / `refs` 출력 구현**
@@ -627,7 +651,7 @@ pub enum ShowTarget {
     Topic(DocPath, String),
 }
 
-/// 스펙 6.3 의 YAML 을 만든다.
+/// 스펙 6.4 의 YAML 을 만든다.
 pub fn show(
     project: &Project,
     table: &SymbolTable,
@@ -635,12 +659,12 @@ pub fn show(
 ) -> String;
 ```
 
-**출력 스키마** — 스펙 6.3 그대로. 최상위 키 순서는 `path`, `keywords`, `referencingKeywords`, `exceptions`, `covers`, `topics`.
+**출력 스키마** — 스펙 6.4 그대로. 최상위 키 순서는 `path`, `keywords`, `referencingKeywords`, `exceptions`, `covers`, `topics`.
 
 - keyword 항목은 `name`·`description`·`referencedBy` 와, `#` 로 연결된 상세 topic 이 있으면 **`detail`(그 topic 의 전체 경로)** 을 담는다. 파싱만 하고 버리지 않는다.
 - 재귀 임베드는 `ImportGraph` 가 아니라 `Document.imports` 를 직접 순회한다. 참조 전파는 v2 다.
 
-**중복 제거**: 이미 전개한 topic·키워드는 방문 집합에 넣고, 두 번째부터는 경로 문자열만 넣는다. **깊이 제한은 v1 에 두지 않는다** — 손댈 때는 읽기 시점 옵션이 아니라 빌드 시점 구조 린트로 만든다 (스펙 6.3).
+**중복 제거**: 이미 전개한 topic·키워드는 방문 집합에 넣고, 두 번째부터는 경로 문자열만 넣는다. **깊이 제한은 v1 에 두지 않는다** — 손댈 때는 읽기 시점 옵션이 아니라 빌드 시점 구조 린트로 만든다 (스펙 6.4).
 
 `ponytail:` YAML 이미터를 직접 쓴다. 이미터 API 는 선언형 `seq`/`map` 만 노출하고 수동 들여쓰기 커서를 주지 않는다 — 짝 맞추기 실수가 구조적으로 불가능해야 한다. 한계는 인용 규칙이고, 한글 description 에 `: ` 가 들어가는 경우가 위험 지점이며 `scalar()` 테스트가 그걸 막는다. 스키마가 늘어나면 serde 기반 크레이트로 교체.
 
@@ -746,6 +770,64 @@ pub fn bless(
 
 ---
 
+## Task 14: `kang init` — 에이전트 진입점과 스킬
+
+**파일**
+- 생성: `src/init.rs`, `assets/SKILL.md`
+- 수정: `src/main.rs`
+- 테스트: `tests/cli.rs`
+
+**인터페이스**
+- 소비: 없음 (파일 생성만)
+- 산출:
+
+```rust
+/// 현재 프로젝트에 에이전트 진입점을 만든다.
+/// 기존 파일은 덮어쓰지 않고 섹션만 덧붙인다.
+pub fn init(root: &Path) -> Result<Vec<PathBuf>, String>;
+```
+
+**왜 필요한가**
+
+kang 의 주 사용자는 다른 프로젝트에서 일하는 LLM 에이전트다. 그런데 "LLM 은 원본을 보지 않는다" 는 원칙은 **강제할 수 없다** — 에이전트는 `.kang` 파일을 그냥 읽을 수 있다.
+
+그래서 이 원칙은 에이전트가 kang 의 존재와 사용법을 알 때만 성립한다. 저장소에 `.kang` 파일만 있으면 에이전트는 그게 무엇인지 모르고 `cat` 한다. 그리고 `cat` 으로 읽은 `.kang` 은 import 간접 참조 때문에 **마크다운보다 읽기 나쁘다.** 도구를 도입하고 오히려 나빠진다.
+
+**생성물**
+
+| 파일 | 처리 |
+|---|---|
+| `.claude/skills/kang/SKILL.md` | `assets/SKILL.md` 복사. 이미 있으면 건너뛴다 |
+| `AGENTS.md` | kang 섹션 덧붙임. 이미 kang 섹션이 있으면 건너뛴다 |
+| `CLAUDE.md` | 한 줄 덧붙임 — "이 프로젝트의 문서는 kang 으로 유지보수된다. kang 스킬을 사용하여야 한다" |
+| `docs/example.kang` | frontmatter 가 채워진 첫 문서 템플릿. 이미 `.kang` 파일이 있으면 건너뛴다 |
+
+**저장소에 커밋되는 프로젝트 스코프 파일로 만든다.** 전역 스킬 설치를 요구하면 설치 단계가 늘고 clone 하는 사람마다 상태가 달라진다.
+
+**스킬 내용** (스펙 6.1) — 케이스별 기대 동작을 기술한다.
+
+- 정책 조회: `keywords` → `refs` → `show`. `.kang` 을 직접 열지 않는다
+- 정책 작성: `show` 로 먼저 읽고, 복제하지 말고 `import` 한다
+- 컴파일 실패: 진단의 `fix` 를 그대로 적용한다
+- 이름 변경: 참조처를 전부 고치고 각각 `bless` 한다. 묘비를 남기지 않는다
+- 코드 수정 (v2): 언어별 애노테이션 가이드
+
+- [ ] **Step 1: 실패하는 테스트 작성** — 시나리오 6개
+  - `네_파일을_생성한다`
+  - `기존_CLAUDE_md_를_덮어쓰지_않고_섹션만_덧붙인다`
+  - `이미_kang_섹션이_있으면_건너뛴다`
+  - `이미_kang_파일이_있으면_예제를_만들지_않는다`
+  - `init_직후_build_가_통과한다`
+  - `생성된_SKILL_md_가_비어있지_않다`
+- [ ] **Step 2: `cargo test` — 실패 확인**
+- [ ] **Step 3: `assets/SKILL.md` 작성** — 위 다섯 케이스 전부
+- [ ] **Step 4: `init.rs` 구현 (섹션 덧붙임, 멱등성)**
+- [ ] **Step 5: `main.rs` 에 `init` 서브커맨드 연결**
+- [ ] **Step 6: `cargo test` 통과 확인**
+- [ ] **Step 7: 커밋** — `feat: kang init 과 에이전트 스킬`
+
+---
+
 ## Task 13: 배포 파이프라인
 
 **파일**
@@ -778,6 +860,7 @@ kang 의 소비자는 다른 프로젝트의 LLM 에이전트다. 그 프로젝�
 - [ ] fixture 프로젝트에서 `kang build` 종료 코드 0
 - [ ] 스펙 V0001 의 3~6절 전 항목이 구현됨 (7절 코드 연동은 v2, 8절은 비목표, 9절은 미결정 사항이라 구현 대상이 아님)
 - [ ] 태그 푸시 시 릴리즈 워크플로가 4개 타깃 바이너리를 산출
+- [ ] **빈 저장소에서 `kang init` → `kang build` 가 두 명령으로 통과한다** — TTHW 측정 기준
 - [ ] **`kang` 이 자기 저장소에서 동작한다** — 도그푸딩 착수 조건. `plans/`·`docs/adr/`·`CONTEXT.md` 이관은 별도 플랜
 
 ---
@@ -793,7 +876,7 @@ kang 의 소비자는 다른 프로젝트의 LLM 에이전트다. 그 프로젝�
 | 1 | 셸 백틱 충돌 | **CLI 인자에서 백틱 제거.** 본문 백틱은 유지. `fix` 문자열은 인용을 붙여 출력. 스펙 6.0 |
 | 2 | `iknow` 문법 + 순환 충돌 | **`iknow` 는 참조가 아니라 부인(disavowal).** import 간선을 만들지 않으므로 순환이 아니다. 경로와 상호성은 검증하고 rev 핀은 갖지 않는다. 스펙 4.4 |
 | 3 | rev 부트스트랩 데드락 | **핀 없이 쓰고 `bless` 가 삽입한다.** 더미 해시가 사라진다. 스펙 4.8 |
-| 4 | `bless` 줄 번호 주소 | **심볼 주소로 변경** — `kang bless <문서> --import <심볼>`. 스펙 6.1, [ADR-0003](../../docs/adr/0003-symbolic-addressing-not-line-numbers.md) |
+| 4 | `bless` 줄 번호 주소 | **심볼 주소로 변경** — `kang bless <문서> --import <심볼>`. 스펙 6.2, [ADR-0003](../../docs/adr/0003-symbolic-addressing-not-line-numbers.md) |
 | 5 | 프로젝트 루트 미정의 | **git 저장소 루트가 프로젝트 루트.** 설정 파일을 두지 않는다. 스펙 3절 |
 | 11 | 이름이 다른 개념 중복 | **동의어(`also`) 선언 도입.** owner 가 정본 이름 옆에 변형을 선언하고, 다른 파일이 그 이름으로 새 keyword 를 선언하면 error. 유사도 매칭이 아니라 결정론이다. 스펙 4.3 |
 | 12 | 더 단순한 대안 | **kang 이 정당하다.** 참조 코퍼스(ax-conta)가 이미 `Load when`·`Related`·Ubiquitous Language·living-document 재작성을 손으로 하고 있으나 **강제가 없다.** 50줄 해시 스크립트는 미해결 참조 error·owner 유일성·예외 커버리지를 주지 못한다 |
@@ -812,7 +895,7 @@ kang 의 소비자는 다른 프로젝트의 LLM 에이전트다. 그 프로젝�
 
 | # | 항목 | 결론 |
 |---|---|---|
-| 8 | `kang show` 깊이 무제한 | **v1 미구현, 모양만 확정.** 임계값을 데이터 없이 고르면 추측이므로 도그푸딩에서 실측한다. 손댈 때는 읽기 시점이 아니라 **빌드 시점 구조 린트**로 만든다 — "이 문서가 참조하는 정책이 너무 많다". 스펙 6.3 |
+| 8 | `kang show` 깊이 무제한 | **v1 미구현, 모양만 확정.** 임계값을 데이터 없이 고르면 추측이므로 도그푸딩에서 실측한다. 손댈 때는 읽기 시점이 아니라 **빌드 시점 구조 린트**로 만든다 — "이 문서가 참조하는 정책이 너무 많다". 스펙 6.4 |
 | 9 | `exception` 이 rev 강제의 구멍 | **exception import 도 rev 핀을 갖는다.** 해시 입력은 그 예외를 선언한 topic 의 본문이다. 이름을 유지한 채 맥락을 바꿔도 커버 문서가 깨진다. 스펙 4.8 |
 | 13 | `ancestors()` 의 v1 소비자 | **v2 로 미룬다.** 참조 전파는 코드 참조 전용이고 코드 연동이 v2 이므로 v1 에 호출자가 없다. Task 5 축소 |
 
@@ -872,11 +955,12 @@ kang 의 소비자는 다른 프로젝트의 LLM 에이전트다. 그 프로젝�
 | Task 11 | `bless.rs` | Task 8 |
 | Task 12 | `tests/` | 전부 |
 | Task 13 | `.github/`, `README.md` | — |
+| Task 14 | `init.rs`, `assets/` | — |
 
 ```
 Lane A: Task 1                          (독립, hash.rs)
 Lane B: Task 2 → 3 → 4 → 5              (순차, 파싱에서 해석까지)
-Lane C: Task 13                         (독립, CI만)
+Lane C: Task 13 + Task 14               (독립, CI·init·스킬)
         ↓ B 완료 후
 Lane D: Task 6 → 7 → 8 → 11             (순차, check.rs 공유 후 bless)
 Lane E: Task 10                         (D 와 병렬, yaml/show)
@@ -895,7 +979,7 @@ Lane F: Task 9 → 12
 - [x] **T1** — CLI 인자 문법 확정. 백틱 제거, `fix` 문자열 인용 출력. 스펙 6.0
 - [x] **T2** — `iknow` 문법 정의와 순환 충돌 해소. 부인(disavowal)이라 import 간선이 아니다. 스펙 4.4
 - [x] **T3** — rev 핀 부트스트랩. 핀 없이 쓰고 `bless` 가 삽입한다. 스펙 4.8
-- [x] **T4** — `bless` 주소를 심볼로 변경. 스펙 6.1, ADR-0003
+- [x] **T4** — `bless` 주소를 심볼로 변경. 스펙 6.2, ADR-0003
 - [x] **T5** — 프로젝트 루트 = git 저장소 루트. 스펙 3절
 - [x] **T6** — exception import 도 rev 핀을 갖는다. 해시 입력은 선언 topic 본문. 스펙 4.8
 - [x] **T7** — show 깊이. v1 미구현으로 결정하되 모양 확정 — 빌드 시점 구조 린트. 스펙 6.3
@@ -910,24 +994,61 @@ Lane F: Task 9 → 12
 - [ ] **T11 (P2)** — 도그푸딩 계획. `plans/`·`docs/adr/`·`CONTEXT.md` 를 `.kang` 으로 옮기는 순서와 성공 기준
   - 여기서 T8(백틱 비용)과 T7(깊이 임계)의 실측값이 나온다
 
+## DX 리뷰 결과 (2026-08-05)
+
+주 개발자는 **다른 프로젝트에서 일하는 LLM 에이전트**다. 사람은 결과를 검토할 뿐이다.
+
+### 핵심 발견
+
+**kang 의 창립 원칙이 DX 에 의해서만 강제된다.** "LLM 은 원본을 보지 않는다" 는 강제할 수 없다 — 에이전트는 `.kang` 파일을 그냥 읽을 수 있다. 그러면 원칙을 지키게 만드는 유일한 수단은 `kang show` 가 `cat` 보다 쉬운 것뿐이다. 그런데 `cat` 으로 읽은 `.kang` 은 import 간접 참조 때문에 **마크다운보다 읽기 나쁘다.** 도구를 도입하고 오히려 나빠지는 경로가 존재했다. Task 14(`kang init` + 스킬)가 이 구멍을 메운다.
+
+### 차원별 점수
+
+| 차원 | 이전 | 현재 | 남은 격차 |
+|---|---|---|---|
+| Getting Started (TTHW) | 0/10 | 8/10 | 설치 후 `init` → `build` 두 명령. curl 설치가 실제로 동작하는지 미검증 |
+| 진단 품질 | 3/10 | 9/10 | 예시 3건 확정. 나머지 규칙은 같은 모양을 따르는지 구현 시 확인 |
+| 발견(discovery) | 0/10 | 8/10 | 스킬이 저장소에 커밋된다. 스킬 내용의 실효성은 도그푸딩에서 측정 |
+| CLI 인체공학 | 5/10 | 8/10 | 백틱 제거, 종료 코드 4종, `--help` 규정 |
+| 점진적 공개 | 6/10 | 6/10 | 문서 하나를 쓰려면 frontmatter·keyword·import·rev 를 한 번에 알아야 한다 |
+| 탈출구 | 5/10 | 5/10 | 의도적으로 최소다. 일괄 해제도 깊이 제한도 없다 |
+| 업그레이드 | 3/10 | 3/10 | **미해결** — 언어 자체의 버전 정책이 없다 |
+| 접근성 | 6/10 | 6/10 | 바이너리 4종. Windows 미포함. 사람의 작성 경험은 미측정(T8) |
+
+### 반영된 것
+
+- **Task 14 신설** — `kang init` 이 `.claude/skills/kang/SKILL.md`·`AGENTS.md`·`CLAUDE.md`·첫 문서를 생성. 저장소에 커밋되는 프로젝트 스코프 파일
+- **스펙 5.1.1 신설** — 진단 출력 예시 3건(미해결 심볼·iknow 누락·rev 불일치)을 문자 단위로 확정
+- **스펙 6절** — 종료 코드 0/1/2/3 규약. `kang inspect` 는 v2 안내와 함께 3
+- **스펙 6.1** — `kang init` 절과 스킬 내용(케이스별 기대 동작 5종)
+- **Task 9** — `--help` 가 명령·인자 형식·종료 코드를 전부 보여준다
+
+### 남은 격차 (v1 이후)
+
+- **언어 버전 정책 없음.** kang 문법이 바뀌면 기존 `.kang` 문서가 어떻게 되는지 정의되지 않았다. 도그푸딩 중에는 저자와 도구 작성자가 같아서 안 드러나고, 외부 도입 직전에 터진다.
+- **점진적 공개 부재.** 첫 문서를 쓰려면 네 가지 문법을 동시에 알아야 한다. `kang init` 의 템플릿이 이걸 얼마나 덜어주는지는 도그푸딩에서 측정한다.
+- **Windows 미지원.** 릴리즈 타깃 4종이 macOS·Linux 뿐이다.
+
 ## GSTACK REVIEW REPORT
 
 | Review | Trigger | Why | Runs | Status | Findings |
 |--------|---------|-----|------|--------|----------|
 | CEO Review | `/plan-ceo-review` | Scope & strategy | 0 | — | — |
 | Codex Review | `/codex review` | Independent 2nd opinion | 0 | — | — |
-| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 1 | ISSUES_OPEN | 19 issues, 3 critical gaps |
+| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 1 | ISSUES_RESOLVED | 19 issues, 3 critical gaps — grilling 에서 전부 해소 |
 | Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | 해당 없음 (CLI) |
-| DX Review | `/plan-devex-review` | Developer experience gaps | 0 | — | — |
+| DX Review | `/plan-devex-review` | Developer experience gaps | 1 | ISSUES_OPEN | 8차원 평가, 5건 반영, 3건 v1 이후 |
 
-**OUTSIDE VOICE:** Codex CLI 는 설치되어 있으나 ChatGPT 계정이 `gpt-5.4` / `gpt-5.1-codex-max` 를 거부해 Claude 서브에이전트로 폴백. 13건 발견, 그중 5건이 구현 차단 수준의 스펙 모순.
+**OUTSIDE VOICE:** Codex CLI 는 ChatGPT 계정 모델 제약으로 실패, Claude 서브에이전트로 폴백. 13건 발견, 그중 5건이 구현 차단 수준의 스펙 모순. 전부 해소됨.
 
-**CROSS-MODEL TENSION:** `ancestors()` 의 v1 필요성. Eng review 는 topic 그래프 이원화를 권고(D2 승인). Outside voice 는 참조 전파가 코드 참조 전용이므로 v1 에 호출자가 없다고 판단. **2026-08-05 grilling 에서 outside voice 채택 — v2 로 미룸.**
+**GRILLING (2026-08-05):** `/grill-with-docs` 로 전략 전제와 스펙 모순 처리. 참조 코퍼스 `~/Project/ax-conta` 를 근거로 검증. 구현 차단 5건 해소, 설계 결함 3건 해소, 2건 감수, 동의어 도입, ADR 3건 신설.
 
-**GRILLING (2026-08-05):** `/grill-with-docs` 로 전략 전제와 스펙 모순을 처리. 참조 코퍼스 `~/Project/ax-conta` 를 근거로 검증. 결과 — 구현 차단 5건 해소, 설계 결함 3건 해소, 2건은 알고 감수, 동의어 도입, ADR 3건 신설. **구현 차단 항목 없음.**
+**DX REVIEW (2026-08-05):** 주 개발자를 LLM 에이전트로 확정. 가장 큰 발견은 **창립 원칙이 DX 에 의해서만 강제된다**는 것 — `kang show` 가 `cat` 보다 어려우면 에이전트가 우회하고, 우회하면 마크다운보다 나빠진다. Task 14(`kang init` + 스킬), 스펙 5.1.1(진단 예시 3건), 종료 코드 규약으로 대응.
 
-**VERDICT:** 스펙 모순 해소 완료. 구현 착수 전 T10(스펙↔태스크 재대조) 필요. 그 뒤 `/plan-eng-review` 재실행 권장 — 이번 리뷰 이후 스펙이 크게 바뀌었다.
+**VERDICT:** 구현 차단 항목 없음. 스펙이 이번 세션에서 크게 바뀌었으므로 구현 착수 전 `/plan-eng-review` 재실행 권장.
 
 **기록 실패:** `gstack-review-log` 가 최소 JSON 도 거부함. `bun` 미설치로 gstack bun 기반 바이너리 일부가 동작하지 않는다. 이 리포트가 유일한 기록이다.
 
-NO UNRESOLVED DECISIONS
+**UNRESOLVED DECISIONS:**
+- 언어 자체의 버전 정책 — kang 문법이 바뀔 때 기존 `.kang` 문서를 어떻게 할지 미정
+- Windows 지원 여부 — 릴리즈 타깃 4종이 macOS·Linux 뿐
