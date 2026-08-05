@@ -501,7 +501,8 @@ description: 결제 정책 문서
     assert!(!diagnostics[0].fixes.is_empty());
 }
 
-/// 마지막 구분자가 `.` 이면 keyword import 다.
+/// 첫 `.`·`#`·`!` 구분자가 문서 경로와 심볼 이름을 가르고 종류를 정한다.
+/// 그것이 `.` 이면 keyword import 다.
 #[test]
 fn keyword_import_를_읽는다() {
     let source = r#"---
@@ -525,7 +526,7 @@ import `docs`/`A`.`결제`
     assert_eq!(doc.imports[0].line, 5);
 }
 
-/// 마지막 구분자가 `#` 이면 topic import 다.
+/// 첫 구분자가 `#` 이면 topic import 다.
 #[test]
 fn topic_import_를_읽는다() {
     let source = r#"---
@@ -546,7 +547,7 @@ import `docs`/`A`#`상품의 정보`
     assert_eq!(doc.imports[0].target.name, vec!["상품의 정보".to_string()]);
 }
 
-/// 마지막 구분자가 `!` 이면 exception import 다. 경로 조각은 여러 개일 수 있다.
+/// 첫 구분자가 `!` 이면 exception import 다. 경로 조각은 여러 개일 수 있다.
 #[test]
 fn exception_import_를_읽는다() {
     let source = r#"---
@@ -1311,6 +1312,29 @@ keyword `주소`: https://example.com 형식의 문자열
         "https://example.com 형식의 문자열"
     );
     assert!(doc.keywords[0].iknow.is_empty());
+}
+
+/// import 를 선언으로 읽는 것은 첫 topic 이전뿐이다 (스펙 4.7 "파일 최상단").
+/// 그 뒤의 같은 낱말은 서술 본문이며, 이 저장소의 스펙 문서 자신이 그렇게 쓴다.
+#[test]
+fn 첫_topic_뒤의_import_줄은_본문이다() {
+    let source = r#"---
+description: 결제 정책 문서
+---
+
+## 깊이 폭발
+
+import `폐포` 가 깊으면 `결제` 를 다시 본다.
+"#;
+
+    let doc = parse::parse_document(문서경로(), source).unwrap();
+
+    assert!(doc.imports.is_empty());
+    assert!(doc.topics[0].body.contains("import `폐포` 가 깊으면"));
+    assert_eq!(
+        doc.topics[0].refs,
+        vec![("폐포".to_string(), 7), ("결제".to_string(), 7)]
+    );
 }
 
 /// 문서 경로는 `/` 로 이은 전체 경로 하나로만 출력된다.
