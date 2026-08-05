@@ -12,6 +12,9 @@
 //! | `K103` | keyword 선언 문법이 올바르지 않음 |
 //! | `K104` | 백틱 짝이 맞지 않음 |
 //! | `K105` | topic 헤딩에 백틱이 있음 |
+//! | `K106` | 코드 펜스가 닫히지 않음 |
+//! | `K107` | topic 헤딩에 이름이 없음 |
+//! | `K108` | 백틱 쌍 안이 비어 있음 |
 
 use crate::ast::{
     Diagnostic, DocPath, Document, Fix, FixKind, Keyword, KeywordName, Location, Severity, Topic,
@@ -48,7 +51,8 @@ pub fn parse_document(path: DocPath, source: &str) -> Result<Document, Vec<Diagn
 
     let mut keywords: Vec<Keyword> = Vec::new();
     let mut topics: Vec<Topic> = Vec::new();
-    let mut in_fence = false;
+    // 열려 있는 코드 펜스의 시작 줄. 닫히면 None 으로 돌아간다.
+    let mut fence_open: Option<usize> = None;
 
     // frontmatter 다음 줄부터 끝까지 순회하며 keyword 선언과 topic 을 모은다.
     for (index, raw) in lines.iter().enumerate().skip(body_start) {
@@ -58,9 +62,13 @@ pub fn parse_document(path: DocPath, source: &str) -> Result<Document, Vec<Diagn
         // 코드 펜스 경계와 그 안쪽은 심볼 해석도 topic 분할도 하지 않는다 (스펙 4.2).
         let fence_marker = trimmed.starts_with("```");
         if fence_marker {
-            in_fence = !in_fence;
+            // 열려 있으면 닫고, 닫혀 있으면 이 줄에서 연다.
+            fence_open = match fence_open {
+                Some(_) => None,
+                None => Some(line_no),
+            };
         }
-        if fence_marker || in_fence {
+        if fence_marker || fence_open.is_some() {
             if let Some(topic) = topics.last_mut() {
                 push_body_line(topic, raw);
             }
@@ -69,13 +77,18 @@ pub fn parse_document(path: DocPath, source: &str) -> Result<Document, Vec<Diagn
 
         // `## ` 는 새 topic 의 시작이다. `###` 이하는 topic 본문의 마크다운 헤딩이다.
         if let Some(heading) = trimmed.strip_prefix("## ") {
-            // 헤딩에 백틱이 있으면 그 topic 은 CLI 인자로 주소를 댈 수 없다 (스펙 6.0).
-            // 짝 검사(K104)보다 먼저 판정해야 "주소 불가능" 이라는 정확한 진단이 나온다.
+            let name = heading.trim();
+            // 헤딩 줄은 바로 아래에서 continue 하므로 짝 검사(K104)를 아예 받지 않는다.
+            // 폴백이 없으므로 여기의 두 판정이 유일한 방어선이다.
             if heading.contains('`') {
-                diagnostics.push(헤딩_백틱(&path, heading.trim(), line_no));
+                // 백틱이 든 이름은 CLI 인자로 주소를 댈 수 없다 (스펙 6.0).
+                diagnostics.push(헤딩_백틱(&path, name, line_no));
+            } else if name.is_empty() {
+                // 이름이 없는 topic 도 같은 이유로 주소를 댈 수 없다.
+                diagnostics.push(헤딩_이름_없음(&path, line_no));
             }
             topics.push(Topic {
-                name: heading.trim().to_string(),
+                name: name.to_string(),
                 body: raw.to_string(),
                 uncoded: false,
                 iknow: Vec::new(),
@@ -103,12 +116,21 @@ pub fn parse_document(path: DocPath, source: &str) -> Result<Document, Vec<Diagn
         push_body_line(topic, raw);
 
         // 본문의 백틱 쌍은 전부 심볼 참조다.
-        match scan_symbols(raw) {
-            Some(symbols) => topic
+        match scan_line(raw) {
+            // 빈 백틱 쌍은 가리키는 심볼이 없다.
+            Some((symbols, _)) if symbols.iter().any(String::is_empty) => {
+                diagnostics.push(빈_심볼(&path, line_no));
+            }
+            Some((symbols, _)) => topic
                 .refs
                 .extend(symbols.into_iter().map(|symbol| (symbol, line_no))),
             None => diagnostics.push(백틱_짝_없음(&path, line_no)),
         }
+    }
+
+    // 닫히지 않은 펜스는 나머지 줄을 통째로 삼켜 topic 분할과 참조 수집을 조용히 끈다.
+    if let Some(line) = fence_open {
+        diagnostics.push(펜스_미종료(&path, line));
     }
 
     // 진단이 하나라도 있으면 Document 를 만들지 않는다. 통과하지 못한 문서는 출력되지 않는다.
@@ -145,10 +167,7 @@ fn parse_frontmatter(
     let open = lines.iter().position(|line| !line.trim().is_empty());
 
     let Some(open) = open.filter(|&index| lines[index].trim() == "---") else {
-        return Err(frontmatter_없음(
-            path,
-            "frontmatter 블록이 없습니다.".to_string(),
-        ));
+        return Err(frontmatter_없음(path));
     };
 
     // 여는 `---` 다음에서 닫는 `---` 를 찾는다.
@@ -159,10 +178,9 @@ fn parse_frontmatter(
         .map(|offset| open + 1 + offset);
 
     let Some(close) = close else {
-        return Err(frontmatter_없음(
-            path,
-            "frontmatter 블록이 닫히지 않았습니다.".to_string(),
-        ));
+        // 블록이 없는 경우와 fix 가 달라야 한다. 여기서 새 블록을 만들라고 하면
+        // 그대로 적용했을 때 열린 `---` 이 남아 문서가 더 망가진다.
+        return Err(frontmatter_미종료(path, open + 1));
     };
 
     // ponytail: frontmatter 는 `키: 값` 한 줄 형식만 해석한다. 스펙 3절이 정의한 키가
@@ -191,12 +209,17 @@ fn parse_frontmatter(
 /// 백틱 짝이 맞지 않으면 `K104`, 이름이나 한 줄 정의가 없으면 `K103` 진단
 fn parse_keyword_line(path: &DocPath, rest: &str, line_no: usize) -> Result<Keyword, Diagnostic> {
     // 이름과 정의 양쪽의 백틱이 모두 닫혀 있어야 구분자를 신뢰할 수 있다.
-    if scan_symbols(rest).is_none() {
+    // 같은 패스가 이름과 정의를 가르는 `:` 위치도 함께 돌려준다.
+    let Some((symbols, colon)) = scan_line(rest) else {
         return Err(백틱_짝_없음(path, line_no));
+    };
+
+    // 빈 백틱 쌍은 가리키는 심볼이 없다. 이름·정의·상세 어디에 있든 마찬가지다.
+    if symbols.iter().any(String::is_empty) {
+        return Err(빈_심볼(path, line_no));
     }
 
-    // 이름 뒤의 `:` 가 이름과 정의를 가른다. 정의 안의 `:` 에 걸리면 안 되므로 첫 번째만 본다.
-    let Some(colon) = find_definition_colon(rest) else {
+    let Some(colon) = colon else {
         return Err(keyword_문법_오류(
             path,
             line_no,
@@ -208,7 +231,9 @@ fn parse_keyword_line(path: &DocPath, rest: &str, line_no: usize) -> Result<Keyw
     let definition_part = rest[colon + 1..].trim();
 
     // 이름은 백틱으로 감싼 조각들이며 `.` 로 계층을 이룬다.
-    let names = scan_symbols(name_part).unwrap_or_default();
+    let names = scan_line(name_part)
+        .map(|(names, _)| names)
+        .unwrap_or_default();
     if names.is_empty() {
         return Err(keyword_문법_오류(
             path,
@@ -220,11 +245,21 @@ fn parse_keyword_line(path: &DocPath, rest: &str, line_no: usize) -> Result<Keyw
     // 줄 끝의 `#`상세 topic`` 은 선택이다. 없으면 전부가 한 줄 정의다.
     let (definition, detail) = match definition_part.rfind("#`") {
         Some(marker) => {
-            let detail = scan_symbols(&definition_part[marker + 1..])
-                .unwrap_or_default()
-                .into_iter()
-                .next();
-            (definition_part[..marker].trim(), detail)
+            let tail = &definition_part[marker + 1..];
+            let mut tail_symbols = scan_line(tail)
+                .map(|(symbols, _)| symbols)
+                .unwrap_or_default();
+            // 마커 뒤는 상세 심볼 하나로 끝나야 한다. 텍스트가 더 남아 있는데도
+            // 마커로 인정하면 그 텍스트가 정의에서 조용히 사라진다.
+            if tail_symbols.len() != 1 || !tail.ends_with('`') {
+                return Err(keyword_문법_오류(
+                    path,
+                    line_no,
+                    "상세 topic 마커 뒤에 텍스트가 남아 있습니다. 마커는 줄 끝에만 올 수 있습니다."
+                        .to_string(),
+                ));
+            }
+            (definition_part[..marker].trim(), tail_symbols.pop())
         }
         None => (definition_part, None),
     };
@@ -237,35 +272,51 @@ fn parse_keyword_line(path: &DocPath, rest: &str, line_no: usize) -> Result<Keyw
         ));
     }
 
+    // 정의 안의 백틱도 심볼 참조다 (스펙 4.2 "본문과 선언부의 모든 백틱").
+    // 이름과 상세 topic 은 각각 name·detail 이 이미 들고 있으므로 refs 에 넣지 않는다.
+    let refs = scan_line(definition)
+        .map(|(symbols, _)| symbols)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|symbol| (symbol, line_no))
+        .collect();
+
     Ok(Keyword {
         name: KeywordName(names),
         definition: definition.to_string(),
         detail,
         iknow: Vec::new(),
+        refs,
         line: line_no,
     })
 }
 
-/// 한 줄에서 백틱 쌍 안의 심볼 이름을 등장 순서대로 뽑는다.
+/// 한 줄을 한 번만 훑어 백틱 심볼과 백틱 밖 첫 `:` 의 위치를 함께 돌려준다.
 ///
-/// `\`` 로 이스케이프한 백틱은 리터럴이므로 구분자로 세지 않는다 (스펙 4.2).
+/// `\` 는 언제나 다음 한 바이트를 리터럴로 만든다. 그래서 `` \` `` 는 백틱 리터럴이고
+/// `\\` 는 역슬래시 리터럴이므로 그 뒤의 백틱은 정상적인 구분자로 남는다 (스펙 4.2).
+///
+/// 백틱 안의 `:` 는 심볼 이름의 일부이므로 경계로 세지 않는다.
 ///
 /// # 매개변수
 /// - `line`: 검사할 한 줄
 ///
 /// # 반환값
-/// 백틱 쌍 안의 이름들. 짝이 맞지 않으면 `None`
-fn scan_symbols(line: &str) -> Option<Vec<String>> {
+/// `(백틱 쌍 안의 이름들, 백틱 밖 첫 `:` 의 바이트 위치)`.
+/// 백틱 짝이 맞지 않으면 `None`
+fn scan_line(line: &str) -> Option<(Vec<String>, Option<usize>)> {
     let bytes = line.as_bytes();
     let mut symbols = Vec::new();
     let mut open: Option<usize> = None;
+    let mut colon: Option<usize> = None;
     let mut index = 0;
 
-    // 바이트 단위로 훑는다. 백틱과 역슬래시는 ASCII 라 UTF-8 이어 바이트와 겹치지 않는다.
+    // 바이트 단위로 훑는다. 백틱·역슬래시·콜론은 ASCII 라 UTF-8 이어 바이트와 겹치지 않는다.
     while index < bytes.len() {
         match bytes[index] {
-            // 이스케이프된 백틱은 리터럴이므로 두 바이트를 통째로 건너뛴다.
-            b'\\' if bytes.get(index + 1) == Some(&b'`') => index += 2,
+            // 역슬래시는 다음 한 바이트를 리터럴로 만든다. 이어 바이트로 건너뛰어도
+            // 그 값이 ASCII 구분자와 겹치지 않으므로 해석이 어긋나지 않는다.
+            b'\\' => index += 2,
             b'`' => {
                 match open {
                     // 여는 백틱이 있었으면 여기서 닫히며 사이가 심볼 이름이다.
@@ -278,45 +329,22 @@ fn scan_symbols(line: &str) -> Option<Vec<String>> {
                 }
                 index += 1;
             }
+            // 백틱 밖의 첫 `:` 만 이름과 정의의 경계다.
+            b':' if open.is_none() && colon.is_none() => {
+                colon = Some(index);
+                index += 1;
+            }
             _ => index += 1,
         }
     }
 
     // ponytail: 백틱 쌍은 한 줄 안에서 닫힌다고 본다. 심볼 이름에 줄바꿈이 들어갈 수
     // 없으므로 여는 백틱이 남은 줄은 오타다. 여러 줄 심볼 이름이 생기면 그때 올린다.
-    if open.is_some() { None } else { Some(symbols) }
-}
-
-/// keyword 선언에서 이름과 정의를 가르는 `:` 의 바이트 위치를 찾는다.
-///
-/// 백틱 안의 `:` 는 이름의 일부이므로 건너뛴다.
-///
-/// # 매개변수
-/// - `rest`: `keyword ` 뒤의 나머지 텍스트
-///
-/// # 반환값
-/// 백틱 밖에 있는 첫 `:` 의 바이트 위치. 없으면 `None`
-fn find_definition_colon(rest: &str) -> Option<usize> {
-    let bytes = rest.as_bytes();
-    let mut in_backtick = false;
-    let mut index = 0;
-
-    // 백틱 안팎을 추적하면서 이름 뒤에 오는 첫 `:` 를 찾는다.
-    while index < bytes.len() {
-        match bytes[index] {
-            // 이스케이프된 백틱은 구분자가 아니다.
-            b'\\' if bytes.get(index + 1) == Some(&b'`') => index += 2,
-            b'`' => {
-                in_backtick = !in_backtick;
-                index += 1;
-            }
-            // 백틱 밖의 `:` 만 이름과 정의의 경계다.
-            b':' if !in_backtick => return Some(index),
-            _ => index += 1,
-        }
+    if open.is_some() {
+        None
+    } else {
+        Some((symbols, colon))
     }
-
-    None
 }
 
 /// topic 본문에 원문 한 줄을 덧붙인다.
@@ -331,19 +359,18 @@ fn push_body_line(topic: &mut Topic, raw: &str) {
     topic.body.push_str(raw);
 }
 
-/// frontmatter 블록이 없거나 닫히지 않았다는 진단을 만든다.
+/// frontmatter 블록이 아예 없다는 진단을 만든다.
 ///
 /// # 매개변수
 /// - `path`: 대상 문서 경로
-/// - `message`: 어느 쪽인지 알리는 한 문장
 ///
 /// # 반환값
 /// `K101` 진단
-fn frontmatter_없음(path: &DocPath, message: String) -> Diagnostic {
+fn frontmatter_없음(path: &DocPath) -> Diagnostic {
     Diagnostic {
         severity: Severity::Error,
         code: "K101",
-        message,
+        message: "frontmatter 블록이 없습니다.".to_string(),
         locations: vec![Location {
             doc: path.clone(),
             line: 1,
@@ -353,6 +380,119 @@ fn frontmatter_없음(path: &DocPath, message: String) -> Diagnostic {
             kind: FixKind::Edit,
             doc: Some(path.clone()),
             action: "파일 맨 앞에 `---` 줄, `description: <이 문서를 고르기 위한 한 줄 설명>` 줄, `---` 줄을 순서대로 추가하세요".to_string(),
+        }],
+    }
+}
+
+/// frontmatter 블록이 닫히지 않았다는 진단을 만든다.
+///
+/// 블록을 새로 만들라고 하면 열린 `---` 이 남아 문서가 더 망가지므로,
+/// 없는 경우와 별도의 fix 를 준다.
+///
+/// # 매개변수
+/// - `path`: 대상 문서 경로
+/// - `line`: 여는 `---` 의 줄 번호
+///
+/// # 반환값
+/// `K101` 진단
+fn frontmatter_미종료(path: &DocPath, line: usize) -> Diagnostic {
+    Diagnostic {
+        severity: Severity::Error,
+        code: "K101",
+        message: "frontmatter 블록이 닫히지 않았습니다.".to_string(),
+        locations: vec![Location {
+            doc: path.clone(),
+            line,
+            note: "여기서 연 블록이 끝나지 않았습니다".to_string(),
+        }],
+        fixes: vec![Fix {
+            kind: FixKind::Edit,
+            doc: Some(path.clone()),
+            action:
+                "frontmatter 키들 바로 다음에 블록을 닫는 `---` 줄을 추가하세요. 여는 `---` 을 새로 만들지 마세요"
+                    .to_string(),
+        }],
+    }
+}
+
+/// 코드 펜스가 닫히지 않았다는 진단을 만든다.
+///
+/// # 매개변수
+/// - `path`: 대상 문서 경로
+/// - `line`: 여는 펜스의 줄 번호
+///
+/// # 반환값
+/// `K106` 진단
+fn 펜스_미종료(path: &DocPath, line: usize) -> Diagnostic {
+    Diagnostic {
+        severity: Severity::Error,
+        code: "K106",
+        message: "코드 펜스가 닫히지 않았습니다. 뒤따르는 줄이 전부 코드로 취급되어 topic 과 심볼 참조가 인식되지 않습니다."
+            .to_string(),
+        locations: vec![Location {
+            doc: path.clone(),
+            line,
+            note: "여기서 연 펜스가 끝나지 않았습니다".to_string(),
+        }],
+        fixes: vec![Fix {
+            kind: FixKind::Edit,
+            doc: Some(path.clone()),
+            action: "코드 블록이 끝나는 자리에 펜스를 닫는 ``` 줄을 추가하세요".to_string(),
+        }],
+    }
+}
+
+/// topic 헤딩에 이름이 없다는 진단을 만든다.
+///
+/// # 매개변수
+/// - `path`: 대상 문서 경로
+/// - `line`: 헤딩이 있는 줄 번호
+///
+/// # 반환값
+/// `K107` 진단
+fn 헤딩_이름_없음(path: &DocPath, line: usize) -> Diagnostic {
+    Diagnostic {
+        severity: Severity::Error,
+        code: "K107",
+        message: "topic 헤딩에 이름이 없습니다. 이 topic 은 CLI 로 주소를 댈 수 없습니다."
+            .to_string(),
+        locations: vec![Location {
+            doc: path.clone(),
+            line,
+            note: "이 topic 헤딩".to_string(),
+        }],
+        fixes: vec![Fix {
+            kind: FixKind::Edit,
+            doc: Some(path.clone()),
+            action: "이 `##` 뒤에 topic 이름을 평문으로 쓰세요. 이름은 kang show 의 주소가 됩니다"
+                .to_string(),
+        }],
+    }
+}
+
+/// 백틱 쌍 안이 비어 있다는 진단을 만든다.
+///
+/// # 매개변수
+/// - `path`: 대상 문서 경로
+/// - `line`: 빈 쌍이 있는 줄 번호
+///
+/// # 반환값
+/// `K108` 진단
+fn 빈_심볼(path: &DocPath, line: usize) -> Diagnostic {
+    Diagnostic {
+        severity: Severity::Error,
+        code: "K108",
+        message: "백틱 쌍 안이 비어 있어 가리키는 심볼이 없습니다.".to_string(),
+        locations: vec![Location {
+            doc: path.clone(),
+            line,
+            note: "이 줄의 빈 백틱 쌍".to_string(),
+        }],
+        fixes: vec![Fix {
+            kind: FixKind::Edit,
+            doc: Some(path.clone()),
+            action: "심볼 참조는 `<이름>` 처럼 백틱 하나로 감싸세요. 마크다운의 이중 백틱 표기(``…``)는 빈 참조가 되므로 쓰지 마세요"
+                .to_string(),
         }],
     }
 }
