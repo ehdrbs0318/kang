@@ -4,3 +4,4 @@
 pub mod ast;
 pub mod hash;
 pub mod parse;
+pub mod resolve;
