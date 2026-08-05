@@ -1,8 +1,5 @@
 // `hash::normalize` / `hash::rev` 동작을 검증하는 통합 테스트.
-// `kang` 은 바이너리 전용 크레이트라 별도 lib 타겟이 없으므로,
-// `src/hash.rs` 를 경로 지정으로 직접 모듈에 포함시킨다.
-#[path = "../src/hash.rs"]
-mod hash;
+use kang::hash;
 
 /// 줄 끝 공백이 제거되어 해시가 동일해야 한다.
 #[test]
