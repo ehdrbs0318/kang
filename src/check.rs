@@ -12,7 +12,7 @@
 //! | `K002` | import 대상 문서나 심볼이 존재하지 않음 |
 //! | `K003` | import 했으나 어떤 topic 에서도 사용하지 않음 |
 //! | `K004` | 한 심볼에 두 개 이상의 로컬 이름이 붙음 |
-//! | `K005` | 계층 keyword 의 상위가 같은 파일에 선언되지도 import 되지도 않음 |
+//! | `K005` | 계층 keyword 의 상위가 같은 파일에 keyword 로 선언되지도 import 되지도 않음 |
 //! | `K010` | iknow 대상 문서나 심볼이 존재하지 않음 |
 //! | `K012` | 여러 문서가 같은 이름을 선언했는데 iknow 상호 명시가 완전하지 않음 |
 //! | `K040` | import 그래프에 순환이 있음 |
@@ -901,17 +901,26 @@ fn 계층_상위_검사(
             continue;
         };
 
-        // 같은 파일에서 선언했거나, 이 파일이 그 이름을 import 했으면 통과다.
-        let 갖춤 = document.keywords.iter().any(|다른| 다른.name.0 == *상위)
-            || document
-                .imports
-                .iter()
-                .any(|import| import.target.name[..] == *상위);
-        if 갖춤 {
+        // 같은 파일에서 선언했으면 통과다. 이 가지는 `keywords` 만 보므로 종류가 이미 맞다.
+        if document.keywords.iter().any(|다른| 다른.name.0 == *상위) {
             continue;
         }
 
-        diagnostics.push(계층_상위_없음(document, keyword, 상위, 선언들));
+        // import 했으면 통과다. **`alias` 가 아니라 대상의 정식 이름**으로 본다 —
+        // 스펙 4.3:91 은 "import **한 것**" 을 허용하고 4.7 은 alias 가 정식 이름을
+        // 폐기한다고 하지 않는다.
+        //
+        // 종류도 본다. `.` 는 키워드 계층이므로(스펙 4.1:68) topic·exception 은 상위가
+        // 될 수 없다. 같은 파일 가지가 이미 keyword 전용이라 이것이 대칭이다.
+        let 같은_이름 = document
+            .imports
+            .iter()
+            .find(|import| import.target.name[..] == *상위);
+        match 같은_이름.map(|import| &import.target.kind) {
+            Some(SymbolKind::Keyword) => continue,
+            // 이름은 import 되어 있으나 종류가 다르다. "import 되지 않았다" 고 하면 거짓이다.
+            종류 => diagnostics.push(계층_상위_없음(document, keyword, 상위, 종류, 선언들)),
+        }
     }
 }
 
@@ -1037,6 +1046,9 @@ fn 미해결_심볼(
 /// - `document`: 그 선언이 있는 문서
 /// - `keyword`: 상위를 갖추지 못한 계층 keyword 선언
 /// - `상위`: 요구되는 직접 상위의 이름 조각들. 최소 1개
+/// - `잘못된_종류`: 그 이름이 이 문서에 import 되어 있으나 keyword 가 아닐 때 그 종류.
+///   아예 없으면 `None` — "import 되지 않았다" 와 "종류가 다르다" 는 다른 사실이고
+///   뭉뚱그리면 진단이 둘 중 하나에 대해 거짓을 말한다
 /// - `선언들`: 이름별 선언 색인. 그 이름을 keyword 로 선언한 문서를 찾는 데 쓴다
 ///
 /// # 반환값
@@ -1045,6 +1057,7 @@ fn 계층_상위_없음(
     document: &Document,
     keyword: &Keyword,
     상위: &[String],
+    잘못된_종류: Option<&SymbolKind>,
     선언들: &BTreeMap<String, Vec<선언>>,
 ) -> Diagnostic {
     // 문서 문법으로는 조각마다 백틱을 두른다 (스펙 4.1).
@@ -1084,9 +1097,16 @@ fn 계층_상위_없음(
     Diagnostic {
         severity: Severity::Error,
         code: "K005",
-        message: format!(
-            "계층 keyword 의 상위를 이 문서에서 찾을 수 없습니다 — {상위_표기}. 스펙 4.3 은 상위 키워드가 같은 파일에서 정의했거나 import 한 것이어야 한다고 정합니다. {안내}"
-        ),
+        message: match 잘못된_종류 {
+            // 이름은 있다. 없다고 하면 거짓이다.
+            Some(kind) => format!(
+                "계층 keyword 의 상위가 keyword 가 아닙니다 — {상위_표기}. 이 이름은 이 문서에 import 되어 있지만 종류가 {} 입니다. `.` 는 키워드 계층이므로 상위는 keyword 여야 합니다 (스펙 4.1·4.3). {안내}",
+                종류_낱말(kind)
+            ),
+            None => format!(
+                "계층 keyword 의 상위를 이 문서에서 찾을 수 없습니다 — {상위_표기}. 스펙 4.3 은 상위 키워드가 같은 파일에서 정의했거나 import 한 것이어야 한다고 정합니다. {안내}"
+            ),
+        },
         locations: vec![Location {
             doc: document.path.clone(),
             line: keyword.line,
@@ -1109,13 +1129,20 @@ fn 계층_상위_없음(
                 kind: FixKind::Edit,
                 doc: Some(document.path.clone()),
                 action: match 후보.first() {
+                    // 이름을 이미 다른 종류로 import 했다면 그 줄을 바꾸라고 말해야 한다.
+                    // "추가하세요" 라고만 하면 같은 이름이 두 번 묶여 `K052` 가 난다.
+                    Some(하나) if 잘못된_종류.is_some() => format!(
+                        "상위 keyword 가 {} 의 것이라면, 지금의 import 줄을 그 keyword 로 바꾸세요: import {}",
+                        하나.doc,
+                        심볼_주소(하나.doc, &하나.kind, &상위.join("."), true)
+                    ),
                     Some(하나) => format!(
                         "상위가 {} 의 것이라면, import 블록에 다음 줄을 추가하세요: import {}",
                         하나.doc,
                         심볼_주소(하나.doc, &하나.kind, &상위.join("."), true)
                     ),
                     None => format!(
-                        "상위가 다른 문서의 것이라면, 그 문서에서 keyword {상위_표기} 를 선언한 뒤 이 문서의 import 블록에서 그것을 가져오세요."
+                        "상위가 다른 문서의 것이라면, 그 문서에서 그것을 keyword 로 선언한 뒤 이 문서의 import 블록에서 가져오세요."
                     ),
                 },
             },

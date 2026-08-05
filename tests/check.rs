@@ -2346,3 +2346,36 @@ fn 계층_심볼_import_는_상위를_요구하지_않는다() {
     assert!(진단.is_empty(), "{진단:?}");
     정리(&root);
 }
+
+/// 상위는 **keyword** 여야 한다. 스펙 4.1:68 은 `.` 를 "키워드 진입 및 키워드 계층",
+/// 4.3:91 은 "상위 **키워드**" 라고 못박는다. 같은 파일 가지는 `document.keywords` 만
+/// 보므로 이미 keyword 전용인데, import 가지가 종류를 보지 않으면 같은 규칙이 경로에
+/// 따라 다르게 적용된다.
+#[test]
+fn topic_을_상위로_쓰면_에러다() {
+    let root = 임시_루트("parent-wrong-kind");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: 결제\n---\n\n## 결제수단\n\n대금을 내는 방법을 설명한다.\n",
+    );
+    쓰기(
+        &root,
+        "docs/b.kang",
+        "---\ndescription: 카드\n---\n\nimport `docs`/`a`#`결제수단`\n\nkeyword `결제수단`.`카드`: 카드를 사용한 결제\n",
+    );
+
+    let 진단 = 심볼_검사(&root);
+
+    assert_eq!(코드들(&진단), vec!["K005"], "{진단:?}");
+    assert_eq!(위치들(&진단[0]), vec![("docs/b".to_string(), 7)]);
+    // 이 이름은 **import 되어 있다.** "선언되지도 import 되지도 않았다" 고 하면 거짓이다.
+    assert!(진단[0].message.contains("topic"), "{}", 진단[0].message);
+    assert!(
+        !진단[0].message.contains("찾을 수 없습니다"),
+        "{}",
+        진단[0].message
+    );
+    정리(&root);
+}
