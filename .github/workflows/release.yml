@@ -30,7 +30,7 @@ jobs:
           KANG_REQUIRE_YAML: '1'
 
       - run: rustup target add ${{ matrix.target }}
-      - run: cargo build --release --target ${{ matrix.target }}
+      - run: cargo build --release --target ${{ matrix.target }} -p kang
 
       # 설치 스크립트가 uname 으로 고를 수 있도록 이름에 타깃 트리플을 넣는다.
       # README 의 curl 한 줄이 만드는 이름이 바로 이것이다.

@@ -156,11 +156,24 @@ pub fn write_index(project: &Project, table: &SymbolTable, out: &mut impl Write)
 
 **B1 결정을 구현한다. 코드 이동만이며 동작 변경 0 이어야 한다.**
 
-- [ ] `Cargo.toml` 을 워크스페이스로, 기존 크레이트를 `crates/kang/` 으로 이동 (`git mv`)
-- [ ] `crates/kang-macros/` 생성 — `proc-macro = true`
-- [ ] **`cargo test` 309개가 전부 그대로 통과해야 한다.** 하나라도 깨지면 이동이 아니라 변경이다
-- [ ] `release.yml`·`ci.yml`·`README.md` 의 경로 갱신
-- [ ] V0001 §10.1 의 크레이트별 목록과 `Cargo.toml` 들이 일치하는지 확인 — **목록에 없는 의존성이 들어오면 그 자체가 결함이다.** CI 에서 잴 방법을 정한다
+- [x] `Cargo.toml` 을 워크스페이스로, 기존 크레이트를 `crates/kang/` 으로 이동 (`git mv`)
+  - `src`·`tests`·`Cargo.toml` 셋을 `git mv` 로 옮겼다. 루트 `Cargo.toml` 은 `[workspace]` 뿐이다
+- [x] `crates/kang-macros/` 생성 — `proc-macro = true`
+  - 의존성 `proc-macro2`·`quote`·`syn` 을 선언하고 모듈 주석만 두었다. 매크로 본체는 Task 5 다.
+    **이 크레이트가 먼저 서는 이유는 워크스페이스가 의존성 목록과 함께 성립하는지 확인하는 것**이다
+- [x] **`cargo test` 320개가 전부 그대로 통과해야 한다.** 하나라도 깨지면 이동이 아니라 변경이다
+  - 320 통과 (check 121, cli 99, parse 83, yaml 14, hash 3). clippy `--all-targets -D warnings` 0, `fmt --check` 0
+- [x] `release.yml`·`ci.yml`·`README.md` 의 경로 갱신
+  - **바뀔 것이 거의 없었다.** 워크스페이스의 `target/` 이 루트에 그대로 있어 `release.yml:37` 의
+    `mv target/<트리플>/release/kang` 이 유효하고, `ci.yml`·`README` 의 `cargo` 호출은 워크스페이스 루트에서 돈다.
+    `cargo build --release --target <트리플>` 에 **`-p kang` 을 명시**했다 — 지금은 없어도 되지만
+    Task 5 가 `kang` → `kang-macros` 의존을 만들면 무엇을 빌드하는지 분명해야 한다.
+    크로스 빌드(`x86_64-apple-darwin`)를 실제로 돌려 바이너리 자리를 확인했다. `actionlint` 0
+- [x] V0001 §10.1 의 크레이트별 목록과 `Cargo.toml` 들이 일치하는지 확인 — **목록에 없는 의존성이 들어오면 그 자체가 결함이다.** CI 에서 잴 방법을 정한다
+  - 두 `Cargo.toml` 이 §10.1 과 일치한다. **CI 에서 재는 방법은 Task 5 로 넘긴다** —
+    지금은 매크로가 의존성을 쓰지 않아 `cargo tree` 기반 검사가 무엇을 잡는지 판단할 근거가 없다
+
+**수행 내역** — 컨트롤러가 직접 구현. 테스트 320 유지(변경 0). 루트에 있던 빈 쓰레기 디렉토리 `$SP/v2b` 도 함께 치웠다.
 
 ## Task 5 — proc-macro
 
