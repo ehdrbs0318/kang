@@ -606,7 +606,7 @@ fn git_저장소_아님(cwd: &Path) -> Diagnostic {
             doc: 경로_그대로(cwd),
             line: 0,
             // 대안은 여기 적는다 — 그것은 지시이지 실행할 명령이 아니다.
-            note: "이 디렉토리에서 위로 올라가며 .git 을 찾았지만 없었습니다. 이미 있는 git 저장소를 루트로 쓰려면 그 저장소 안의 디렉토리로 이동해 다시 실행하세요.".to_string(),
+            note: "이 디렉토리에서 위로 올라가며 .git 을 찾았지만 없었습니다. 이미 있는 git 저장소를 루트로 쓰려면 그 저장소 안의 디렉토리로 이동해 다시 실행하세요".to_string(),
         }],
         // **`action` 은 명령만이다** (스펙 6.0). `kang` 을 이 디렉토리에서 불렀으므로
         // 여기를 루트로 삼겠다는 것이 기본 의도이고, `git init` 이 그 의도의 정확한
@@ -675,7 +675,7 @@ fn 문서_이름_구분자(path: DocPath, 구분자: char) -> Diagnostic {
             doc: path.clone(),
             // 파일 이름 자체가 문제이므로 가리킬 줄이 없다.
             line: 0,
-            note: "이 문서의 파일 이름. 주소는 마지막 조각의 첫 `.`·`#`·`!` 에서 갈리므로 이름의 일부와 구분자를 구별할 수단이 없습니다.".to_string(),
+            note: "이 문서의 파일 이름. 주소는 마지막 조각의 첫 `.`·`#`·`!` 에서 갈리므로 이름의 일부와 구분자를 구별할 수단이 없습니다".to_string(),
         }],
         fixes: vec![Fix {
             kind: FixKind::Edit,
@@ -717,7 +717,7 @@ fn utf8_아님(file: &Path, path: DocPath, valid_up_to: usize) -> Diagnostic {
         locations: vec![Location {
             doc: path,
             line: 0,
-            note: format!("바이트 {valid_up_to} 부터 UTF-8 로 디코딩되지 않습니다."),
+            note: format!("바이트 {valid_up_to} 부터 UTF-8 로 디코딩되지 않습니다"),
         }],
         // 그래서 `[shell]` 로 낼 수 있는 것은 확인 명령 하나뿐이다.
         fixes: vec![Fix {
@@ -814,19 +814,19 @@ fn 이름_중복(doc: &DocPath, name: &str, 앞: usize, 뒤: usize) -> Diagnosti
             Location {
                 doc: doc.clone(),
                 line: 앞,
-                note: format!("여기서 `{name}` 이 묶였습니다."),
+                note: format!("여기서 `{name}` 이 묶였습니다"),
             },
             Location {
                 doc: doc.clone(),
                 line: 뒤,
-                note: format!("여기서도 `{name}` 이 묶였습니다."),
+                note: format!("여기서도 `{name}` 이 묶였습니다"),
             },
         ],
         fixes: vec![Fix {
             kind: FixKind::Edit,
             doc: Some(doc.clone()),
             action: format!(
-                "`{name}` 을 묶은 두 줄 중 하나를 고치세요. 선언이면 다른 이름을 주거나 그 줄을 지우고, import 면 `as` 로 다른 별칭을 주세요."
+                "`{name}` 을 묶은 두 줄 중 하나를 고치세요. 선언이면 다른 이름을 주거나 그 줄을 지우고, import 면 `as` 로 다른 별칭을 주세요"
             ),
         }],
     }

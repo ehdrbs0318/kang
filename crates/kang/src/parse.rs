@@ -1450,9 +1450,8 @@ fn 이름_슬래시(path: &DocPath, 이름: &str, line: usize) -> Diagnostic {
         locations: vec![Location {
             doc: path.clone(),
             line,
-            note:
-                "이 줄의 심볼 이름. 주소를 가르는 `/` 와 이름 안의 `/` 를 구별할 수단이 없습니다."
-                    .to_string(),
+            note: "이 줄의 심볼 이름. 주소를 가르는 `/` 와 이름 안의 `/` 를 구별할 수단이 없습니다"
+                .to_string(),
         }],
         fixes: vec![Fix {
             kind: FixKind::Edit,

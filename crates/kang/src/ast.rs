@@ -63,7 +63,7 @@ pub struct Diagnostic {
     pub severity: Severity,
     /// 진단 코드. 예: "K012". 규칙마다 고정이며 에이전트가 코드로 분기한다.
     pub code: &'static str,
-    /// 왜 문제인지 한 문장.
+    /// 왜 문제인지. 여러 문장이어도 머리글 한 줄로 찍는다 (스펙 5.1.1).
     pub message: String,
     /// 관련 위치 전부. 최소 1개.
     pub locations: Vec<Location>,

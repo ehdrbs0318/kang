@@ -226,7 +226,7 @@ fn 순환(체인: &[(&DocPath, usize)]) -> Diagnostic {
                     line,
                     // 마지막 항목만 고리가 닫히는 자리라고 덧붙인다.
                     note: if 자리 + 1 == 체인.len() {
-                        format!("여기서 import 하는 대상: {다음} — 순환이 닫힙니다.")
+                        format!("여기서 import 하는 대상: {다음} — 순환이 닫힙니다")
                     } else {
                         format!("여기서 import 하는 대상: {다음}")
                     },
@@ -239,10 +239,10 @@ fn 순환(체인: &[(&DocPath, usize)]) -> Diagnostic {
             kind: FixKind::Edit,
             doc: Some(닫는_문서.clone()),
             action: if 자기_import {
-                "이 문서는 자기 자신을 import 하고 있습니다. 자기 문서가 선언한 심볼은 import 없이 그대로 쓸 수 있으므로 이 import 줄을 지우세요.".to_string()
+                "이 문서는 자기 자신을 import 하고 있습니다. 자기 문서가 선언한 심볼은 import 없이 그대로 쓸 수 있으므로 이 import 줄을 지우세요".to_string()
             } else {
                 format!(
-                    "이 문서의 import 줄 가운데 대상이 {주소} 인 것을 지워 순환을 끊으세요. 순환에 든 문서들이 함께 쓰는 개념이 있다면, 그 개념만 담은 상위 문서를 새로 만들어 각 문서가 그것을 import 하게 하세요."
+                    "이 문서의 import 줄 가운데 대상이 {주소} 인 것을 지워 순환을 끊으세요. 순환에 든 문서들이 함께 쓰는 개념이 있다면, 그 개념만 담은 상위 문서를 새로 만들어 각 문서가 그것을 import 하게 하세요"
                 )
             },
         }],
@@ -444,7 +444,7 @@ pub fn check_exceptions(project: &Project, table: &SymbolTable) -> Vec<Diagnosti
                     // 붙이면 어느 한쪽에서 반드시 어색해진다. 줄표로 받는다.
                     doc: c.doc.clone(),
                     line: c.line,
-                    note: format!("topic `{}` — 여기서 이 예외를 커버합니다.", c.topic),
+                    note: format!("topic `{}` — 여기서 이 예외를 커버합니다", c.topic),
                 })
                 .collect()
         };
@@ -501,7 +501,7 @@ pub fn check_exceptions(project: &Project, table: &SymbolTable) -> Vec<Diagnosti
                     // import 되지 않은 cover 줄이 문자 그대로 있을 수 있고, 그때 같은
                     // 실행의 `K034` 가 그 줄을 지목해 두 진단이 서로를 반박하는 모양이
                     // 된다. 해석 기준으로 좁혀 말한다 ([`대상_설명`] 과 같은 기준이다).
-                    note: "여기서 선언된 예외 — 이 예외를 가리키는 cover 가 없습니다. 이름만 같고 import 되지 않은 cover 는 이 예외를 가리키지 않습니다."
+                    note: "여기서 선언된 예외 — 이 예외를 가리키는 cover 가 없습니다. 이름만 같고 import 되지 않은 cover 는 이 예외를 가리키지 않습니다"
                         .to_string(),
                 }],
                 fixes: vec![
@@ -517,7 +517,7 @@ pub fn check_exceptions(project: &Project, table: &SymbolTable) -> Vec<Diagnosti
                     Fix {
                         kind: FixKind::Edit,
                         doc: Some((*doc).clone()),
-                        action: "정책이 아직 결정되지 않은 것이라면 이 exception 선언 줄 끝에 pending 을 붙이세요. 그러면 이 예외는 error 가 아니라 `K031` 알림이 되고 빌드는 통과합니다.".to_string(),
+                        action: "정책이 아직 결정되지 않은 것이라면 이 exception 선언 줄 끝에 pending 을 붙이세요. 그러면 이 예외는 error 가 아니라 `K031` 알림이 되고 빌드는 통과합니다".to_string(),
                     },
                 ],
             },
@@ -536,7 +536,7 @@ pub fn check_exceptions(project: &Project, table: &SymbolTable) -> Vec<Diagnosti
                     let mut locations = vec![Location {
                         doc: (*doc).clone(),
                         line: exception.line,
-                        note: "여기서 선언된 예외 — 아래 자리들이 모두 이 예외를 커버합니다."
+                        note: "여기서 선언된 예외 — 아래 자리들이 모두 이 예외를 커버합니다"
                             .to_string(),
                     }];
                     locations.extend(커버_위치());
@@ -549,7 +549,7 @@ pub fn check_exceptions(project: &Project, table: &SymbolTable) -> Vec<Diagnosti
                     // 지울 줄의 좌표는 위 위치 목록이 준다 — fix 는 줄 번호를 쓰지 않는다
                     // (ADR-0003). 겹치는 설명이 개수로 접히므로 그 안내가 필요하다.
                     action: format!(
-                        "이 예외를 실제로 다루는 정책 하나만 남기고 나머지 cover 줄을 지우세요. 지금 커버하는 것은 {}입니다. 지울 줄의 자리는 위 위치 목록에 있습니다.",
+                        "이 예외를 실제로 다루는 정책 하나만 남기고 나머지 cover 줄을 지우세요. 지금 커버하는 것은 {}입니다. 지울 줄의 자리는 위 위치 목록에 있습니다",
                         커버_설명()
                     ),
                 }],
@@ -565,7 +565,7 @@ pub fn check_exceptions(project: &Project, table: &SymbolTable) -> Vec<Diagnosti
                     doc: (*doc).clone(),
                     line: exception.line,
                     // `K030` 과 같은 이유로 해석 기준이다.
-                    note: "여기서 pending 으로 선언된 예외 — 이 예외를 가리키는 cover 가 아직 없습니다. 이름만 같고 import 되지 않은 cover 는 이 예외를 가리키지 않습니다."
+                    note: "여기서 pending 으로 선언된 예외 — 이 예외를 가리키는 cover 가 아직 없습니다. 이름만 같고 import 되지 않은 cover 는 이 예외를 가리키지 않습니다"
                         .to_string(),
                 }],
                 fixes: vec![Fix {
@@ -591,7 +591,7 @@ pub fn check_exceptions(project: &Project, table: &SymbolTable) -> Vec<Diagnosti
                     let mut locations = vec![Location {
                         doc: (*doc).clone(),
                         line: exception.line,
-                        note: "여기서 pending 으로 선언된 예외 — 정책이 미결정이라고 말합니다."
+                        note: "여기서 pending 으로 선언된 예외 — 정책이 미결정이라고 말합니다"
                             .to_string(),
                     }];
                     locations.extend(커버_위치());
@@ -607,10 +607,10 @@ pub fn check_exceptions(project: &Project, table: &SymbolTable) -> Vec<Diagnosti
                         // 부정하면 안 된다 — 스펙 V0001 5.1.1 은 에이전트가 fix 를 **그대로
                         // 적용**한다고 정한다. `K005` 가 같은 이유로 갈래를 가른다.
                         action: if 짝.len() == 1 {
-                            "정책이 이미 결정된 것이라면(커버하는 topic 이 그 정책입니다) 이 exception 선언에서 pending 을 지우세요. 그러면 이 예외는 커버된 일반 예외가 되어 통과합니다.".to_string()
+                            "정책이 이미 결정된 것이라면(커버하는 topic 이 그 정책입니다) 이 exception 선언에서 pending 을 지우세요. 그러면 이 예외는 커버된 일반 예외가 되어 통과합니다".to_string()
                         } else {
                             format!(
-                                "정책이 이미 결정된 것이라면 이 exception 선언에서 pending 을 지우고, 커버하는 {} 가운데 실제 정책 하나만 남기세요. pending 만 지우면 커버가 둘 이상이라 `K033` 이 남습니다.",
+                                "정책이 이미 결정된 것이라면 이 exception 선언에서 pending 을 지우고, 커버하는 {} 가운데 실제 정책 하나만 남기세요. pending 만 지우면 커버가 둘 이상이라 `K033` 이 남습니다",
                                 커버_설명()
                             )
                         },
@@ -620,7 +620,7 @@ pub fn check_exceptions(project: &Project, table: &SymbolTable) -> Vec<Diagnosti
                         // 커버가 여러 문서에 흩어질 수 있어 문서를 하나로 고를 수 없다.
                         doc: None,
                         action: format!(
-                            "정책이 아직 결정되지 않은 것이라면 {}을 지우세요. 그러면 이 예외는 `K031` 알림이 되고 빌드는 통과합니다.",
+                            "정책이 아직 결정되지 않은 것이라면 {}을 지우세요. 그러면 이 예외는 `K031` 알림이 되고 빌드는 통과합니다",
                             커버_설명()
                         ),
                     },
@@ -693,7 +693,7 @@ pub fn check_exceptions(project: &Project, table: &SymbolTable) -> Vec<Diagnosti
         fixes.push(Fix {
             kind: FixKind::Edit,
             doc: Some(c.doc.clone()),
-            action: "cover 대상을 이 문서에서 쓸 수 있는 exception 이름으로 고치세요. 가리킬 예외가 없다면 이 cover 줄을 지우세요.".to_string(),
+            action: "cover 대상을 이 문서에서 쓸 수 있는 exception 이름으로 고치세요. 가리킬 예외가 없다면 이 cover 줄을 지우세요".to_string(),
         });
 
         diagnostics.push(Diagnostic {
@@ -704,7 +704,7 @@ pub fn check_exceptions(project: &Project, table: &SymbolTable) -> Vec<Diagnosti
                 doc: c.doc.clone(),
                 line: c.line,
                 note: format!(
-                    "topic `{}` — 여기서 커버하려는 대상을 찾지 못했습니다.",
+                    "topic `{}` — 여기서 커버하려는 대상을 찾지 못했습니다",
                     c.topic
                 ),
             }],
@@ -792,7 +792,7 @@ pub fn check_revs(project: &Project, table: &SymbolTable) -> Vec<Diagnostic> {
                     locations: vec![Location {
                         doc: doc.clone(),
                         line: import.line,
-                        note: "여기서 import 했습니다 — 이 줄에 rev 핀이 없습니다.".to_string(),
+                        note: "여기서 import 했습니다 — 이 줄에 rev 핀이 없습니다".to_string(),
                     }],
                     // **`action` 은 명령만이다.** 산문을 앞에 붙이면 렌더된
                     // `[shell] {action}` 줄을 복사해 실행할 수 없다 — 셸이 첫 낱말을
@@ -831,7 +831,7 @@ pub fn check_revs(project: &Project, table: &SymbolTable) -> Vec<Diagnostic> {
                         locations: vec![Location {
                             doc: doc.clone(),
                             line: import.line,
-                            note: format!("여기서 import 했습니다 — 핀 {핀}, 현재 {현재}."),
+                            note: format!("여기서 import 했습니다 — 핀 {핀}, 현재 {현재}"),
                         }],
                         // 산문을 붙이지 않는다 — 위 `K020` 과 같은 이유다. "다시 읽고
                         // 여전히 맞는지 확인한 뒤" 라는 선행 조건은 `message` 에 있다.
@@ -852,7 +852,26 @@ pub fn check_revs(project: &Project, table: &SymbolTable) -> Vec<Diagnostic> {
 
 /// 진단 목록을 사람과 LLM 이 읽을 형태로 만든다 (스펙 5.1.1).
 ///
-/// 세 요소를 항상 찍는다 — 관련 위치 전부, 왜 문제인지 한 문장, 그대로 적용 가능한 `fix`.
+/// 세 요소를 항상 찍는다 — 관련 위치 전부, 왜 문제인지(머리글 한 줄), 그대로 적용 가능한 `fix`.
+///
+/// **note 의 문체 규칙을 여기서 지킨다** (스펙 5.1.1). `note` 는 위치 표시이므로
+/// 마침표로 끝나지 않는다. 한 실행에 두 문체가 섞이면 진단을 기계 파싱하는 쪽이 규칙을
+/// 하나로 배울 수 없다. **진단 전량이 이 함수 하나를 지나므로** 규칙을 여기서 재는 것이
+/// 36종을 각각 재는 것과 같다 — 새 진단도 자동으로 걸린다. `debug_assert!` 이므로
+/// 릴리즈 빌드에는 없다: 규칙 위반은 개발 중에 잡을 결함이지 사용자의 빌드를 세울 일이 아니다.
+///
+/// ponytail: 이 단언은 **테스트가 실제로 찍은 진단만** 잰다 — 지금 33 종 가운데 15 종이
+/// 바이너리를 거쳐 여기를 지난다(`K002`·`K005`·`K033`·`K10x` 등은 라이브러리 호출로만
+/// 검증되어 `report` 를 거치지 않는다). 나머지는 소스의 `note`·`action` 자리 전부(39+44)를
+/// 훑어 닫았다. 승급 조건은 문체 위반이 이 단언을 통과해 착지하는 것이며, 그때는 진단을
+/// 전부 발화시키는 픽스처(파싱 오류 프로젝트 하나 + 규칙 오류 프로젝트 하나, 두 번의
+/// `kang build`)를 세워 여기에 물린다.
+///
+/// `message` 에는 같은 단언을 두지 않는다. **한 진단이 명령으로 끝난다** — `K051`
+/// (UTF-8 아님)의 message 는 `iconv` 변환 명령으로 끝나고(자리 채움 `<원본 인코딩>` 이
+/// 있어 `[shell]` fix 가 될 수 없다), 그 뒤에 마침표를 붙이면 복사해 실행할 때 경로가
+/// 깨진다. 나머지 message 는 전부 마침표로 끝나며 그 사실은 스펙 5.1.1 의 구조 테스트가
+/// `K001`·`K012`·`K021` 에서 잰다.
 ///
 /// **순서를 다시 정하지 않는다.** 진단 하나가 여러 문서를 가리킬 수 있어(`K012`·`K040`)
 /// "이 진단의 문서" 라는 것이 없고, 호출자는 파싱·로드·규칙 진단을 이미 뜻이 있는
@@ -901,6 +920,12 @@ pub fn report(diags: &[Diagnostic]) -> String {
 
         // 관련 위치 전부를 찍고 note 를 같은 열에서 시작시킨다.
         for (자리, location) in 자리들.iter().zip(&diagnostic.locations) {
+            debug_assert!(
+                !location.note.ends_with('.'),
+                "{}: note 는 위치 표시이므로 마침표로 끝나지 않는다 — {}",
+                diagnostic.code,
+                location.note
+            );
             let 채움 = " ".repeat(폭 - 자리.chars().count());
             출력.push_str(&format!("  {자리}{채움}   {}\n", location.note));
         }
@@ -913,6 +938,12 @@ pub fn report(diags: &[Diagnostic]) -> String {
         출력.push_str("\n  fix:\n");
         // `fixes` 는 순서 있는 목록이며 앞에서부터 적용한다 (스펙 5.1.1).
         for fix in &diagnostic.fixes {
+            debug_assert!(
+                fix.kind == FixKind::Shell || !fix.action.ends_with('.'),
+                "{}: [edit] 의 action 은 지시문이므로 마침표로 끝나지 않는다 — {}",
+                diagnostic.code,
+                fix.action
+            );
             match (&fix.kind, &fix.doc) {
                 // 문서 편집은 어느 파일을 여는지부터 보여야 한다.
                 (FixKind::Edit, Some(doc)) => {
@@ -1688,7 +1719,7 @@ fn 미해결_심볼(
             kind: FixKind::Edit,
             doc: Some(doc.clone()),
             action: format!(
-                "이 문서에서 keyword 로 선언하거나(예: keyword `{이름}`: <한 줄 정의>) 참조의 오타를 고치세요."
+                "이 문서에서 keyword 로 선언하거나(예: keyword `{이름}`: <한 줄 정의>) 참조의 오타를 고치세요"
             ),
         }]
     } else {
@@ -1741,7 +1772,7 @@ fn 미해결_심볼(
             .map(|(줄, 자리)| Location {
                 doc: doc.clone(),
                 line: *줄,
-                note: format!("{자리}에서 참조했습니다."),
+                note: format!("{자리}에서 참조했습니다"),
             })
             .collect(),
         fixes,
@@ -1848,9 +1879,9 @@ fn 계층_상위_없음(
                         하나.doc,
                         심볼_주소(하나.doc, &하나.kind, &상위.join("."), true)
                     ),
-                    None if 다른_종류.is_some() => "상위가 다른 문서의 것이라면, 그 문서에서 그것을 keyword 로 선언한 뒤, 같은 이름을 묶고 있는 이 문서의 줄을 그 import 로 바꾸세요."
+                    None if 다른_종류.is_some() => "상위가 다른 문서의 것이라면, 그 문서에서 그것을 keyword 로 선언한 뒤, 같은 이름을 묶고 있는 이 문서의 줄을 그 import 로 바꾸세요"
                         .to_string(),
-                    None => "상위가 다른 문서의 것이라면, 그 문서에서 그것을 keyword 로 선언한 뒤 이 문서의 import 블록에서 가져오세요."
+                    None => "상위가 다른 문서의 것이라면, 그 문서에서 그것을 keyword 로 선언한 뒤 이 문서의 import 블록에서 가져오세요"
                         .to_string(),
                 },
             },
@@ -1878,7 +1909,7 @@ fn import_대상_없음(document: &Document, import: &Import, project: &Project)
     let 처방 = if project.docs.contains_key(&대상.doc) {
         format!("이 import 줄의 대상 이름을 고치거나, 대상 문서에 다음을 선언하세요: {문서_문법}")
     } else {
-        "이 import 줄의 대상 경로를 실재하는 문서로 고치세요. 그 문서가 컴파일에 실패했다면 먼저 그쪽 진단을 고치세요.".to_string()
+        "이 import 줄의 대상 경로를 실재하는 문서로 고치세요. 그 문서가 컴파일에 실패했다면 먼저 그쪽 진단을 고치세요".to_string()
     };
 
     Diagnostic {
@@ -1891,7 +1922,7 @@ fn import_대상_없음(document: &Document, import: &Import, project: &Project)
         locations: vec![Location {
             doc: document.path.clone(),
             line: import.line,
-            note: "여기서 import 했습니다.".to_string(),
+            note: "여기서 import 했습니다".to_string(),
         }],
         fixes: vec![Fix {
             kind: FixKind::Edit,
@@ -1924,7 +1955,7 @@ fn 미사용_import(document: &Document, import: &Import) -> Diagnostic {
         locations: vec![Location {
             doc: document.path.clone(),
             line: import.line,
-            note: format!("여기서 import 했고, 이 문서에서 부르는 이름은 {표기} 입니다."),
+            note: format!("여기서 import 했고, 이 문서에서 부르는 이름은 {표기} 입니다"),
         }],
         fixes: vec![Fix {
             kind: FixKind::Edit,
@@ -1967,7 +1998,7 @@ fn 이름_여럿(document: &Document, 대상: &SymbolRef, 줄들: &[&Import]) ->
         fixes: vec![Fix {
             kind: FixKind::Edit,
             doc: Some(document.path.clone()),
-            action: "이 심볼을 가리킬 이름을 하나로 정하고, 나머지 import 줄을 지운 뒤 그 이름을 쓰던 참조도 함께 고치세요.".to_string(),
+            action: "이 심볼을 가리킬 이름을 하나로 정하고, 나머지 import 줄을 지운 뒤 그 이름을 쓰던 참조도 함께 고치세요".to_string(),
         }],
     }
 }

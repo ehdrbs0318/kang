@@ -1897,7 +1897,7 @@ fn 줄이_없는_진단은_줄_번호도_확장자도_찍지_않는다() {
         locations: vec![Location {
             doc: 문서경로(&["/tmp/여기에는 git 이 없다"]),
             line: 0,
-            note: "이 디렉토리에서 위로 올라가며 .git 을 찾았지만 없었습니다.".to_string(),
+            note: "이 디렉토리에서 위로 올라가며 .git 을 찾았지만 없었습니다".to_string(),
         }],
         fixes: vec![Fix {
             kind: FixKind::Shell,
