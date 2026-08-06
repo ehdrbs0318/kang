@@ -1407,7 +1407,9 @@ fn bless_가_틀린_핀을_현재_해시로_갱신한다() {
 }
 
 /// **이 태스크의 핵심 계약.** bless 가 넣은 핀을 `check_revs` 가 곧바로 거부하면
-/// 핀을 붙일 방법이 아예 없어진다. 스펙 V0001:417 — fix 를 적용하면 새 진단이 생기면 안 된다.
+/// 핀을 붙일 방법이 아예 없어진다. fix 를 적용하면 새 진단이 생기면 안 된다 —
+/// 스펙 5.1.1 `:261` 의 "그대로 적용 가능한 `fix`" 가 근거다. (이 주석은 `:417` 을 인용하고
+/// 있었는데 그 줄은 빈 줄이고 스펙에 그 문장은 없다. 거짓 인용이 V0004 브리프까지 전파됐다.)
 #[test]
 fn bless_후_build_가_통과한다() {
     let root = 임시_루트("bless-build-ok");
@@ -2327,6 +2329,61 @@ fn 문서_이름을_고치면_핀_fix_가_실제로_돈다() {
     // 이제 남는 것은 핀뿐이고, 그 fix 는 복사해 실행하면 실제로 돈다.
     let (_, stderr, 코드) = 실행(&root, &["build"]);
     assert_eq!(코드, 1, "{stderr}");
+    assert_eq!(fix_적용(&root, &stderr), 1, "{stderr}");
+
+    let (stdout, stderr, 코드) = 실행(&root, &["build"]);
+    assert_eq!(코드, 0, "{stderr}");
+    assert_eq!(stderr, "", "fix 를 적용하면 새 진단이 생기면 안 된다");
+    assert_eq!(stdout, "");
+    정리(&root);
+}
+
+/// 심볼 이름의 `/` 는 **빌드를 영구히 봉쇄한다** (스펙 6.0 `:415`). `## 환불/취소` 는
+/// 컴파일을 통과하되 그 topic 을 import 한 문서의 `K020` 이 처방한 `kang bless` 가
+/// exit 2 로 죽어(주소가 마지막 `/` 뒤에서 갈리므로 이름 안이 잘린다) 다른 처방이 없다.
+///
+/// 그래서 선언·참조를 읽는 자리에서 거절하고, 이름을 고치면 `K020` 의 fix 가 실제로 돌아
+/// 빌드가 통과해야 한다. 봉쇄가 열리는 것을 이 왕복이 증명한다.
+#[test]
+fn 이름의_슬래시를_빼면_핀_fix_가_실제로_돈다() {
+    let root = 임시_루트("이름-슬래시");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/A.kang",
+        "---\ndescription: 환불 정책\n---\n\n## 환불/취소\n\n환불과 취소를 다룬다.\n",
+    );
+    쓰기(
+        &root,
+        "docs/B.kang",
+        "---\ndescription: 하위 정책\n---\n\nimport `docs`/`A`#`환불/취소`\n\n## 하위 정책\n\n`환불/취소` 를 따른다.\n",
+    );
+
+    // 선언 한 자리(A 의 헤딩)와 참조 두 자리(B 의 import 줄·본문)가 각각 거절된다.
+    let (stdout, stderr, 코드) = 실행(&root, &["build"]);
+    assert_eq!(코드, 1, "{stderr}");
+    assert_eq!(stdout, "");
+    assert_eq!(stderr.matches("K115").count(), 3, "{stderr}");
+    assert_eq!(stderr.matches("error[").count(), 3, "{stderr}");
+    // 이름을 고치라고 말해야 한다 — 그 말을 하지 않으면 처방이 아예 없다.
+    assert!(stderr.contains('/'), "{stderr}");
+
+    // 진단이 시킨 대로 두 문서에서 `/` 를 뺀다.
+    쓰기(
+        &root,
+        "docs/A.kang",
+        "---\ndescription: 환불 정책\n---\n\n## 환불 취소\n\n환불과 취소를 다룬다.\n",
+    );
+    쓰기(
+        &root,
+        "docs/B.kang",
+        "---\ndescription: 하위 정책\n---\n\nimport `docs`/`A`#`환불 취소`\n\n## 하위 정책\n\n`환불 취소` 를 따른다.\n",
+    );
+
+    // 남는 것은 핀뿐이고, 그 fix 는 복사해 실행하면 실제로 돈다.
+    let (_, stderr, 코드) = 실행(&root, &["build"]);
+    assert_eq!(코드, 1, "{stderr}");
+    assert!(stderr.contains("K020"), "{stderr}");
     assert_eq!(fix_적용(&root, &stderr), 1, "{stderr}");
 
     let (stdout, stderr, 코드) = 실행(&root, &["build"]);

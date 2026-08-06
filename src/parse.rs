@@ -20,6 +20,7 @@
 //! | `K111` | exception / cover 선언 문법이 올바르지 않음 |
 //! | `K112` | topic 밖에 내용이 있음 |
 //! | `K114` | import 선언이 첫 topic 뒤에 있음 |
+//! | `K115` | 심볼 이름에 `/` 가 있음 |
 //!
 //! `K113` 은 문서 파일 이름의 구분자에 배당되어 있고 그것을 보는 층은 [`crate::resolve`] 다
 //! (스펙 6.0 `:419`). 이 모듈이 그 번호를 쓰지 않는 이유가 그것이다.
@@ -128,6 +129,10 @@ pub fn parse_document(path: DocPath, source: &str) -> Result<Document, Vec<Diagn
             } else if name.is_empty() {
                 // 이름이 없는 topic 도 같은 이유로 주소를 댈 수 없다.
                 diagnostics.push(헤딩_이름_없음(&path, line_no));
+            } else if name.contains('/') {
+                // 헤딩 이름은 백틱을 쓰지 않으므로 [`백틱_검사`] 를 거치지 않는다.
+                // topic 이름의 `/` 를 막는 자리는 여기뿐이다 (스펙 6.0 `:415`).
+                diagnostics.push(이름_슬래시(&path, name, line_no));
             }
 
             // modifier 는 선언이지 서술이 아니므로 본문에서도 빠진다 (스펙 4.8).
@@ -248,16 +253,13 @@ pub fn parse_document(path: DocPath, source: &str) -> Result<Document, Vec<Diagn
         };
         push_body_line(topic, raw);
 
-        // 본문의 백틱 쌍은 전부 심볼 참조다.
-        match scan_symbols(raw) {
-            // 빈 백틱 쌍은 가리키는 심볼이 없다.
-            Some(symbols) if symbols.iter().any(String::is_empty) => {
-                diagnostics.push(빈_심볼(&path, line_no));
-            }
-            Some(symbols) => topic
+        // 본문의 백틱 쌍은 전부 심볼 참조다 (스펙 4.2). 선언부와 **같은** 검사를 받는다 —
+        // 두 벌로 두면 짝·빈 쌍·`/` 판정이 자리마다 갈라진다.
+        match 백틱_검사(&path, raw, line_no) {
+            Ok(symbols) => topic
                 .refs
                 .extend(symbols.into_iter().map(|symbol| (symbol, line_no))),
-            None => diagnostics.push(백틱_짝_없음(&path, line_no)),
+            Err(diagnostic) => diagnostics.push(diagnostic),
         }
     }
 
@@ -806,6 +808,12 @@ fn 백틱_검사(path: &DocPath, text: &str, line_no: usize) -> Result<Vec<Strin
     // 빈 백틱 쌍은 가리키는 심볼이 없다.
     if symbols.iter().any(String::is_empty) {
         return Err(빈_심볼(path, line_no));
+    }
+    // `/` 가 든 이름은 CLI 주소로 가리킬 수 없다 (스펙 6.0 `:415`). 선언과 참조를 함께
+    // 여기서 막는다 — 선언만 막으면 어느 문서도 그 이름을 선언할 수 없으므로 `K001` 이
+    // 언제나 "이 문서에서 선언하세요" 를 처방하고, 그대로 적용하면 선언 자리의 진단이 난다.
+    if let Some(이름) = symbols.iter().find(|이름| 이름.contains('/')) {
+        return Err(이름_슬래시(path, 이름, line_no));
     }
     Ok(symbols)
 }
@@ -1409,6 +1417,48 @@ fn 헤딩_백틱(path: &DocPath, heading: &str, line: usize) -> Diagnostic {
             doc: Some(path.clone()),
             action: format!(
                 "topic 헤딩 \"{heading}\" 에서 백틱을 지우고 평문 이름으로 고치세요. CLI 인자에는 백틱을 쓸 수 없어서(스펙 6.0) 백틱이 든 헤딩은 kang show 로 조회할 수 없습니다"
+            ),
+        }],
+    }
+}
+
+/// 심볼 이름에 `/` 가 있다는 진단을 만든다 (스펙 6.0 `:415`).
+///
+/// **이 이름은 빌드를 영구히 봉쇄한다.** CLI 주소는 마지막 `/` 뒤에서 문서와 심볼을 가르므로
+/// `docs/A#환불/취소` 는 "디렉토리 `docs/A#환불` 의 `취소`" 로 읽히고 그 조각에는 구분자가
+/// 없다. 그래서 이 심볼을 import 한 순간 `K020`(핀 없음)의 유일한 fix 인 `kang bless` 가
+/// exit 2 로 죽고, 스펙 4.8 이 핀을 손으로 계산할 수 없다고 못박았으므로 **명령만으로는
+/// 처방이 아예 없다.** 이름을 고치는 것이 유일한 해결이다.
+///
+/// `K105`(topic 헤딩의 백틱)의 형제 판정이며 그 근거도 같다 — CLI 로 주소를 댈 수 없는
+/// 이름은 이름을 고친다 (스펙 6.0 `:418`). 그래서 fix 는 `[shell]` 이 아니라 `[edit]` 이다.
+///
+/// # 매개변수
+/// - `path`: 대상 문서 경로
+/// - `이름`: `/` 가 든 심볼 이름
+/// - `line`: 그 이름이 나타난 줄 번호
+///
+/// # 반환값
+/// `K115` 진단
+fn 이름_슬래시(path: &DocPath, 이름: &str, line: usize) -> Diagnostic {
+    Diagnostic {
+        severity: Severity::Error,
+        code: "K115",
+        message: format!(
+            "심볼 이름에 `/` 가 있습니다 — `{이름}`. CLI 주소는 마지막 `/` 뒤에서 문서와 심볼을 가르므로(스펙 6.0) 이 이름은 주소로 가리킬 수 없고, 이 심볼을 import 하면 `K020` 의 유일한 fix 인 kang bless 가 사용법 오류(종료 코드 2)로 끝나 빌드가 error 에 머뭅니다."
+        ),
+        locations: vec![Location {
+            doc: path.clone(),
+            line,
+            note:
+                "이 줄의 심볼 이름. 주소를 가르는 `/` 와 이름 안의 `/` 를 구별할 수단이 없습니다."
+                    .to_string(),
+        }],
+        fixes: vec![Fix {
+            kind: FixKind::Edit,
+            doc: Some(path.clone()),
+            action: format!(
+                "이름 \"{이름}\" 에서 `/` 를 빼세요. 이 이름을 선언한 줄과 가리키는 줄을 함께 고칩니다"
             ),
         }],
     }

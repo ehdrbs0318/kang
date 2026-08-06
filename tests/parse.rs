@@ -1,6 +1,6 @@
 // `parse::parse_document` 의 frontmatter / keyword / topic / import / exception /
 // cover / modifier 파싱을 검증하는 통합 테스트.
-use kang::ast::{DocPath, Severity, SymbolKind};
+use kang::ast::{DocPath, FixKind, Severity, SymbolKind};
 use kang::parse;
 
 /// 테스트가 공용으로 쓰는 문서 경로 `docs/A`.
@@ -479,6 +479,71 @@ description: 결제 정책 문서
     assert_eq!(diagnostics[0].severity, Severity::Error);
     assert_eq!(diagnostics[0].locations[0].line, 5);
     assert!(!diagnostics[0].fixes.is_empty());
+}
+
+/// topic 헤딩 이름의 `/` 는 error 여야 한다 (스펙 6.0 `:415`).
+/// CLI 주소는 마지막 `/` 뒤에서 갈리므로 이 이름은 `kang bless` 로 가리킬 수 없고,
+/// 이 topic 을 import 한 문서는 핀을 붙일 방법이 없어 빌드가 영구히 error 에 머문다.
+#[test]
+fn topic_헤딩_이름의_슬래시는_에러다() {
+    let source = "---\ndescription: 환불 정책 문서\n---\n\n## 환불/취소\n\n본문이다.\n";
+
+    let diagnostics = parse::parse_document(문서경로(), source).unwrap_err();
+
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(diagnostics[0].code, "K115");
+    assert_eq!(diagnostics[0].severity, Severity::Error);
+    assert_eq!(diagnostics[0].locations[0].line, 5);
+    // 고칠 것은 이름이고 고칠 사람은 그 뜻을 아는 사람이다 — 셸 명령이 아니라 편집이다.
+    assert_eq!(diagnostics[0].fixes[0].kind, FixKind::Edit);
+    assert_eq!(diagnostics[0].fixes[0].doc, Some(문서경로()));
+}
+
+/// keyword 이름 조각의 `/` 도 같은 이유로 error 여야 한다.
+/// 스펙 `:415` 는 "심볼 이름" 이라 쓰므로 세 종류 전부에 걸린다.
+#[test]
+fn keyword_이름_조각의_슬래시는_에러다() {
+    let source = "---\ndescription: 결제 정책 문서\n---\n\nkeyword `카드/현금`: 결제 수단 두 가지다.\n\n## 결제 수단\n\n본문이다.\n";
+
+    let diagnostics = parse::parse_document(문서경로(), source).unwrap_err();
+
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(diagnostics[0].code, "K115");
+    assert_eq!(diagnostics[0].severity, Severity::Error);
+    assert_eq!(diagnostics[0].locations[0].line, 5);
+    assert_eq!(diagnostics[0].fixes[0].kind, FixKind::Edit);
+}
+
+/// exception 이름의 `/` 도 error 여야 한다.
+#[test]
+fn exception_이름의_슬래시는_에러다() {
+    let source =
+        "---\ndescription: 결제 정책 문서\n---\n\n## 결제 수단\n\nexception `무료/할인 상품`\n";
+
+    let diagnostics = parse::parse_document(문서경로(), source).unwrap_err();
+
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(diagnostics[0].code, "K115");
+    assert_eq!(diagnostics[0].severity, Severity::Error);
+    assert_eq!(diagnostics[0].locations[0].line, 7);
+}
+
+/// 본문 참조의 `/` 도 같은 진단을 받아야 한다.
+///
+/// **선언만 막으면 `K001` 의 fix 가 새 error 를 만든다** — 어느 문서도 이 이름을 선언할 수
+/// 없게 되므로 `K001` 은 언제나 "이 문서에서 keyword 로 선언하세요" 를 처방하고, 그대로
+/// 적용하면 선언 자리의 진단이 난다. 스펙 5.1.1 이 요구하는 "그대로 적용 가능한 fix" 가
+/// 아니게 된다. 참조를 읽는 자리에서 같은 근거로 거절하면 그 사슬이 아예 생기지 않는다.
+#[test]
+fn 본문_참조의_슬래시도_같은_진단을_받는다() {
+    let source =
+        "---\ndescription: 결제 정책 문서\n---\n\n## 결제 수단\n\n`카드/현금` 을 지원한다.\n";
+
+    let diagnostics = parse::parse_document(문서경로(), source).unwrap_err();
+
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(diagnostics[0].code, "K115");
+    assert_eq!(diagnostics[0].locations[0].line, 7);
 }
 
 /// 헤딩 줄은 짝 검사를 아예 받지 않으므로 헤딩 판정이 유일한 방어선이다.
@@ -1228,8 +1293,14 @@ cover `무료상품 청구서 예외`
 }
 
 /// modifier 로 인정하는 낱말은 `uncoded` 와 `iknow` 뿐이다.
-/// 그 밖의 낱말은 modifier 가 아니라 그 줄의 일부다 — 아니면 `//` 를 쓰는 합법 문장을
-/// 쓸 방법이 없어진다. kang 에는 `//` 이스케이프가 없다.
+/// 그 밖의 낱말은 modifier 가 아니라 그 줄의 일부다.
+///
+/// **헤딩에서는 그 줄의 일부가 되는 것이 곧 error 다** — 이름에 `/` 가 들어가므로 CLI 주소로
+/// 가리킬 수 없다 (스펙 6.0 `:415`). 여기서 보는 것은 낱말 판정이 그대로 살아 있다는 사실이며,
+/// 진단이 이름을 `// 메모` 까지 담아 보고하는 것이 그 증거다 — modifier 로 잘렸다면 이름은
+/// `결제의 방법` 이고 `/` 가 없어 진단이 아예 나지 않는다.
+/// `//` 를 쓰는 합법 문장은 이름이 아닌 자리(한 줄 정의·본문)에 남아 있다 —
+/// [`정의_안의_두_슬래시_주소는_modifier_가_아니다`] 와 [`본문의_두_슬래시는_modifier_가_아니다`].
 #[test]
 fn 알_수_없는_낱말은_modifier_가_아니라_이름의_일부다() {
     let source = r#"---
@@ -1239,11 +1310,15 @@ description: 결제 정책 문서
 ## 결제의 방법 // 메모
 "#;
 
-    let doc = parse::parse_document(문서경로(), source).unwrap();
+    let diagnostics = parse::parse_document(문서경로(), source).unwrap_err();
 
-    assert_eq!(doc.topics[0].name, "결제의 방법 // 메모");
-    assert!(!doc.topics[0].uncoded);
-    assert!(doc.topics[0].iknow.is_empty());
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(diagnostics[0].code, "K115");
+    assert!(
+        diagnostics[0].message.contains("결제의 방법 // 메모"),
+        "{}",
+        diagnostics[0].message
+    );
 }
 
 /// 알려진 낱말로 시작하면 modifier 자리이므로, 그 뒤가 틀리면 조용히 버리지 않는다.
@@ -1302,20 +1377,25 @@ keyword `비율`: 50 // 100 으로 계산
 }
 
 /// 앞에 `//` 가 든 주소가 있어도 뒤의 진짜 modifier 를 찾아야 한다.
-/// 첫 후보에서 멈추면 이 헤딩의 `uncoded` 를 놓친다.
+/// 첫 후보에서 멈추면 이 선언의 `iknow` 를 놓친다.
+///
+/// **헤딩이 아니라 한 줄 정의로 잰다.** modifier 를 가르는 것은 헤딩과 keyword 가 공유하는
+/// `split_modifier` 하나이고, 헤딩 이름에는 `/` 를 쓸 수 없어(스펙 6.0 `:415`) 그 자리에서는
+/// 앞선 `//` 후보를 만들 방법이 아예 없다. 정의와 본문에는 남아 있다.
 #[test]
 fn 주소_뒤에_붙은_modifier_는_여전히_인식된다() {
     let source = r#"---
 description: 결제 정책 문서
 ---
 
-## 참고 http://a.com 문서 // uncoded
+keyword `금액`: 참고 http://a.com 문서 // iknow `docs`/`B`.`금액`
 "#;
 
     let doc = parse::parse_document(문서경로(), source).unwrap();
 
-    assert!(doc.topics[0].uncoded);
-    assert_eq!(doc.topics[0].name, "참고 http://a.com 문서");
+    assert_eq!(doc.keywords[0].definition, "참고 http://a.com 문서");
+    assert_eq!(doc.keywords[0].iknow.len(), 1);
+    assert_eq!(doc.keywords[0].iknow[0].name, vec!["금액".to_string()]);
 }
 
 /// 낱말 판정을 넣어도 정상 modifier 는 그대로 인식되어야 한다.
