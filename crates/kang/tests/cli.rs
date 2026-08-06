@@ -3524,3 +3524,93 @@ fn 인덱스는_쓰지_못하면_옛_인덱스를_지키며_시끄럽게_실패�
     assert!(잔여.is_empty(), "임시 파일이 남으면 안 된다: {잔여:?}");
     정리(&root);
 }
+
+// ─── 인자 파서와 순회의 신뢰 경계 ────────────────────────────────────────────
+
+#[test]
+fn 플래그를_위치_인자로_삼키지_않는다() {
+    let root = 임시_루트("플래그_위치_인자");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: 문서\n---\n\n## 정책\n\n내용이다.\n",
+    );
+
+    // `kang index --help` 는 한때 `--help` 라는 **이름의 파일을 만들었다.** 슬라이스
+    // 패턴이 그것을 "경로가 `--help` 인 인덱스" 로 읽었다. 도구가 사용자의 오타를
+    // 파일로 만드는 자리이므로 신뢰 경계다.
+    let (stdout, stderr, 코드) = 실행(&root, &["index", "--help"]);
+    assert_eq!(코드, 2, "제자리가 아닌 플래그는 사용법 오류다: {stderr}");
+    assert_eq!(stdout, "", "사용법 오류는 stdout 을 비운다");
+    assert!(
+        stderr.contains("모르는 플래그입니다"),
+        "무엇이 틀렸는지 말해야 한다: {stderr}"
+    );
+    assert!(
+        !root.join("--help").exists(),
+        "플래그 이름의 파일이 생기면 안 된다"
+    );
+
+    // 다른 명령에서도 같다.
+    for 인자 in [
+        ["show", "--help"].as_slice(),
+        ["refs", "--foo"].as_slice(),
+        ["build", "--verbose"].as_slice(),
+        ["-h"].as_slice(),
+    ] {
+        let (_, stderr, 코드) = 실행(&root, 인자);
+        assert_eq!(코드, 2, "kang {인자:?} 는 사용법 오류여야 한다: {stderr}");
+    }
+
+    // 제자리 플래그 둘은 여전히 통한다.
+    let (_, _, 코드) = 실행(&root, &["--help"]);
+    assert_eq!(코드, 0, "단독 --help 는 도움말이다");
+    let (_, stderr, _) = 실행(&root, &["bless", "docs/a", "--import", "docs/a.없음"]);
+    assert!(
+        !stderr.contains("모르는 플래그입니다"),
+        "bless 의 --import 는 제자리 플래그다: {stderr}"
+    );
+    정리(&root);
+}
+
+#[test]
+fn gitignore_가_무시한_디렉토리는_순회하지_않는다() {
+    let root = 임시_루트("gitignore_순회");
+    git_저장소로(&root);
+    쓰기(&root, ".gitignore", "/무시할것\n# 주석\n\n");
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: 보이는 문서\n---\n\n## 정책\n\n내용이다.\n",
+    );
+    // 무시된 디렉토리 안의 문서는 커밋되지 않으므로 프로젝트의 문서가 아니다.
+    // 이 저장소에서 `target/`(79,384 파일)을 훑던 것이 `kang build` 428ms 의 전부였다.
+    쓰기(
+        &root,
+        "무시할것/b.kang",
+        "---\ndescription: 안 보여야 하는 문서\n---\n\n## 다른 정책\n\n내용이다.\n",
+    );
+
+    let (stdout, stderr, 코드) = 실행(&root, &["list"]);
+    assert_eq!(코드, 0, "정상 프로젝트다: {stderr}");
+    assert!(
+        stdout.contains("docs/a:"),
+        "보이는 문서는 나와야 한다: {stdout}"
+    );
+    assert!(
+        !stdout.contains("무시할것"),
+        "무시된 디렉토리의 문서가 나왔다: {stdout}"
+    );
+
+    // 무시 목록에 없으면 다시 보인다 — 건너뛰기가 `.gitignore` 를 실제로 읽은 결과임을
+    // 확인한다. 이름만 보고 건너뛰는 구현이면 이 단언이 깨진다.
+    쓰기(&root, ".gitignore", "# 이제 아무것도 무시하지 않는다\n");
+    let (stdout, _, 코드) = 실행(&root, &["list"]);
+    assert_eq!(코드, 0);
+    assert!(
+        stdout.contains("무시할것/b:"),
+        "무시가 풀리면 문서가 보여야 한다: {stdout}"
+    );
+    정리(&root);
+}
