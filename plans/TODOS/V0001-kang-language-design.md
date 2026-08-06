@@ -353,8 +353,12 @@ kang list     [경로]                    문서 목록과 description
 kang keywords [경로]                    키워드 목록
 kang refs     <키워드>                  키워드를 참조하는 topic
 kang show     <문서|토픽>               문서/토픽 조회 (YAML)
+kang index    <경로>                    심볼 인덱스 산출 (탭 구분)
+kang types    <경로>                    TypeScript 타입 산출 (topic)
 kang inspect                            코드 대조 (v2)
 ```
+
+`kang index` 와 `kang types` 는 코드 연동(7절)의 산출 명령이며 **`build` 와 나누어 둔다** — `build` 는 파일을 쓰지 않는다. 둘 다 error 가 하나라도 있으면 아무것도 쓰지 않고 종료 코드 1 로 끝낸다. 깨진 프로젝트의 산출물을 소비자가 읽으면 거짓을 검증하게 되므로, 6절이 조회 명령에 요구하는 것과 같은 규칙이다. 형식은 `V0003-kang-v2-code-integration.md` §5 가 정한다.
 
 `kang inspect` 는 v2 다. v1 바이너리에서 호출하면 "v2 기능이며 아직 구현되지 않았다" 를 명시하고 종료 코드 3 으로 끝낸다. 존재하지 않는 명령처럼 보이면 에이전트가 철자를 의심하며 재시도한다.
 
@@ -503,6 +507,7 @@ kang의 핵심 명령. 원본 파일을 그대로 보여주는 대신 관계 정
 path: docs/B
 keywords:                        # 이 파일이 정의한 키워드
   - name: 결제수단.카드
+    path: docs/B
     description: 카드를 사용한 결제
     referencedBy:
       - docs/C#무료결제의 구성요소
@@ -533,10 +538,12 @@ topics:
     references:
       keywords:
         - name: 결제
+          path: docs/A
           description: 사용자가 상품 대금을 지불하는 행위
           referencedBy:
             - docs/B#카드 결제
             - docs/C#무료결제의 구성요소
+        - docs/A.결제수단          # 두 번째 도달은 포인터 한 줄로 줄어든다
       topics:
         - name: docs/A#결제의 구성 요소
           uncoded: false
@@ -554,6 +561,9 @@ topics:
 - 멀티라인 본문은 literal scalar(`|`)를 사용한다. folded scalar(`>`)는 개행이 접혀 마크다운 구조가 깨진다.
 - **중복 제거** — 같은 topic이나 키워드가 여러 경로로 도달되면 최초 1회만 전개하고, 이후에는 경로 참조로 대체한다.
 - 출력 분량이나 토큰 규모를 표시하지 않는다. 깊이를 제한하는 옵션도 두지 않는다.
+- **값이 빈 절은 키째로 생략한다.** `keywords`·`referencingKeywords`·`exceptions`·`covers`·`topics`·`referencedBy`·`references` 는 담을 것이 있을 때만 나오고, 항상 있는 키는 `path` 하나다. 빈 목록으로 채우면 조회 한 번의 절반이 정보 없는 `[]` 가 되는데, `show` 의 독자는 그 토큰을 매번 읽는 LLM이다. 소비 코드가 무는 비용은 `?? []` 한 번이다.
+
+**포인터를 되조립하는 규약은 심볼 종류마다 다르다.** 중복 제거된 두 번째 도달은 `docs/A.결제수단`·`docs/A#결제의 구성 요소` 같은 **전체 주소 한 줄**로 줄어들고, 소비자는 그 문자열로 먼저 전개된 자리를 찾아야 한다. topic 은 전개 자리의 `name` 이 이미 전체 주소이므로 문자열이 그대로 일치하지만, **키워드의 전개 자리는 `name`(계층 이름)과 `path`(owner 문서)로 나뉘어 있어 `{path}.{name}` 으로 되맞춰야 같은 문자열이 된다.** 이 비대칭은 의도한 것이다 — 키워드 항목의 `name` 을 전체 주소로 올리면 위 스키마 예시의 `name: 결제수단.카드` 와 갈라지고, 한 개념의 이름을 두 표기로 부르게 된다. 그래서 키워드 항목은 `path` 를 **반드시** 함께 담는다. `path` 가 없으면 같은 이름을 선언한 다른 문서(4.4 `iknow` 로 합법이다)와 구별할 수 없어 포인터가 닿을 자리를 정할 수 없다.
 
 #### 깊이 폭발 (v1 미구현, 모양만 확정)
 
