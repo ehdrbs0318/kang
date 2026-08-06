@@ -262,11 +262,27 @@ export interface KangTopics {
 declare function kangTopic<K extends keyof KangTopics>(topic: K, rev: KangTopics[K]): MethodDecorator;
 ```
 
-- [ ] `kang index --ts <경로>` 인가 별도 명령인가 결정
-- [ ] 존재하지 않는 topic → `keyof` 제약 위반으로 **타입 에러**인 것을 실제 `tsc` 로 확인
-- [ ] 낡은 rev → 리터럴 타입 불일치로 **타입 에러**인 것을 확인
-- [ ] **한글 심볼 이름이 TS 식별자·리터럴에서 문제 없는지** 확인 — 문자열 리터럴 키라 괜찮을 것이나 실측한다
-- [ ] 생성 파일의 헤더에 "생성물이며 손으로 고치지 않는다" 를 명시
+- [x] `kang index --ts <경로>` 인가 별도 명령인가 결정
+  - **별도 명령 `kang types <경로>`.** Task 3 의 근거는 "`build` 는 파일을 쓰지 않는다" 이므로 경계는 **읽기/쓰기**이고 두 안 모두 그 경계의 옳은 쪽에 있다 — 그 선례는 둘을 가르지 못한다. 가른 것은 **플래그 가드**다. `main.rs` 의 `제자리_플래그` 는 "플래그처럼 보이는 것을 위치 인자로 삼켜 `--help` 라는 이름의 파일을 만든" 실제 버그의 산물이고, `--ts` 를 넣으면 그 규칙이 셋으로 는다. `types` 는 그 가드를 **한 줄도 건드리지 않는다**
+  - "같은 원천" 은 명령 이름이 아니라 코드가 보장한다 — `index.rs` 의 `순회` 하나를 `write_index`·`write_types` 가 공유하고, 뮤테이션(타입 핀만 5자리로)이 `타입의_핀이_인덱스의_핀과_같다` 를 깼다
+  - 쓰기 경로(compile → error면 안 씀 → mkdir → 원자적 쓰기)는 `main.rs` 의 `산출` 하나로 합쳤다. `인덱스` 를 복제하면 원자성 규약이 두 벌이 된다
+- [x] 존재하지 않는 topic → `keyof` 제약 위반으로 **타입 에러**인 것을 실제 `tsc` 로 확인
+  - tsc 5.9.3 실측: `error TS2345: Argument of type '"docs/없는문서#없는 정책"' is not assignable to parameter of type 'keyof KangTopics'.` exit 2
+- [x] 낡은 rev → 리터럴 타입 불일치로 **타입 에러**인 것을 확인
+  - `error TS2345: Argument of type '"000000"' is not assignable to parameter of type '"622fe2"'.` exit 2
+- [x] **한글 심볼 이름이 TS 식별자·리터럴에서 문제 없는지** 확인 — 문자열 리터럴 키라 괜찮을 것이나 실측한다
+  - 문제 없다. 저장소 자신의 문서로 낸 타입(한글·공백·`#`·`/`·혼용 스크립트)이 `tsc --strict` exit 0 이고, 데코레이터를 붙인 코드가 **실제로 실행**된다(`node out/run.js` → `실행됨`)
+  - **큰따옴표와 역슬래시는 이스케이프해야 한다** — 오늘 topic 이름에 합법이고(스펙 6.0 이 금지하지 않는다) 벗기면 `tsc` 가 `TS1131`·`TS1005` 로 깨진다. 탭·U+2028·U+2029 도 `\uXXXX` 로 낸다. `yaml::scalar` 를 재사용하지 않았다 — YAML 큰따옴표 스칼라에는 JS 에 없는 이스케이프(`\a`·`\N`·`\L`)가 있어 그쪽 규칙이 하나 늘면 여기서 조용히 문법 오류가 난다
+- [x] 생성 파일의 헤더에 "생성물이며 손으로 고치지 않는다" 를 명시
+  - `// kang 이 생성한 파일입니다. 손으로 고치지 않습니다 — 다음 \`kang types\` 가 덮어씁니다.`
+- [x] **topic 만 낸다** (범위 판정)
+  - 데코레이터가 붙는 자리는 클래스·메소드·접근자·프로퍼티이고(V0003 §3) 메소드가 구현하는 것은 정책이다. keyword 는 용어 정의, exception 은 정책의 구멍이므로 코드가 "구현" 하는 대상이 아니다. V0003 §5 가 적은 선언도 `KangTopics` 하나다. 그 둘을 가리키는 코드는 V0003 §3 의 주석 폴백과 `kang inspect --ci` 가 담당하며 `write_index` 가 이미 세 종류를 전부 낸다
+- [x] **`declare` 가 아니라 본문 있는 함수로 낸다** (V0003 §5 스니펫 정정)
+  - V0003 §5 는 `declare function kangTopic` 이라 적었으나, `export interface` 가 있는 파일은 모듈이므로 `declare` 는 (a) `export` 없이는 import 조차 되지 않고 (b) `export declare` 로 해도 컴파일된 JS 에 그 export 가 없어 `undefined` 를 받고 첫 데코레이터 적용에서 터진다. **존재하지 않는 것을 존재한다고 선언하는 파일을 kang 이 만들면 안 된다** — 진단이 참만 말해야 하는 것과 같은 규칙이다. `export function ... { return () => {}; }` 로 낸다
+- [x] **`experimentalDecorators` 가 필요하다** (Task 8 의 제약으로 넘긴다)
+  - V0003 §5 의 `MethodDecorator` 는 레거시 데코레이터 타입이다. TS 5 의 기본인 표준(Stage 3) 데코레이터로는 `TS1241`(런타임이 2인자로 부르는데 데코레이터가 3인자를 기대한다)·`TS1270` 이 난다. `experimentalDecorators: true` 에서 타입 체크·컴파일·실행이 전부 통과한다. **생성 타입을 두 모드 겸용으로 늘리지 않았다** — V0003 §5 가 `MethodDecorator` 를 적었고, 바꾸는 것은 설계 원천의 결정이다
+- [x] **저장소에 `.kang/generated.ts` 를 커밋하지 않는다**
+  - 이 저장소에 TS 코드가 없다. 소비자 없는 생성물은 썩는 것 말고 할 일이 없고, 드리프트 게이트를 붙여도 **아무것도 검사하지 않는 게이트**가 된다 — Task 3 J2 가 인덱스 CI 게이트를 Task 6 으로 미룬 것과 같은 이유다. 산출물과 그 게이트는 실제 소비자가 있는 `examples/ts-consumer`(Task 8)에 둔다. 결정론은 확인했다 — 두 번 돌려 SHA-256 동일
 
 ## Task 8 — 예시 TypeScript 구현체 + 문서 충실도 테스트
 
@@ -311,9 +327,24 @@ declare function kangTopic<K extends keyof KangTopics>(topic: K, rev: KangTopics
 
 **최종 리뷰 우선순위 3. Task 7·8 의 선행** — TS 클라이언트가 첫 줄에서 부딪히는 것이 포인터 재조립 규약이다.
 
-- [ ] keyword 포인터 비대칭을 스펙 6.4 에 명문화 — 포인터는 `{path}.{name}`, 전개 자리는 `name`/`path` 분리
-- [ ] **js-yaml·go-yaml 파싱 게이트** — 지금 검증은 PyYAML·Ruby Psych 경로만 돌았다. YAML 1.2 파서에서 `=`·`true` 의 해석이 다를 수 있다
-- [ ] 빈 절을 생략하는가 `[]` 로 내는가 확정 (V0002 M7 이월) — **실제 소비 코드(Task 8)를 보고 정한다**
+- [x] keyword 포인터 비대칭을 스펙 6.4 에 명문화 — 포인터는 `{path}.{name}`, 전개 자리는 `name`/`path` 분리
+  - 스펙 6.4 「출력 규칙」 뒤에 한 문단을 두었다. 종류마다 다르다는 사실, `{path}.{name}` 되맞춤, 비대칭이 의도인 이유(스키마 예시의 `name: 결제수단.카드` 와 갈라지지 않기 위해), `path` 가 없으면 4.4 `iknow` 로 합법인 동명 심볼과 구별할 수 없다는 것
+  - **스키마 예시도 고쳤다.** 예시가 `keywords` 항목에서 `path` 를 빼고 있었으므로 **스펙만 읽고는 포인터를 되조립할 수 없었다.** 구현은 처음부터 냈다. 두 자리(최상위 `keywords`, `references.keywords`)에 `path` 를 넣고, 포인터 한 줄이 실제로 어떻게 보이는지 예시에 넣었다
+  - **`show.rs` 의 rustdoc 은 고칠 것이 없었다** — 컨트롤러 지시의 전제가 낡았다. V0002 최종 리뷰 Minor 1 은 그 리뷰의 fix 단계에서 이미 닫혔고(`.superpowers/sdd/V0002-kang-v1-implementation/final-review-fix-report.md` 의 Minor 1 항목이 "코드는 그대로" 로 기록), 지금 `참조_묶음` 의 rustdoc 은 종류별 차이와 `{path}.{name}` 을 정확히 적고 있다. **남은 것은 스펙뿐이었고 그것이 이 항목의 실질이다**
+- [x] **js-yaml·go-yaml 파싱 게이트** — 지금 검증은 PyYAML·Ruby Psych 경로만 돌았다. YAML 1.2 파서에서 `=`·`true` 의 해석이 다를 수 있다
+  - **js-yaml 4.3.1**(CORE/DEFAULT/JSON 스키마)과 **go-yaml v3.0.1** 로 저장소 자신의 `show` 출력 6개 + 적대적 픽스처 1개를 실제 파싱했다. **전부 통과.** 두 파서에서 이름·경로·정의가 문자열로, `uncoded`·`pending` 이 bool 로 돌아온다
+  - **1.1 과 1.2 는 실제로 갈린다** — `=`(1.1 은 문서 전체 거부 / 1.2 는 문자열), `no`·`on`·`off`·`yes`(1.1 은 bool / 1.2 는 문자열). **갈리는 모든 표기에서 `scalar` 가 이미 인용한다**(`타입으로_읽히는_이름은_인용된다` 가 `no` 를 못박고 있다). 즉 1.1 용 인용 규칙이 1.2 의 상위집합이므로 **코드 변경 0**
+  - 게이트에 하중이 있다 — 인용을 벗기면 `description` 이 boolean·number 로 돌아오고, `카드: 결제` 는 문서 전체가 파싱되지 않는다
+  - **의존성 판정: §10.1 의 대상이 아니다.** 그 절은 표 머리가 "크레이트 / 허용 의존성" 이며 워크스페이스 크레이트의 Cargo 의존성을 열거한다. npm devDependency 는 크레이트의 의존성이 아니다. 다만 **이 태스크는 어느 쪽으로도 늘리지 않았다** — 게이트를 스크래치패드에서 돌렸고 `crates/`·저장소 어디에도 파일을 남기지 않았다. 상시 게이트는 node 가 이미 있는 `examples/ts-consumer`(Task 8)의 `npm test` 에 둔다
+- [x] 빈 절을 생략하는가 `[]` 로 내는가 확정 (V0002 M7 이월) — **실제 소비 코드(Task 8)를 보고 정한다**
+  - **생략한다.** 구현이 이미 그렇게 하고 있었고(`show.rs` 의 모든 `seq` 호출이 `is_empty` 로 가려져 있어 `Emitter::seq` 의 `[]` 가지는 `show` 에서 도달 불가) 이제 스펙 6.4 가 규칙으로 적는다. 항상 있는 키는 `path` 하나다
+  - **근거는 실제로 쓴 소비 코드다.** 소비자가 무는 비용은 `?? []` 한 번이었고, 실측한 7개 문서의 절 구성이 전부 달랐다(`topics` 만 / `referencingKeywords`+`topics` / `keywords`+`topics` / 넷) — 어차피 부재를 다뤄야 한다. 반대쪽 비용은 조회 한 번마다 절 여섯 개가 정보 없는 `[]` 로 나가는 것이고 **`show` 의 독자는 그 토큰을 매번 읽는 LLM** 이다. 스펙 6.4 가 이미 `covers` 에 대해 생략을 정해 두었으므로 규칙을 균일하게 만드는 쪽이 특례를 없앤다
+  - **컨트롤러 지시 정정:** "그 소비 코드를 이 태스크가 만든다(Task 7)" 는 틀렸다. Task 7 의 산출물(`generated.ts`)은 `show` YAML 을 읽지 않고 심볼 순회에서 나온다. `show` 를 소비하는 것은 Task 8 이며 플랜 원문이 그렇게 적었다. 그래서 판정을 미루지 않고 **J2 게이트를 그 소비 코드로 써서** 닫았다
+
+**수행 내역 (Task 10·7 함께)** — Task 10 이 Task 7 의 선행이고 둘이 같은 계약(포인터·스키마·핀)을 다루므로 한 태스크로 돌았다.
+`cargo test` **336 → 340**, clippy `--all-targets -D warnings` 0, `fmt --check` 0, `kang build` exit 0.
+`tsc` 5.9.3 로 셋을 잡았고(없는 topic·낡은 rev·이스케이프 벗김), js-yaml 4.3.1·go-yaml v3.0.1 로 `show` 출력 7개를 파싱했다.
+리포트: `.superpowers/sdd/V0004-kang-code-binding-and-dogfooding/task-10-7-report.md`
 
 ## Task 11 — 진단 문면 계약 확정
 

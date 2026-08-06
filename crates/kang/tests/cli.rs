@@ -730,7 +730,7 @@ fn help_이_명령과_인자_형식과_종료코드를_전부_보여준다() {
     let (stdout, stderr, 코드) = 실행(&root, &["--help"]);
 
     assert_eq!(코드, 0, "{stderr}");
-    // 명령 여덟 가지가 전부 보여야 재시도가 성공한다.
+    // 명령 열 가지가 전부 보여야 재시도가 성공한다.
     for 명령 in [
         "kang init",
         "kang build",
@@ -739,6 +739,8 @@ fn help_이_명령과_인자_형식과_종료코드를_전부_보여준다() {
         "kang keywords",
         "kang refs",
         "kang show",
+        "kang index",
+        "kang types",
         "kang inspect",
     ] {
         assert!(stdout.contains(명령), "{명령} 이 없다: {stdout}");
@@ -3525,6 +3527,142 @@ fn 인덱스는_쓰지_못하면_옛_인덱스를_지키며_시끄럽게_실패�
     정리(&root);
 }
 
+// ─── kang types (V0004 Task 7) ────────────────────────────────────────────────
+
+#[test]
+fn 타입은_topic_만_리터럴_짝으로_낸다() {
+    let root = 임시_루트("타입_topic_만");
+    git_저장소로(&root);
+    인덱스_픽스처(&root);
+
+    let (stdout, stderr, 코드) = 실행(&root, &["types", ".kang/generated.ts"]);
+    assert_eq!(
+        코드, 0,
+        "정상 프로젝트의 타입 생성은 성공해야 한다: {stderr}"
+    );
+    assert_eq!(stdout, "", "타입은 파일로 쓰고 stdout 은 비운다");
+
+    let 내용 =
+        fs::read_to_string(root.join(".kang/generated.ts")).expect("타입 파일이 있어야 한다");
+
+    // V0003 §5 가 적은 두 선언이 있어야 한다.
+    assert!(
+        내용.contains("export interface KangTopics"),
+        "KangTopics 인터페이스가 없다: {내용}"
+    );
+    assert!(
+        내용.contains("kangTopic<K extends keyof KangTopics>"),
+        "keyof 제약이 걸린 kangTopic 선언이 없다: {내용}"
+    );
+
+    // topic 은 전부 담는다. 한글 이름이 문자열 리터럴 키로 그대로 나와야 한다.
+    for topic in ["docs/a#결제의 기본", "docs/a#해외 결제의 처리"] {
+        assert!(
+            내용.contains(&format!("\"{topic}\": \"")),
+            "{topic} 이 리터럴 짝으로 없다: {내용}"
+        );
+    }
+
+    // **keyword 와 exception 은 담지 않는다.** 데코레이터가 붙는 자리는 메소드이고
+    // 메소드가 구현하는 것은 정책(topic)이다 (V0003 §3·§5).
+    for 아닌것 in ["docs/a.결제", "docs/a.결제수단.카드", "docs/a!해외 결제"] {
+        assert!(
+            !내용.contains(아닌것),
+            "{아닌것} 은 타입에 없어야 한다: {내용}"
+        );
+    }
+
+    // 생성물임을 파일 자신이 말해야 한다.
+    assert!(
+        내용.contains("고치지 않습니다"),
+        "손으로 고치지 말라는 머리말이 없다: {내용}"
+    );
+    정리(&root);
+}
+
+#[test]
+fn 타입의_핀이_인덱스의_핀과_같다() {
+    let root = 임시_루트("타입_핀_일치");
+    git_저장소로(&root);
+    인덱스_픽스처(&root);
+    실행(&root, &["index", ".kang/index.tsv"]);
+    실행(&root, &["types", ".kang/generated.ts"]);
+
+    let 인덱스 = fs::read_to_string(root.join(".kang/index.tsv")).expect("인덱스가 있어야 한다");
+    let 타입 = fs::read_to_string(root.join(".kang/generated.ts")).expect("타입이 있어야 한다");
+
+    // 인덱스의 topic 줄마다 같은 핀이 타입에 있어야 한다. **갈리면 Rust 와 TS 가 서로
+    // 다른 핀을 보고, 한쪽만 통과하는 상태가 조용히 생긴다.**
+    let mut 본_것 = 0;
+    for 줄 in 인덱스.lines() {
+        let (종류, rev, 주소) = 인덱스_줄(줄);
+        if 종류 != "topic" {
+            continue;
+        }
+        assert!(
+            타입.contains(&format!("\"{주소}\": \"{rev}\"")),
+            "{주소} 의 핀이 인덱스({rev})와 타입에서 갈린다: {타입}"
+        );
+        본_것 += 1;
+    }
+    assert!(본_것 >= 2, "topic 을 둘 이상 비교해야 한다 (본 것 {본_것})");
+    정리(&root);
+}
+
+#[test]
+fn 타입_리터럴이_따옴표와_역슬래시를_이스케이프한다() {
+    let root = 임시_루트("타입_이스케이프");
+    git_저장소로(&root);
+    // 큰따옴표와 역슬래시는 오늘 topic 이름에 합법이다 (스펙 6.0 이 금지하지 않는다).
+    // 이스케이프하지 않으면 생성된 TS 가 통째로 문법 오류가 된다.
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: 적대적 이름\n---\n\n\
+         ## 그는 \"결제\" 라고 했다\n\n\
+         내용이다.\n\n\
+         ## 경로는 a\\b 다\n\n\
+         내용이다.\n",
+    );
+
+    let (_, stderr, 코드) = 실행(&root, &["types", ".kang/generated.ts"]);
+    assert_eq!(코드, 0, "{stderr}");
+
+    let 내용 =
+        fs::read_to_string(root.join(".kang/generated.ts")).expect("타입 파일이 있어야 한다");
+    assert!(
+        내용.contains(r#""docs/a#그는 \"결제\" 라고 했다""#),
+        "큰따옴표가 이스케이프되지 않았다: {내용}"
+    );
+    assert!(
+        내용.contains(r#""docs/a#경로는 a\\b 다""#),
+        "역슬래시가 이스케이프되지 않았다: {내용}"
+    );
+    정리(&root);
+}
+
+#[test]
+fn error_상태에서는_타입을_쓰지_않는다() {
+    let root = 임시_루트("타입_error_상태");
+    git_저장소로(&root);
+    // 없는 심볼을 참조하는 문서는 error 다. 깨진 프로젝트의 타입을 tsc 가 읽으면
+    // 거짓을 검증한다 — 인덱스와 같은 규칙이다.
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: 깨진 문서\n---\n\n## 정책\n\n`없는 개념` 을 참조한다.\n",
+    );
+
+    let (stdout, stderr, 코드) = 실행(&root, &["types", ".kang/generated.ts"]);
+    assert_eq!(코드, 1, "컴파일 error 는 1 이다: {stderr}");
+    assert_eq!(stdout, "", "실패했으면 stdout 은 비어야 한다");
+    assert!(
+        !root.join(".kang/generated.ts").exists(),
+        "error 상태에서 타입 파일이 생기면 안 된다"
+    );
+    정리(&root);
+}
+
 // ─── 인자 파서와 순회의 신뢰 경계 ────────────────────────────────────────────
 
 #[test]
@@ -3557,11 +3695,17 @@ fn 플래그를_위치_인자로_삼키지_않는다() {
         ["show", "--help"].as_slice(),
         ["refs", "--foo"].as_slice(),
         ["build", "--verbose"].as_slice(),
+        ["types", "--help"].as_slice(),
         ["-h"].as_slice(),
     ] {
         let (_, stderr, 코드) = 실행(&root, 인자);
         assert_eq!(코드, 2, "kang {인자:?} 는 사용법 오류여야 한다: {stderr}");
     }
+    // 파일을 만드는 명령이 늘 때마다 이 단언이 함께 늘어야 한다.
+    assert!(
+        !root.join("--help").exists(),
+        "플래그 이름의 파일이 생기면 안 된다"
+    );
 
     // 제자리 플래그 둘은 여전히 통한다.
     let (_, _, 코드) = 실행(&root, &["--help"]);
