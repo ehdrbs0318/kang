@@ -416,14 +416,25 @@ Task 1 은 다른 전부의 안전망이므로 **가장 먼저**. Task 2 는 매
 
 ## 완료 조건
 
-- [ ] `cargo test` 전부 통과, `clippy -D warnings`·`fmt --check` 통과, **CI 가 PR 에서 돈다**
-- [ ] 스펙 6.0 의 세 금지가 전부 구현됨 (V0002 미달 항목)
-- [ ] **kang 자신의 코드에 매크로가 붙어 있고, 문서를 고치면 `cargo build` 가 깨지고 `kang bless` 로 낫는다**
+- [x] `cargo test` 전부 통과, `clippy -D warnings`·`fmt --check` 통과 / ⚠️ **CI 가 PR 에서 돈다 — 미검증**
+  - 341 passed, clippy `--all-targets -D warnings` 0, `fmt --check` 0, `actionlint` 0. `ci.yml` 이 `pull_request` + `push: [main]` 에 걸려 있으나 **remote 가 없어 실제로 돈 적이 없다.** red-green 은 `actionlint` 오염판으로만 확인했다
+- [x] 스펙 6.0 의 금지가 전부 구현됨 (V0002 미달 항목)
+  - **"세 금지" 가 "두 금지" 가 됐다.** Task 2 가 keyword 조각의 `.` 을 판정하고 **스펙 문면에서 지웠다** — `` `버전 1.2` `` 가 build·keywords·refs·show·bless 왕복 전부 exit 0 이고 조용한 오독 경로가 없어, 금지하면 오늘 통과하는 입력을 거부하게 된다. 남은 둘은 문서 파일 이름의 `.`·`#`·`!`(**`K113`**, `resolve.rs:670`)과 심볼 이름의 `/`(**`K115`**, `parse.rs:1446`)이고 둘 다 발화한다
+- [x] **kang 자신의 코드에 매크로가 붙어 있고, 문서를 고치면 `cargo build` 가 깨지고 처방으로 낫는다**
+  - **조건의 문면이 틀렸다.** `kang bless` 는 **문서의 import 줄**을 고치고 코드 핀은 `.rs` 에 있다 — Task 5 가 실측으로 반박했다(exit 2, 소스 무변경). 처방은 `[edit] 이 속성의 rev = "…" 을 rev = "…" 으로 바꾸세요` 다.
+  - 매크로 넷: `ast.rs:94`·`hash.rs:45`(keyword), `bless.rs:36`(ADR-0003)·`show.rs:56`(ADR-0002). **`crates/kang/src` 의 로직 변경 0** — 속성과 `use` 만 얹었다.
+  - 왕복 실측: ADR-0002 본문 한 낱말 → `cargo build` 101 + `--> crates/kang/src/show.rs:57:5` → 처방 적용 0 → 문서·핀 되돌림 0
 - [x] **`examples/ts-consumer` 의 `npm test` 가 통과하고, 정책 문서를 고치면 실패한다** (Task 8. `kang` 획득은 로컬 빌드 바이너리 — 릴리즈 curl 경로는 remote 가 붙은 뒤로 남는다)
-- [ ] **저장소의 실제 문서가 `.kang` 으로 이관되어 `kang build` 가 exit 0** (V0002 미달 항목)
-- [ ] 참조 병합 천장이 **실제 `.kang` 코퍼스**에서 재측정되었고 측정 스크립트가 저장소에 있다
-- [ ] `kang index` 가 낸 주소를 `ImportAddress::parse` 가 되받는다 (왕복)
+- [x] **저장소의 실제 문서가 `.kang` 으로 이관되어 `kang build` 가 exit 0** (V0002 미달 항목)
+  - `CONTEXT.kang`(keyword 16, topic 2) + ADR 셋. `kang build` **exit 0, 3ms**.
+  - **안 옮긴 것:** 스펙 `V0001`(617줄이 표·펜스·존재하지 않는 예시 심볼 — 쓸모가 아니라 형태 문제), 플랜 셋(`- [ ]` 가 topic 밖 내용이라 `K112`), `README`. 억지로 옮기지 않았다
+- [x] 참조 병합 천장이 **실제 `.kang` 코퍼스**에서 재측정되었고 측정 스크립트가 저장소에 있다
+  - `scripts/measure-corpus.py`. 4문서 263줄 / 조각 2+ 줄 30 / **계층 keyword 0 → 충돌 0**.
+  - **첫 측정보다 강한 근거이면서 동시에 약한 근거다** — 병합은 합친 이름이 스코프에 있어야 나는데 계층 선언이 0이라 **구조적으로 발화 불가**다. 즉 천장은 아직 시험받지 못했고, `check.rs:1155-1161` 이 그 사실을 적었다
+- [x] `kang index` 가 낸 주소를 `ImportAddress::parse` 가 되받는다 (왕복)
+  - `crates/kang/tests/cli.rs:3409` 이 인덱스의 **모든** 주소를 종류별로 `refs`·`show`·`bless` 에 넣는다. exception 은 종료 코드로 못 가른다 — `bless` 가 "주소 형식 오류" 와 "그 import 없음" 에 같은 2 를 쓴다(관찰이며 이월)
 - [ ] 태그 푸시 검증 — **remote 가 붙은 뒤에만 가능하다.** 붙지 않으면 미달로 남긴다
+  - **미달로 남긴다.** V0002 에서 이미 미달이었고 조건이 바뀌지 않았다. `release.yml` 은 `actionlint` 0 이고 크로스 빌드를 손으로 확인했으나 **런타임은 아무것도 확인하지 않았다.** README 의 `OWNER` 도 플레이스홀더다
 
 ## NOT in scope
 
