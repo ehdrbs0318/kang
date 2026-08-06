@@ -192,12 +192,33 @@ pub fn keyword(attr: TokenStream, item: TokenStream) -> TokenStream;
 pub fn covers(attr: TokenStream, item: TokenStream) -> TokenStream;
 ```
 
-- [ ] 인덱스 경로 결정 — 환경 변수 `KANG_INDEX` 인가 `build.rs` 가 넘기는가
-- [ ] **인덱스 부재 시 warn, `KANG_REQUIRE_INDEX=1` 이면 컴파일 에러** (B3 결정)
-- [ ] `build.rs` 의 `cargo:rerun-if-changed` 로 인덱스를 추적 — **문서를 바꾸면 재빌드되는 것을 실제로 확인한다**(수동으로 `touch` 하지 않고)
-- [ ] 심볼 부재 → 컴파일 에러. 메시지가 **스펙 5.1.1 의 세 요소**(무엇이 틀렸나 / 어디인가 / 어떻게 고치나)를 담는가. `kang bless` 를 짝지을 수 있는가
-- [ ] rev 불일치 → 컴파일 에러 + `kang bless` 처방. **그 처방을 그대로 복사해 실행하면 실제로 낫는지 확인한다**(V0002 가 세운 fix 계약)
-- [ ] 매크로가 원본 아이템을 그대로 반환하는지 — 확장 결과를 `cargo expand` 없이 확인할 방법을 정한다
+- [x] 인덱스 경로 결정 — 환경 변수 `KANG_INDEX` 인가 `build.rs` 가 넘기는가
+  - **판정: 둘 다 아니라 `KANG_INDEX` 하나를 매크로가 읽고, 없으면 `CARGO_MANIFEST_DIR` 부터 위로 훑어 `.kang/index.tsv` 를 찾는다.** `build.rs` 는 값을 넘기지 않고 **추적만** 붙인다
+  - 소비자의 `build.rs` 가 `cargo::rustc-env` 로 넘기는 안을 채택하지 않았다 — 소비자는 다른 프로젝트이고 kang 이 그들의 `build.rs` 를 쓸 수 없다. `.cargo/config.toml` 의 `[env]` 두 줄이 같은 일을 하며 코드가 0줄이다
+  - 위로 훑는 이유: 매크로는 **워크스페이스 루트를 모른다**. `CARGO_MANIFEST_DIR` 은 크레이트 디렉토리이고 인덱스는 보통 워크스페이스 루트에 있다
+- [x] **인덱스 부재 시 warn, `KANG_REQUIRE_INDEX=1` 이면 컴파일 에러** (B3 결정)
+  - warn 은 `eprintln!` 이며 `OnceLock` 안에서 내므로 **속성 개수와 무관하게 한 번**이다. 안정판에 `proc_macro_diagnostic` 이 없어 rustc warning 으로는 낼 수 없다
+  - `필수()` 는 `KANG_REQUIRE_YAML` 선례를 따라 **값이 아니라 존재**를 본다
+  - **꼬리 문장이 모드마다 다르다.** warn 은 "이 빌드에서 kang 속성은 검증되지 않습니다", error 는 "`KANG_REQUIRE_INDEX` 가 켜져 있어 … 컴파일 에러입니다" — 에러로 세운 빌드에 "통과합니다" 를 붙이면 진단이 거짓이 된다. 첫 구현이 그 거짓을 말했고 테스트로 잡았다
+- [x] `build.rs` 의 `cargo:rerun-if-changed` 로 인덱스를 추적 — **문서를 바꾸면 재빌드되는 것을 실제로 확인한다**(수동으로 `touch` 하지 않고)
+  - `crates/kang-macros/build.rs` 신규. 지시 셋: `rerun-if-changed=$KANG_INDEX`, `rerun-if-env-changed=KANG_INDEX`, `rerun-if-env-changed=KANG_REQUIRE_INDEX`
+  - **셋 전부를 뮤테이션으로 확인했다.** 파일 추적 제거 → 인덱스가 바뀌어도 `Finished in 0.01s` 로 캐시 통과(테스트 FAILED). 환경 변수 추적 둘도 각각 제거하니 대응 단계가 FAILED
+  - 손으로도 확인: `.kang` 문서 한 줄을 고치고 `kang index` 를 다시 돌리자 `cargo build` 가 재컴파일하며 exit 101
+  - **ponytail 천장:** 관례 경로로 찾는 경우는 파일 추적이 붙지 않는다. 의존성의 build script 는 자기를 의존하는 크레이트의 manifest 디렉토리를 받지 못한다. `.cargo/config.toml` 의 `[env]` 로 `KANG_INDEX` 를 주면 붙는다 (Task 6 이 그 방법을 쓴다)
+- [x] 심볼 부재 → 컴파일 에러. 메시지가 **스펙 5.1.1 의 세 요소**(무엇이 틀렸나 / 어디인가 / 어떻게 고치나)를 담는가. `kang bless` 를 짝지을 수 있는가
+  - **`kang bless` 는 짝지을 수 없다.** 심볼이 없으면 붙일 핀 자체가 없다. 처방은 둘이고 둘 다 참이다 — `[shell] kang index '<절대 경로>'`(인덱스가 낡았을 때, 그대로 실행 exit 0 확인) / `[edit] 주소를 고치거나 심볼을 선언`(주소가 틀렸을 때)
+  - 위치는 `syn::Error::new(주소.span(), …)` 로 **주소 리터럴에** 붙였다. rustc 가 `src/main.rs:17:15` 과 밑줄을 그린다 — 진단이 좌표를 직접 적지 않으므로 ADR-0003 을 지킨다
+  - **`compile_error!` 대신 `syn::Error::to_compile_error()` 를 쓴 이유가 이것이다.** 전자는 호출 자리 전체에만 붙어 어느 속성인지 가리키지 못한다
+  - **종류 어긋남을 갈라 냈다.** `#[kang::keyword("docs/pay#…")]` 처럼 구분자와 속성 이름이 어긋나면 "없습니다" 는 참이지만 쓸모가 없다. 주소만 맞는 줄을 한 번 더 찾아 `` `#[kang::topic("docs/pay#결제의 방법", rev = "75318c")]` 로 바꾸세요 `` 를 낸다 — 인덱스의 핀까지 넣은 완성 속성이다
+- [x] rev 불일치 → 컴파일 에러 + `kang bless` 처방. **그 처방을 그대로 복사해 실행하면 실제로 낫는지 확인한다**(V0002 가 세운 fix 계약)
+  - **`kang bless` 를 처방하지 않았다. 실측으로 낫지 않는다.** `kang bless docs/pay --import 'docs/pay#결제의 방법'` → **exit 2**, "그 문서에 이 import 가 없습니다", `src/main.rs` 무변경, 같은 에러 2건 잔존
+  - 근거: `bless` 는 **문서의 import 줄**을 고치는 명령이고 코드 속성의 핀은 `.rs` 파일에 있다. V0003 §4 가 "코드 쪽 주소를 새로 만들지 않는다" 고 정했으므로 `bless` 에 코드 자리를 지목할 수단이 없다
+  - 채택한 처방: `[edit] 이 속성의 rev = "36ff45" 을 rev = "75318c" 으로 바꾸세요`. **그대로 적용해 exit 0 을 실측했다** (아래 왕복)
+  - 줄 번호를 쓰지 않고 심볼과 두 핀 값으로 자리를 지정하므로 ADR-0003 을 지킨다
+- [x] 매크로가 원본 아이템을 그대로 반환하는지 — 확장 결과를 `cargo expand` 없이 확인할 방법을 정한다
+  - **성공 경로는 `Ok(()) => item` 한 표현식이다.** 토큰이 뒤틀릴 수 있는 자리는 진단을 붙이는 경로 하나뿐이고, `진단을_붙여도_원본_아이템은_그대로다` 가 제네릭·`where`·`derive` 가 든 아이템으로 `ends_with(원본)` 을 단언한다
+  - **함수·구조체·상수·`impl` 블록 넷**에 붙인 픽스처를 `cargo run` 으로 돌려 네 값(`7`·`derive(Clone)` 왕복·`9`·`11`)을 단언한다. 토큰이 갈리면 컴파일이 깨지거나 값이 달라진다
+  - `cargo expand` 는 §10.1 밖이라 쓰지 않았다
 
 ## Task 6 — kang 자신의 코드에 매크로 적용
 
