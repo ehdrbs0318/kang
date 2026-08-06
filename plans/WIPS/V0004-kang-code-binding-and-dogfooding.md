@@ -68,11 +68,24 @@ docs/A!무료 상품\texception\tb721e0
 
 **파일:** `.github/workflows/ci.yml` (신규)
 
-- [ ] `pull_request` + `push: [main]` 트리거, `ubuntu-latest` 한 대
-- [ ] `cargo test` (`KANG_REQUIRE_YAML=1`), `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`
-- [ ] python3 + pyyaml 보장 (Task 13 이 만든 게이트가 조용히 빠지지 않게)
-- [ ] 매트릭스는 `release.yml` 에만 남긴다 — CI 에서 4타깃을 돌릴 이유가 없다
+- [x] `pull_request` + `push: [main]` 트리거, 러너 한 대
+  - `.github/workflows/ci.yml` 신규. job 하나(`check`), 스텝 넷.
+  - **`ubuntu-latest` 대신 `ubuntu-24.04` 로 고정했다.** 같은 항목이 "`release.yml` 과 같은 러너 이미지를 쓰라" 도 요구하는데 `release.yml` 은 `ubuntu-24.04` 를 핀한다(:16, :48). `ubuntu-latest` 는 GitHub 이 이미지를 올리는 시점에 흘러가므로 두 요구를 동시에 만족할 수 없고, 흘러간 뒤에는 "CI 는 통과하는데 릴리즈가 깨진다" 가 정확히 생긴다. actionlint 가 `ubuntu-24.04` 를 유효 라벨로 인정한다(오염판 A 의 출력에 목록이 있다).
+- [x] `cargo test` (`KANG_REQUIRE_YAML=1`), `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`
+  - 세 명령을 로컬에서 실제로 돌렸다: `cargo test` exit 0 / **309 passed, 0 failed**, `clippy` exit 0, `fmt --check` exit 0.
+- [x] python3 + pyyaml 보장 (Task 13 이 만든 게이트가 조용히 빠지지 않게)
+  - `release.yml:26` 과 **바이트 단위로 같은 줄**을 썼다 (`python3 -m pip install --break-system-packages --quiet pyyaml`).
+  - **게이트에 이빨이 있음을 2×2 로 확인했다** — 파서 있음+ON → pass, 파서 가림+ON → **FAILED exit 101** (`tests/cli.rs:2517` panic: "KANG_REQUIRE_YAML 이 켜졌는데 python3 또는 pyyaml 이 없다"), 파서 가림+OFF → pass(건너뛰기). 즉 실패를 만드는 것은 환경 변수이며 파서 부재만으로는 조용히 빠진다.
+- [x] 매트릭스는 `release.yml` 에만 남긴다 — CI 에서 4타깃을 돌릴 이유가 없다
+  - `ci.yml` 은 `runs-on: ubuntu-24.04` 한 대. 28줄로 `release.yml`(60줄)보다 짧다.
+- [x] **`release.yml` 의 중복 `cargo test` 4회는 줄이지 않는다** (판단 및 근거)
+  - `ci.yml` 은 linux x86_64 **한 타깃만** 돈다. `release.yml:28` 의 `cargo test` 를 빼면 **macOS(aarch64·x86_64)와 linux arm64 에서 테스트가 어디서도 돌지 않는다.**
+  - 이 스위트는 플랫폼 의존이 큰 종류다 — `tests/cli.rs` 가 바이너리를 `Command` 로 띄우고 임시 디렉터리와 실제 git 저장소를 만든다(`임시_루트`, `git_저장소로`). 경로·파일 락·프로세스 동작이 OS 마다 갈리는 자리다.
+  - 태그 릴리즈는 드물고 산출물이 사용자에게 나가므로, 4회 중복은 낭비가 아니라 **네 아티팩트 각각에 대한 안전망**이다. `release.yml` 을 건드리지 않았다.
 - [ ] **검증:** 일부러 실패하는 커밋을 브랜치에 올려 게이트가 빨간지 확인한다 (red-green)
+  - **미완 — remote 가 붙은 뒤로 미룬다.** 이 저장소에는 `git remote` 가 없어 워크플로를 GitHub 에서 실제로 실행할 수 없고, `act` 도 설치되어 있지 않다. 가짜 remote 나 시뮬레이션으로 대신하지 않았다 — 그것은 이 항목이 요구하는 증거가 아니다.
+  - **대신 확보한 증거:** ① `ci.yml` 이 PyYAML 로 파싱된다(`on` 이 YAML 1.1 규칙으로 boolean `True` 키가 되는데, `release.yml` 도 동일하며 GitHub·actionlint 파서에서는 문자열이다). ② `actionlint` exit 0, 그리고 **오염판으로 red-green** — 잘못된 러너 라벨 → exit 1, `actions/checkout@v4` 에 없는 입력 → exit 1. 린터에 이빨이 있다. ③ 워크플로가 돌리는 세 명령이 로컬에서 통과. ④ `KANG_REQUIRE_YAML` 2×2 (위 항목).
+  - **여전히 검증 못 한 것:** 워크플로가 GitHub 러너에서 실제로 도는지, 그리고 `ubuntu-24.04` 이미지에 `clippy`·`rustfmt` 컴포넌트가 선설치되어 있는지. 후자는 `release.yml` 과 같은 방식(러너 선설치 툴체인 신뢰, `rustup` 설치 스텝 없음)을 따른 결과이며, 없을 경우 **조용히 빠지지 않고 "no such command" 로 시끄럽게 빨개진다** — 받아들일 수 있는 실패 양식이므로 `rustup component add` 를 넣지 않았다.
 
 ## Task 2 — 주소 문법 완결
 
