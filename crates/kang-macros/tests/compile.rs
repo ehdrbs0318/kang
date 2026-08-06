@@ -34,10 +34,14 @@ const 키워드_핀: &str = "8f4efc";
 /// 의존성을 `kang` 으로 개명해 선언한다. V0003 §4 가 적는 표기가 `#[kang::topic(...)]`
 /// 이고, 소비자가 그 이름을 쓰는 방법이 이것 하나다 (`crates/kang` 은 건드리지 않는다).
 ///
+/// # 매개변수
+/// - `이름`: 테스트를 구분하는 이름. **프로세스 id 만으로는 부족하다** — 같은 실행 안의
+///   두 테스트가 같은 디렉토리를 쓰면 서로의 인덱스를 덮어써 진단이 엉킨다
+///
 /// # 반환값
 /// 임시 프로젝트 루트
-fn 임시_프로젝트() -> PathBuf {
-    let 루트 = std::env::temp_dir().join(format!("kang-macros-{}", std::process::id()));
+fn 임시_프로젝트(이름: &str) -> PathBuf {
+    let 루트 = std::env::temp_dir().join(format!("kang-macros-{}-{이름}", std::process::id()));
     let _ = fs::remove_dir_all(&루트);
     fs::create_dir_all(루트.join("src")).expect("임시 디렉토리를 만들 수 있어야 한다");
 
@@ -160,7 +164,7 @@ fn 소스_핀_바꾸기(루트: &Path, 이전: &str, 다음: &str) {
 /// 없다는 뜻이다. 세 지시 전부를 뮤테이션으로 확인했다.
 #[test]
 fn 인덱스와_어긋난_참조가_빌드를_세운다() {
-    let 루트 = 임시_프로젝트();
+    let 루트 = 임시_프로젝트("어긋난_참조");
     let 인덱스 = 루트.join(".kang/index.tsv");
 
     // ① 인덱스와 맞으면 통과하고, 붙은 아이템 넷이 원본 값을 낸다.
@@ -283,5 +287,71 @@ fn 인덱스와_어긋난_참조가_빌드를_세운다() {
         "KANG_REQUIRE_INDEX 변경이 재빌드를 불러야 한다: {오류}"
     );
 
+    let _ = fs::remove_dir_all(&루트);
+}
+
+/// 인덱스가 문서보다 낡으면 빌드가 그 사실을 말한다.
+///
+/// **매크로가 추적하는 것은 인덱스 파일이고 `.kang` 문서가 아니다.** 그래서 문서만
+/// 고치고 `kang index` 를 안 돌리면 빌드가 초록인 채 낡은 핀이 통과한다 — 빌드가
+/// "코드와 문서가 맞다" 고 말하는데 검증하면 거짓이다. `build.rs` 가 문서 시각을 보고
+/// 그 사실을 경고한다.
+///
+/// **에러가 아니라 경고인 것이 계약이다.** 판정 근거가 mtime 이고 `git checkout` 은
+/// 파일 시각을 새로 찍으므로, 에러로 막으면 옛 커밋을 꺼낸 사람이 빌드를 못 한다.
+#[test]
+fn 인덱스가_문서보다_낡으면_빌드가_말한다() {
+    let 루트 = 임시_프로젝트("낡은_인덱스");
+    let 인덱스 = 루트.join(".kang/index.tsv");
+    쓰기_인덱스(&인덱스, 첫_핀, true);
+
+    // `build.rs` 가 인덱스에서 두 단계 위를 루트로 잡아 `.kang` 문서를 찾는다.
+    let 문서 = 루트.join("docs/a.kang");
+    fs::create_dir_all(문서.parent().expect("상위 디렉토리")).expect("docs 를 만들 수 있어야 한다");
+    fs::write(
+        &문서,
+        "---\ndescription: 시험\n---\n\n## 결제의 기본\n\n내용이다.\n",
+    )
+    .expect("문서를 쓸 수 있어야 한다");
+
+    // 인덱스를 문서보다 새롭게 만든다 — `kang index` 를 돌린 직후의 정상 상태다.
+    let 나중 = std::time::SystemTime::now() + std::time::Duration::from_secs(2);
+    fs::File::options()
+        .write(true)
+        .open(&인덱스)
+        .expect("인덱스를 열 수 있어야 한다")
+        .set_modified(나중)
+        .expect("인덱스 시각을 정할 수 있어야 한다");
+
+    let (코드, stderr) = 빌드(&루트, Some(&인덱스), false);
+    assert_eq!(코드, 0, "정상 상태는 통과해야 한다: {stderr}");
+    assert!(
+        !stderr.contains("인덱스가 문서보다 낡았습니다"),
+        "인덱스가 새로우면 경고가 없어야 한다: {stderr}"
+    );
+
+    // 이제 문서를 인덱스보다 새롭게 만든다 — 문서를 고치고 인덱스를 안 돌린 상태다.
+    let 더_나중 = 나중 + std::time::Duration::from_secs(2);
+    fs::File::options()
+        .append(true)
+        .open(&문서)
+        .expect("문서를 열 수 있어야 한다")
+        .set_modified(더_나중)
+        .expect("문서 시각을 정할 수 있어야 한다");
+
+    let (코드, stderr) = 빌드(&루트, Some(&인덱스), false);
+    assert_eq!(코드, 0, "경고이므로 빌드는 통과한다: {stderr}");
+    assert!(
+        stderr.contains("인덱스가 문서보다 낡았습니다"),
+        "낡은 인덱스를 말해야 한다: {stderr}"
+    );
+    assert!(
+        stderr.contains("a.kang"),
+        "어느 문서가 새로운지 지목해야 한다: {stderr}"
+    );
+    assert!(
+        stderr.contains("kang index"),
+        "처방을 담아야 한다: {stderr}"
+    );
     let _ = fs::remove_dir_all(&루트);
 }
