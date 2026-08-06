@@ -1414,7 +1414,10 @@ fn 이름_충돌_검사(
 ///
 /// # 반환값
 /// 조립된 주소 문자열
-fn 심볼_주소(doc: &DocPath, kind: &SymbolKind, name: &str, 백틱: bool) -> String {
+///
+/// **주소 조립은 이 함수 하나가 담당한다.** `kang index`(V0004 Task 3)도 이것을 부른다 —
+/// 사본을 만들면 인덱스가 낸 주소를 `refs`·`show`·`bless` 가 못 받는 경우가 생긴다.
+pub fn 심볼_주소(doc: &DocPath, kind: &SymbolKind, name: &str, 백틱: bool) -> String {
     let 감싸기 = |조각: &str| {
         if 백틱 {
             format!("`{조각}`")

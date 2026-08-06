@@ -3255,3 +3255,272 @@ fn 다른_도구_섹션이_있는_claude_md_에_kang_섹션만_덧붙인다() {
     }
     정리(&root);
 }
+
+// ─── kang index (V0004 Task 3) ────────────────────────────────────────────────
+
+/// 세 종류와 계층 keyword 를 한 문서에 모아 둔 픽스처를 만든다.
+///
+/// # 매개변수
+/// - `root`: 프로젝트 루트
+fn 인덱스_픽스처(root: &Path) {
+    쓰기(
+        root,
+        "docs/a.kang",
+        "---\ndescription: 결제 기반\n---\n\n\
+         keyword `결제`: 대금을 지불하는 행위\n\n\
+         keyword `결제수단`: 대금을 내는 방법\n\n\
+         keyword `결제수단`.`카드`: 카드로 내는 방법\n\n\
+         ## 결제의 기본\n\n\
+         `결제` 는 `결제수단`.`카드` 로 이뤄진다.\n\n\
+         exception `해외 결제`\n\n\
+         ## 해외 결제의 처리\n\n\
+         `해외 결제` 는 여기서 다룬다.\n\n\
+         cover `해외 결제`\n",
+    );
+}
+
+/// 인덱스 한 줄을 `종류`·`rev`·`주소` 로 가른다.
+///
+/// 주소가 마지막이므로 이름에 탭이 있어도 온전히 남는다.
+///
+/// # 매개변수
+/// - `줄`: 인덱스 한 줄
+///
+/// # 반환값
+/// `(종류, rev, 주소)`
+fn 인덱스_줄(줄: &str) -> (String, String, String) {
+    let mut 조각 = 줄.splitn(3, '\t');
+    (
+        조각.next().expect("종류가 있어야 한다").to_string(),
+        조각.next().expect("rev 가 있어야 한다").to_string(),
+        조각.next().expect("주소가 있어야 한다").to_string(),
+    )
+}
+
+#[test]
+fn 인덱스가_세_종류와_계층을_모두_낸다() {
+    let root = 임시_루트("인덱스_세_종류");
+    git_저장소로(&root);
+    인덱스_픽스처(&root);
+
+    let (stdout, stderr, 코드) = 실행(&root, &["index", ".kang/index.tsv"]);
+    assert_eq!(코드, 0, "정상 프로젝트의 인덱스는 성공해야 한다: {stderr}");
+    assert_eq!(stdout, "", "인덱스는 파일로 쓰고 stdout 은 비운다");
+
+    let 내용 = fs::read_to_string(root.join(".kang/index.tsv")).expect("인덱스 파일이 있어야 한다");
+    let 줄들: Vec<(String, String, String)> = 내용.lines().map(인덱스_줄).collect();
+
+    let 주소들: Vec<&str> = 줄들.iter().map(|(_, _, a)| a.as_str()).collect();
+    for 기대 in [
+        "docs/a.결제",
+        "docs/a.결제수단",
+        "docs/a.결제수단.카드",
+        "docs/a#결제의 기본",
+        "docs/a#해외 결제의 처리",
+        "docs/a!해외 결제",
+    ] {
+        assert!(
+            주소들.contains(&기대),
+            "{기대} 가 인덱스에 있어야 한다: {주소들:?}"
+        );
+    }
+
+    // 종류가 주소의 구분자와 일치해야 한다 — 소비자가 둘을 교차 검증한다.
+    for (종류, rev, 주소) in &줄들 {
+        assert_eq!(rev.len(), 6, "rev 는 6자리다: {rev}");
+        assert!(
+            rev.chars().all(|c| c.is_ascii_hexdigit()),
+            "rev 는 hex 다: {rev}"
+        );
+        let 기대_종류 = if 주소.contains('#') {
+            "topic"
+        } else if 주소.contains('!') {
+            "exception"
+        } else {
+            "keyword"
+        };
+        assert_eq!(종류, 기대_종류, "{주소} 의 종류가 어긋난다");
+    }
+    정리(&root);
+}
+
+#[test]
+fn 인덱스가_낸_주소를_다른_명령이_받는다() {
+    let root = 임시_루트("인덱스_주소_왕복");
+    git_저장소로(&root);
+    인덱스_픽스처(&root);
+    실행(&root, &["index", ".kang/index.tsv"]);
+
+    let 내용 = fs::read_to_string(root.join(".kang/index.tsv")).expect("인덱스가 있어야 한다");
+    // 인덱스가 낸 모든 주소를 그것을 받는 명령에 넣는다. 하나라도 거절되면
+    // 매크로가 인덱스에서 읽은 주소로 bless 명령을 만들 수 없다.
+    for 줄 in 내용.lines() {
+        let (종류, _, 주소) = 인덱스_줄(줄);
+        match 종류.as_str() {
+            // keyword 주소는 refs 가 받는다.
+            "keyword" => {
+                let (_, stderr, 코드) = 실행(&root, &["refs", &주소]);
+                assert_eq!(코드, 0, "refs 가 {주소} 를 받아야 한다: {stderr}");
+            }
+            // topic 주소는 show 가 받는다.
+            "topic" => {
+                let (_, stderr, 코드) = 실행(&root, &["show", &주소]);
+                assert_eq!(코드, 0, "show 가 {주소} 를 받아야 한다: {stderr}");
+            }
+            // exception 주소는 조회 명령이 없다. bless 의 주소 파서가 받는지만 본다.
+            //
+            // 종료 코드로는 가릴 수 없다 — bless 는 "주소 형식이 틀렸다" 와 "그 문서에
+            // 이 import 가 없다" 에 **같은 2** 를 쓴다. 그래서 메시지로 가른다: 주소가
+            // 파싱되지 않으면 사용법과 함께 "심볼 주소가 아닙니다" 가 나온다.
+            "exception" => {
+                let (_, stderr, _) = 실행(&root, &["bless", "docs/a", "--import", &주소]);
+                assert!(
+                    !stderr.contains("심볼 주소가 아닙니다"),
+                    "bless 가 {주소} 를 주소로 읽어야 한다: {stderr}"
+                );
+                assert!(
+                    stderr.contains("이 import 가 없습니다"),
+                    "주소는 읽혔고 그 문서에 해당 import 가 없는 상태여야 한다: {stderr}"
+                );
+            }
+            다른 => panic!("모르는 종류: {다른}"),
+        }
+    }
+    정리(&root);
+}
+
+#[test]
+fn 인덱스의_핀이_build_가_요구하는_것과_같다() {
+    let root = 임시_루트("인덱스_핀_일치");
+    git_저장소로(&root);
+    인덱스_픽스처(&root);
+    실행(&root, &["index", ".kang/index.tsv"]);
+
+    let 내용 = fs::read_to_string(root.join(".kang/index.tsv")).expect("인덱스가 있어야 한다");
+    let 결제_핀 = 내용
+        .lines()
+        .map(인덱스_줄)
+        .find(|(_, _, 주소)| 주소 == "docs/a.결제")
+        .map(|(_, rev, _)| rev)
+        .expect("docs/a.결제 가 인덱스에 있어야 한다");
+
+    // 인덱스가 낸 핀을 손으로 적어 import 한다. build 가 통과하면 인덱스의 핀과
+    // check_revs 가 비교하는 핀이 같은 것이다 — 갈리면 매크로가 거짓을 검증한다.
+    쓰기(
+        &root,
+        "docs/b.kang",
+        &format!(
+            "---\ndescription: 소비\n---\n\n\
+             import `docs`/`a`.`결제` rev \"{결제_핀}\"\n\n\
+             ## 결제를 쓰는 곳\n\n`결제` 를 쓴다.\n"
+        ),
+    );
+    let (_, stderr, 코드) = 실행(&root, &["build"]);
+    assert_eq!(
+        코드, 0,
+        "인덱스의 핀으로 import 하면 통과해야 한다: {stderr}"
+    );
+    정리(&root);
+}
+
+#[test]
+fn error_상태에서는_인덱스를_쓰지_않는다() {
+    let root = 임시_루트("인덱스_error_상태");
+    git_저장소로(&root);
+    // 미해결 심볼 하나로 error 를 만든다.
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: 깨진 문서\n---\n\n## 정책\n\n`없는 개념` 을 쓴다.\n",
+    );
+
+    let (stdout, stderr, 코드) = 실행(&root, &["index", ".kang/index.tsv"]);
+    assert_eq!(코드, 1, "error 가 있으면 종료 코드 1 이다: {stderr}");
+    assert_eq!(stdout, "", "error 상태에서 stdout 은 비어야 한다");
+    assert!(stderr.contains("K001"), "진단이 나와야 한다: {stderr}");
+    assert!(
+        !root.join(".kang/index.tsv").exists(),
+        "깨진 프로젝트의 인덱스를 쓰면 매크로가 거짓을 검증한다"
+    );
+    정리(&root);
+}
+
+#[test]
+fn 이름에_탭이_있어도_주소가_온전하다() {
+    let root = 임시_루트("인덱스_이름에_탭");
+    git_저장소로(&root);
+    // 탭이 든 이름은 오늘 합법이고 show·refs 가 받는다. 인덱스가 그것을 깨뜨리면
+    // 소비자가 필드를 넷으로 세어 조용히 오독한다 — 주소를 마지막에 두어 막는다.
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: 탭\n---\n\nkeyword `앞\t뒤`: 탭이 든 이름\n\n## 탭 쓰는 곳\n\n`앞\t뒤` 를 쓴다.\n",
+    );
+    실행(&root, &["index", ".kang/index.tsv"]);
+
+    let 내용 = fs::read_to_string(root.join(".kang/index.tsv")).expect("인덱스가 있어야 한다");
+    let 탭_줄 = 내용
+        .lines()
+        .find(|줄| 줄.contains("앞\t뒤"))
+        .expect("탭이 든 이름이 인덱스에 있어야 한다");
+    let (종류, rev, 주소) = 인덱스_줄(탭_줄);
+    assert_eq!(종류, "keyword");
+    assert_eq!(rev.len(), 6);
+    assert_eq!(주소, "docs/a.앞\t뒤", "주소가 탭까지 온전해야 한다");
+
+    // 그 주소를 refs 가 그대로 받는다.
+    let (_, stderr, 코드) = 실행(&root, &["refs", &주소]);
+    assert_eq!(코드, 0, "탭이 든 주소도 refs 가 받아야 한다: {stderr}");
+    정리(&root);
+}
+
+#[test]
+fn 인덱스는_쓰지_못하면_옛_인덱스를_지키며_시끄럽게_실패한다() {
+    let root = 임시_루트("인덱스_쓰기_실패");
+    git_저장소로(&root);
+    인덱스_픽스처(&root);
+
+    // 먼저 성공한 인덱스를 만들어 둔다. **이것이 원자성에 하중을 싣는 자리다** —
+    // 읽기 전용 디렉토리에서 원자적 쓰기는 임시 파일을 못 만들어 실패하지만, 제자리
+    // 쓰기로 바꾸면 기존 파일을 덮어써 **성공한다**. 옛 인덱스의 바이트를 단언하지
+    // 않으면 "실패가 시끄럽다" 만 재고 "원자적이다" 는 재지 못한다.
+    실행(&root, &["index", ".kang/index.tsv"]);
+    let 옛_인덱스 = fs::read(root.join(".kang/index.tsv")).expect("첫 인덱스는 성공해야 한다");
+    assert!(
+        !옛_인덱스.is_empty(),
+        "첫 인덱스가 비어 있으면 시험이 성립하지 않는다"
+    );
+
+    // 임시 파일을 만들 수 없게 대상 디렉토리를 읽기 전용으로 만든다.
+    // tests/check.rs 가 이미 쓰는 방식이며 임시 파일 이름에 의존하지 않는다.
+    let 잠금 = root.join(".kang");
+    let 원래 = fs::metadata(&잠금).expect("메타데이터").permissions();
+    let mut 읽기전용 = 원래.clone();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        읽기전용.set_mode(0o555);
+    }
+    fs::set_permissions(&잠금, 읽기전용).expect("권한을 바꿀 수 있어야 한다");
+
+    let (stdout, stderr, 코드) = 실행(&root, &["index", ".kang/index.tsv"]);
+    fs::set_permissions(&잠금, 원래).expect("권한을 되돌릴 수 있어야 한다");
+
+    assert_eq!(코드, 2, "쓰기 실패는 환경 오류다: {stderr}");
+    assert_eq!(stdout, "", "실패했으면 stdout 은 비어야 한다");
+
+    // 원자성의 실체: 실패한 재작성이 옛 인덱스를 건드리지 않았다.
+    let 지금 = fs::read(root.join(".kang/index.tsv")).expect("옛 인덱스가 남아야 한다");
+    assert_eq!(
+        지금, 옛_인덱스,
+        "실패한 쓰기가 옛 인덱스를 바꿨다 — 원자적이지 않다"
+    );
+
+    let 잔여: Vec<String> = fs::read_dir(root.join(".kang"))
+        .expect("디렉토리를 읽을 수 있어야 한다")
+        .map(|e| e.expect("항목").file_name().to_string_lossy().into_owned())
+        .filter(|이름| 이름 != "index.tsv")
+        .collect();
+    assert!(잔여.is_empty(), "임시 파일이 남으면 안 된다: {잔여:?}");
+    정리(&root);
+}

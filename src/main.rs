@@ -15,6 +15,7 @@
 use kang::ast::{Diagnostic, DocPath, Severity, SymbolKind};
 use kang::bless::{self, ImportAddress};
 use kang::check;
+use kang::index;
 use kang::init;
 use kang::resolve::{self, Project, SymbolTable};
 use kang::show::{self, ShowTarget};
@@ -35,6 +36,7 @@ const 사용법: &str = "kang — 문서 컴파일러
   kang keywords [경로]                 키워드 목록
   kang refs <키워드>                   키워드를 참조하는 topic
   kang show <문서|토픽>                문서/토픽 조회 (YAML)
+  kang index <경로>                    심볼 인덱스 산출 (탭 구분)
   kang --help                          이 도움말
 
 아직 구현되지 않은 명령 (부르면 종료 코드 3 이며, 다른 방법이 없습니다):
@@ -90,6 +92,7 @@ fn main() {
         ["show", 대상] => 조회(대상),
         ["bless", 문서, "--import", 심볼] => 축복(문서, 심볼),
         ["init"] => 초기화(),
+        ["index", 경로] => 인덱스(경로),
         // v1 에 없는 것과 **v1 이 만들지 않기로 한 것**은 다르다. 앞의 것은 다음 빌드를
         // 기다리면 되지만 이것은 기다려도 오지 않는다 (스펙 6절).
         ["inspect"] => 미구현("kang inspect", "v2 기능이며 아직 구현되지 않았습니다."),
@@ -324,6 +327,67 @@ fn 초기화() -> i32 {
 ///
 /// # 반환값
 /// 프로세스 종료 코드
+/// 심볼 인덱스를 파일로 낸다 (V0004 Task 3).
+///
+/// **error 가 있으면 쓰지 않고 끝낸다.** 깨진 프로젝트의 인덱스를 proc-macro 가 읽으면
+/// 거짓을 검증하게 된다 — 스펙 6절이 조회 명령에 요구하는 것과 같은 규칙이다.
+///
+/// stdout 은 비운다. 인덱스는 파일이고, 표준 출력으로도 내면 소비자가 둘 중 어느 것을
+/// 읽을지 갈린다.
+///
+/// # 매개변수
+/// - `경로`: 인덱스를 쓸 파일 경로. 현재 디렉토리 기준으로 해석한다
+///
+/// # 반환값
+/// 프로세스 종료 코드. 성공 0 / 컴파일 error 1 / 쓰기 실패 2
+fn 인덱스(경로: &str) -> i32 {
+    let (project, table) = match compile() {
+        Ok(결과) => 결과,
+        Err(진단들) => return 종료_코드(&진단들),
+    };
+
+    let mut 내용 = Vec::new();
+    // 메모리 버퍼에 쓰므로 실패할 수 없다. 그래도 삼키지 않는다 — 삼키면 빈 인덱스가
+    // 성공으로 나가고 소비자는 "심볼이 없는 프로젝트" 로 읽는다.
+    if let Err(오류) = index::write_index(&project, &table, &mut 내용) {
+        eprintln!("인덱스를 만들지 못했습니다 — {오류}");
+        return 2;
+    }
+    let 내용 = match String::from_utf8(내용) {
+        Ok(내용) => 내용,
+        Err(오류) => {
+            eprintln!("인덱스가 UTF-8 이 아닙니다 — {오류}");
+            return 2;
+        }
+    };
+
+    let 파일 = std::path::PathBuf::from(경로);
+    // 상위 디렉토리가 없으면 만든다. `.kang/index.tsv` 처럼 새 디렉토리에 두는 것이
+    // 정상 사용이고, 여기서 실패하면 원자적 쓰기가 임시 파일부터 실패한다.
+    match 파일.parent() {
+        // 경로에 디렉토리 조각이 있으면 만든다. 빈 부모는 `index.tsv` 처럼 현재
+        // 디렉토리에 바로 두는 경우이며 만들 것이 없다.
+        Some(상위) if !상위.as_os_str().is_empty() => {
+            if let Err(오류) = std::fs::create_dir_all(상위) {
+                eprintln!(
+                    "인덱스를 둘 디렉토리를 만들지 못했습니다 ({}) — {오류}",
+                    상위.display()
+                );
+                return 2;
+            }
+        }
+        _ => {}
+    }
+
+    // 쓰기는 `bless` 와 같은 함수를 쓴다. 원자성 규약의 두 번째 사본을 만들면 한쪽만
+    // 고쳐지는 날이 온다.
+    if let Err(사유) = bless::쓰기_원자적으로(&파일, &내용, "tsv.tmp") {
+        eprintln!("인덱스를 쓰지 못했습니다: {사유}");
+        return 2;
+    }
+    0
+}
+
 fn 축복(문서: &str, 심볼: &str) -> i32 {
     // 주소부터 본다. 인자의 **모양**이 틀린 것은 프로젝트를 읽기 전에 답이 나오는
     // 사용법 오류이고, 그때 도움말을 함께 내는 것이 에이전트의 재시도 경로다.

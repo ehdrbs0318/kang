@@ -219,7 +219,7 @@ pub fn bless(
         return Ok(false);
     }
 
-    쓰기_원자적으로(&파일, &새_원문)?;
+    쓰기_원자적으로(&파일, &새_원문, "kang.bless")?;
     Ok(true)
 }
 
@@ -266,7 +266,11 @@ fn 핀_박기(줄: &str, 옛_핀: Option<&str>, 새_핀: &str) -> Result<String,
 /// rename 은 원자적이므로, 어느 시점에 죽어도 문서는 **옛 내용이거나 새 내용**이지
 /// 반쯤 잘린 내용이 되지 않는다.
 ///
-/// 임시 파일 확장자는 `.bless` 다. `.kang` 으로 끝나면 동시에 도는 다른 kang 프로세스가
+/// **임시 파일 확장자는 호출자가 준다.** `bless` 는 `kang.bless`, `kang index` 는
+/// `tsv.tmp` 를 쓴다 — `with_extension` 이 확장자를 갈아 끼우므로 대상 파일이 `.kang` 이
+/// 아니어도 임시 이름이 뒤틀리지 않는다.
+///
+/// bless 의 임시 파일 확장자는 `.bless` 다. `.kang` 으로 끝나면 동시에 도는 다른 kang 프로세스가
 /// 그것을 문서로 읽는다.
 ///
 /// **rename 은 임시 파일의 inode 를 문서 자리에 올린다.** 그래서 파일 mode 를 옮겨
@@ -290,12 +294,15 @@ fn 핀_박기(줄: &str, 옛_핀: Option<&str>, 새_핀: &str) -> Result<String,
 /// # 매개변수
 /// - `파일`: 바꿔 쓸 파일
 /// - `내용`: 새 내용 전체
+/// - `임시_확장자`: 같은 디렉토리에 만들 임시 파일의 확장자
 ///
 /// # 오류
 /// 임시 파일을 쓰지 못하거나 옮기지 못하면 그 사정을 담은 문장.
 /// **실패한 경로를 지목한다** — 멀쩡한 파일을 지목하면 사용자가 엉뚱한 곳을 뒤진다
-fn 쓰기_원자적으로(파일: &Path, 내용: &str) -> Result<(), String> {
-    let 임시 = 파일.with_extension("kang.bless");
+pub fn 쓰기_원자적으로(
+    파일: &Path, 내용: &str, 임시_확장자: &str
+) -> Result<(), String> {
+    let 임시 = 파일.with_extension(임시_확장자);
 
     // 실패한 자리에 임시 파일이 남으면 사용자 저장소에 쓰레기가 쌓인다.
     if let Err(오류) = std::fs::write(&임시, 내용) {
@@ -315,7 +322,7 @@ fn 쓰기_원자적으로(파일: &Path, 내용: &str) -> Result<(), String> {
     if let Err(오류) = std::fs::rename(&임시, 파일) {
         let _ = std::fs::remove_file(&임시);
         return Err(format!(
-            "임시 파일을 문서 자리로 옮기지 못했습니다 ({} → {}) — {오류}",
+            "임시 파일을 제자리로 옮기지 못했습니다 ({} → {}) — {오류}",
             임시.display(),
             파일.display()
         ));
