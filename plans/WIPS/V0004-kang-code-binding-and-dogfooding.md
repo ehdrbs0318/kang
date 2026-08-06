@@ -224,10 +224,31 @@ pub fn covers(attr: TokenStream, item: TokenStream) -> TokenStream;
 
 **사용자 목표 (b).** 자기 저장소가 첫 사용자다.
 
-- [ ] `crates/kang/src/*.rs` 의 주요 함수에 `#[kang::topic(...)]` 을 붙인다 — **먼저 Task 9 가 그 topic 들을 `.kang` 문서로 만들어야 한다.** 순서 의존이므로 Task 9 뒤에 온다
-- [ ] 부트스트랩 순서를 `xtask` 나 `Makefile` 로 못박는다 (B3)
-- [ ] **문서를 고치면 컴파일이 깨지고, `bless` 후 통과하는 것을 손으로 왕복한다**
-- [ ] CI 에서 `KANG_REQUIRE_INDEX=1` 로 돌린다
+- [x] `crates/kang/src/*.rs` 의 주요 함수에 `#[kang::topic(...)]` 을 붙인다 — **먼저 Task 9 가 그 topic 들을 `.kang` 문서로 만들어야 한다.** 순서 의존이므로 Task 9 뒤에 온다
+  - **속성 넷.** `ast.rs` 의 `SymbolKind` ← keyword `심볼`(정의가 "keyword·topic·exception 세 종류뿐" 이고 배리언트가 정확히 그 셋), `hash.rs` 의 `rev` ← keyword `rev 핀`(그 값을 계산하는 함수), `bless.rs` 의 `ImportAddress` ← ADR-0003(그 ADR 의 결정이 이 타입 자체다), `show.rs` 의 `show` ← ADR-0002(결정문이 "kang show 는 평탄화한다")
+  - **안 붙인 자리 셋.** ADR-0001(묘비 없음)·`CONTEXT#Negative Boundaries`·`CONTEXT#무엇을 keyword 로 선언하나` 는 **부정 결정 또는 사람에게 주는 지침**이라 구현하는 코드가 없다. rename 원자성을 근거로 `check.rs` 에 ADR-0001 을 붙일 수는 있으나 그것은 ADR 의 *근거*이지 *결정*이 아니다 — 거짓 결합이므로 붙이지 않았다. **문서를 늘려 자리를 만들지도 않았다**
+  - 의존성 판정: `crates/kang` 이 `kang-macros` 를 path 의존한다. **V0001 §10.1 에 "워크스페이스 내부 크레이트끼리의 path 의존은 외부 의존성이 아니다" 를 한 문장 추가**했다 — 공급망도 빌드 시간도 늘지 않는다
+  - **`use kang_macros as kang;` 로 모듈 안에서만 별명을 준다.** 의존성을 `kang` 으로 개명하는 소비자 방식(Task 5 의 픽스처)은 이 크레이트 이름이 이미 `kang` 이라 쓸 수 없다 — 통합 테스트의 `use kang::ast::…` 가 두 크레이트 사이에서 갈린다. 별명 덕에 진단이 처방하는 `#[kang::…]` 문면이 이 저장소에서도 그대로 참이다
+  - **`crates/kang/src` 의 로직은 한 줄도 바뀌지 않았다.** 속성과 `use` 만 얹었고 테스트 335 가 그대로 통과한다 (V0003 §5 의 "런타임 비용 0" 약속이 실측으로 지켜졌다)
+- [x] 부트스트랩 순서를 `xtask` 나 `Makefile` 로 못박는다 (B3)
+  - **`Makefile`.** `xtask` 는 크레이트가 하나 늘고 §10.1 의 목록이 셋으로 갈리는데, 여기서 할 일은 셸 두 줄이다
+  - `index` 는 `KANG_INDEX=/kang-bootstrap-no-index` 로 돌린다. **인덱스가 낡으면 매크로가 컴파일을 세우므로 인덱스를 낼 바이너리를 만들 수 없고, B3 의 "부재 시 warn" 이 그 순환을 끊는다.** `.cargo/config.toml` 의 `[env]` 는 이미 환경에 있는 값을 덮지 않아(`force` 없음) 이 지정이 이긴다
+  - **`.cargo/config.toml` 의 `[env] KANG_INDEX` 가 필수다** — 관례 경로(위로 훑기)에는 재빌드 추적이 붙지 않으므로, 없으면 문서를 고쳐도 `cargo build` 가 캐시로 통과한다 (Task 5 의 뮤테이션 실측)
+- [x] **문서를 고치면 컴파일이 깨지고, `bless` 후 통과하는 것을 손으로 왕복한다**
+  - ADR-0002 본문의 한 낱말(`커진다`→`불어난다`)을 고쳐 왕복했다. `make index-check` exit 2(드리프트) → `cargo build` **exit 101** + `[edit] 이 속성의 rev = "622fe2" 을 rev = "83c764" 으로 바꾸세요` → 처방 그대로 적용 → exit 0
+  - **되돌리는 방향도 같은 왕복이다.** 문서를 되돌리면 인덱스도 되돌아가고 소스의 핀이 낡아 exit 101 이 다시 난다. 처방을 적용해 exit 0. 저장소는 커밋 시점과 같은 바이트로 돌아왔다
+  - **`bless` 가 아니라 `[edit]` 이다** — Task 5 가 실측으로 확인했다. `bless` 는 문서의 import 줄을 고치는 명령이고 코드 속성의 핀은 `.rs` 에 있다
+  - **`bless` 를 쓰지 않는 왕복에서 드러난 사실 하나:** 문서를 고쳐도 `kang index` 를 다시 돌리지 않으면 `cargo build` 가 통과한다(추적 대상이 인덱스 파일이므로). CI 의 드리프트 게이트가 그 창을 닫는 유일한 장치다
+  - 인덱스를 치우면 warn + exit 0, `KANG_REQUIRE_INDEX=1` 이면 **exit 101** (속성 넷 각각에 진단)
+- [x] CI 에서 `KANG_REQUIRE_INDEX=1` 로 돌린다
+  - `ci.yml` 에 스텝 하나(`make index-check`)와 `env` 셋을 더했다. `actionlint` exit 0
+  - **`KANG_REQUIRE_INDEX` 를 job 전역으로 두면 `make index` 부트스트랩이 스스로 막힌다** — 실측 `exit 2`. 그래서 스텝마다 준다
+  - **드리프트 게이트가 이빨을 갖는다** — 문서를 고치고 인덱스를 갱신하지 않은 상태에서 `make index-check` 가 exit 2 와 `-topic 622fe2 … / +topic 83c764 …` 를 냈다
+  - 게이트를 cargo 스텝보다 **앞에** 둔 이유: 어긋난 채로 오면 cargo 도 빨개지지만 그 진단은 "인덱스를 다시 내라" 를 한 단계 멀리서 말한다
+  - **`release.yml` 에는 켜지 않았다.** B3 는 "CI 와 릴리즈에서 켠다" 였다 — 그 절반이 열려 있다. 근거: 인덱스가 커밋되고 `ci.yml` 이 드리프트를 막으므로 태그가 가리키는 커밋은 이미 드리프트 없음이고, remote 가 없어 릴리즈 워크플로를 실제로 돌려 확인할 수 없다. **판단이지 완료가 아니므로 열린 항목으로 남긴다**
+
+**수행 내역** — 테스트 **335 유지**(변경 0), clippy `--all-targets -D warnings` 0, `fmt --check` 0, `actionlint` 0, `kang build` exit 0.
+커밋 `baa8fd5`. 리포트: `.superpowers/sdd/V0004-kang-code-binding-and-dogfooding/task-6-report.md`
 
 ## Task 7 — TypeScript 타입 생성
 
