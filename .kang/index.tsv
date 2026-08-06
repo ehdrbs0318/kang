@@ -19,3 +19,8 @@ topic	54b81d	CONTEXT#Negative Boundaries
 topic	aff253	docs/adr/0001-no-tombstones-for-retired-terms#폐기된 용어에 묘비를 남기지 않는다
 topic	622fe2	docs/adr/0002-flatten-on-read-import-on-write#읽을 때는 평탄화, 쓸 때는 import
 topic	229423	docs/adr/0003-symbolic-addressing-not-line-numbers#지속되는 주소는 심볼로 지정한다
+keyword	bf0c9d	examples/ts-consumer/docs/proration.일할 계산
+topic	970bc8	examples/ts-consumer/docs/proration#부분 환불의 계산
+keyword	97af92	examples/ts-consumer/docs/refunds.환불
+keyword	6ff81b	examples/ts-consumer/docs/refunds.정산
+topic	cdd44d	examples/ts-consumer/docs/refunds#환불 가능 기간

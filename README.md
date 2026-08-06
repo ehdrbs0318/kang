@@ -75,6 +75,17 @@ kang build
 `docs/example.kang`(첫 문서 템플릿). 기존 `AGENTS.md`·`CLAUDE.md` 는 덮어쓰지 않고
 섹션만 덧붙이며, 이미 있으면 건너뛴다.
 
+## TypeScript 프로젝트에서 쓰기
+
+`examples/ts-consumer/` 가 Rust 툴체인 없는 소비자의 최소 형태다. `kang types` 가 문서의
+topic 과 rev 핀을 TypeScript 리터럴 타입으로 내고, 코드는
+`@kangTopic("docs/refunds#환불 가능 기간", "cdd44d")` 로 자기가 구현한 정책을 가리킨다.
+정책 원문이 바뀌면 rev 가 달라져 `tsc` 가 컴파일을 세우고, 진단이 새 rev 를 알려 주므로
+문서를 다시 읽고 코드의 핀을 그것으로 고친다. `npm install` 뒤 `npm test` 가
+`kang build` → `kang types` → `tsc` → 핀 대조를 순서대로 돈다. `kang` 바이너리는 PATH
+또는 `$KANG` 에서 찾으므로 위 「설치」로 받아 두면 되고, 데코레이터를 쓰므로
+`tsconfig.json` 에 `experimentalDecorators` 가 필요하다.
+
 ## 스펙
 
 언어 명세와 CLI 계약은 [`plans/TODOS/V0001-kang-language-design.md`](plans/TODOS/V0001-kang-language-design.md) 에 있다.

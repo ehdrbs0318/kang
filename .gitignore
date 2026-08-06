@@ -1,2 +1,7 @@
 /target
 /.superpowers/
+
+# examples/ts-consumer 의 npm 의존성. 앞에 / 를 붙이지 않는다 — kang 의 순회가 최상위
+# .gitignore 의 이름만 보고 그 이름의 디렉토리를 어느 깊이에서든 건너뛰므로, 이 한 줄이
+# git 과 kang build 양쪽에서 node_modules 를 빼 준다.
+node_modules

@@ -1,0 +1,12 @@
+{
+  "name": "kang-ts-consumer-example",
+  "version": "0.0.0",
+  "private": true,
+  "description": "kang 문서를 참조하는 TypeScript 프로젝트의 최소 형태",
+  "scripts": {
+    "test": "node test.mjs"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3"
+  }
+}
