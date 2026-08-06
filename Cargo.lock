@@ -60,6 +60,7 @@ dependencies = [
 name = "kang"
 version = "0.1.0"
 dependencies = [
+ "kang-macros",
  "sha2",
 ]
 

@@ -3,6 +3,11 @@
 //! 파서부터 진단 규칙, CLI 출력까지 전 단계가 이 타입들을 공유한다.
 //! 이 모듈은 타입 정의와 표시 형식만 담고, 파싱 로직은 [`crate::parse`] 에 둔다.
 
+// V0003 §4 가 적는 표기가 `#[kang::topic(...)]` 이다. 소비자는 의존성을 `kang` 으로 개명해
+// 그 이름을 얻지만, 이 크레이트의 이름이 이미 `kang` 이라 개명하면 통합 테스트의
+// `use kang::ast::…` 가 두 크레이트 사이에서 갈린다. 그래서 모듈 안에서만 별명을 준다 —
+// 진단이 처방하는 속성 문면이 이 저장소에서도 그대로 참이 된다.
+use kang_macros as kang;
 use std::fmt;
 
 /// 진단의 심각도. `Error` 는 컴파일 실패, `Warn` 은 통과하되 알림이다.
@@ -86,6 +91,7 @@ impl fmt::Display for DocPath {
 pub struct KeywordName(pub Vec<String>);
 
 /// 파일 밖으로 노출되는 심볼의 종류.
+#[kang::keyword("CONTEXT.심볼", rev = "6c37e8")]
 #[derive(Debug, PartialEq)]
 pub enum SymbolKind {
     /// 도메인 특수 용어 선언.

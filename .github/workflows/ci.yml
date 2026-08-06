@@ -20,9 +20,19 @@ jobs:
       # 파서를 깔고 KANG_REQUIRE_YAML 로 "건너뛰기" 자체를 실패로 만든다.
       - run: python3 -m pip install --break-system-packages --quiet pyyaml
 
+      # 인덱스를 커밋하므로(Task 3 J2) 문서와 인덱스가 어긋난 커밋이 랜딩될 수 없어야 한다.
+      # 어긋난 채로 오면 아래 cargo 스텝들도 rev 핀 불일치로 빨개지지만, 그 진단은
+      # "인덱스를 다시 내라" 를 한 단계 멀리서 말한다. 그래서 이 게이트가 먼저 온다.
+      - run: make index-check
+
+      # KANG_REQUIRE_INDEX 는 인덱스 부재를 컴파일 에러로 올린다 (B3). 스텝마다 준다 —
+      # job 전역으로 두면 위의 make index 부트스트랩이 스스로 막힌다.
       - run: cargo test
         env:
           KANG_REQUIRE_YAML: '1'
+          KANG_REQUIRE_INDEX: '1'
 
       - run: cargo clippy --all-targets -- -D warnings
+        env:
+          KANG_REQUIRE_INDEX: '1'
       - run: cargo fmt --check

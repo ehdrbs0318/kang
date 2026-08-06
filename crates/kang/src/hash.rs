@@ -4,6 +4,7 @@
 //! 핀으로 박아 둔다. 대상 본문이 바뀌면 `rev` 값이 달라져 참조처가
 //! 컴파일 에러로 깨지는 식으로 동작한다.
 
+use kang_macros as kang;
 use sha2::{Digest, Sha256};
 
 /// 해시 입력 텍스트를 정규화한다.
@@ -41,6 +42,7 @@ pub fn normalize(text: &str) -> String {
 ///
 /// # 반환값
 /// SHA-256 해시값의 앞 6자리 hex 문자열
+#[kang::keyword("CONTEXT.rev 핀", rev = "29c60b")]
 pub fn rev(text: &str) -> String {
     let normalized = normalize(text);
 

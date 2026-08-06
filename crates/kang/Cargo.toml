@@ -5,3 +5,6 @@ edition = "2024"
 
 [dependencies]
 sha2 = "0.10"
+# 자기 저장소가 kang 의 첫 사용자다 (V0004 Task 6). 워크스페이스 내부 크레이트이며
+# V0001 §10.1 의 "외부 의존성" 목록에 걸리지 않는다 — 그 절에 명문화했다.
+kang-macros = { path = "../kang-macros" }

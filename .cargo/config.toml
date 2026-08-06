@@ -1,0 +1,14 @@
+# 심볼 인덱스의 자리를 컴파일 타임에 알린다.
+#
+# **이 파일이 없으면 재빌드 추적이 붙지 않는다.** 매크로는 `KANG_INDEX` 가 없을 때
+# `CARGO_MANIFEST_DIR` 부터 위로 훑어 `.kang/index.tsv` 를 찾지만, 그 경로는
+# `crates/kang-macros/build.rs` 가 알 수 없다 — 의존성의 build script 는 자기를 의존하는
+# 크레이트의 manifest 디렉토리를 받지 못한다. 추적이 없으면 문서를 고치고 `kang index` 를
+# 다시 돌려도 `cargo build` 가 캐시로 통과하며 낡은 핀이 exit 0 을 낸다 (V0004 Task 5 가
+# 뮤테이션으로 실측했다).
+#
+# `relative = true` 는 이 `.cargo` 디렉토리의 상위(저장소 루트)를 기준으로 삼는다.
+# 값이 이미 환경에 있으면 그쪽이 이긴다(`force` 를 켜지 않았다) — `make index` 의
+# 부트스트랩이 그 성질을 쓴다.
+[env]
+KANG_INDEX = { value = ".kang/index.tsv", relative = true }

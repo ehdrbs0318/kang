@@ -28,10 +28,15 @@ use crate::ast::{DocPath, SymbolKind, SymbolRef};
 use crate::hash;
 use crate::parse::parse_document;
 use crate::resolve::{Project, SymbolTable};
+use kang_macros as kang;
 use std::path::Path;
 
 /// 갱신 대상 import 를 가리키는 주소. `docs/A.결제` 를 파싱한 결과다.
 /// 줄 번호를 쓰지 않는다 (ADR-0003).
+#[kang::topic(
+    "docs/adr/0003-symbolic-addressing-not-line-numbers#지속되는 주소는 심볼로 지정한다",
+    rev = "229423"
+)]
 pub struct ImportAddress {
     /// 가리키는 심볼.
     pub target: SymbolRef,

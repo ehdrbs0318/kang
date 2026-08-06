@@ -22,6 +22,7 @@ use crate::ast::{DocPath, Exception, Keyword, SymbolKind, SymbolRef, Topic};
 use crate::check;
 use crate::resolve::{Project, SymbolId, SymbolTable};
 use crate::yaml::Emitter;
+use kang_macros as kang;
 use std::collections::HashSet;
 
 /// 조회 대상. 문서 전체이거나 그 안의 topic 하나다.
@@ -52,6 +53,10 @@ pub enum ShowTarget {
 /// # 반환값
 /// 스펙 6.4 의 YAML 텍스트. **마지막 개행이 없다** — 호출자의 `writeln!` 이 붙인다.
 /// 대상 문서가 프로젝트에 없으면 빈 문자열 (호출자가 이미 걸러야 한다)
+#[kang::topic(
+    "docs/adr/0002-flatten-on-read-import-on-write#읽을 때는 평탄화, 쓸 때는 import",
+    rev = "622fe2"
+)]
 pub fn show(project: &Project, table: &SymbolTable, target: &ShowTarget) -> String {
     let (path, 토픽_이름) = match target {
         ShowTarget::Document(path) => (path, None),
