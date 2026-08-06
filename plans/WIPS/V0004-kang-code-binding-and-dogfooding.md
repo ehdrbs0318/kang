@@ -290,11 +290,30 @@ declare function kangTopic<K extends keyof KangTopics>(topic: K, rev: KangTopics
 
 **파일:** `examples/ts-consumer/` (신규)
 
-- [ ] 최소 TS 프로젝트 — `.kang` 문서 2~3개 + 그 정책을 구현한 코드
-- [ ] `kang` 바이너리를 **릴리즈 아티팩트로 받아** 쓰는 형태(소스 빌드 금지) — README 의 curl 경로가 실제로 동작하는지 이 예시가 검증한다
-- [ ] `npm test` 가 (1) `kang build` (2) 타입 생성 (3) `tsc --noEmit` (4) 문서 충실도 검사를 순서대로 돈다
-- [ ] **문서 충실도 검사** — `kang inspect` 가 v2 이므로 이 태스크에서 만들 범위를 정한다. 최소선: 코드가 참조하는 topic 이 전부 실재하고 rev 가 일치하는가. `inspect` 본체(죽은 정책 판정·참조 전파)는 별도 태스크로 가른다
-- [ ] **정책 문서를 고치면 `npm test` 가 실패하는 것을 실제로 확인한다.** 이것이 이 태스크의 유일한 성공 기준이다
+- [x] 최소 TS 프로젝트 — `.kang` 문서 2~3개 + 그 정책을 구현한 코드
+  - 문서 2개(`docs/refunds.kang` 환불 가능 기간, `docs/proration.kang` 부분 환불의 계산), 코드 1개(`src/refund.ts` 메소드 둘에 핀 둘), 게이트 1개(`test.mjs`), `package.json`·`tsconfig.json`·`package-lock.json`·커밋된 `.kang/generated.ts`
+  - **두 문서가 서로 import 하지 않는다.** import 주소는 루트 상대이고 이 문서들은 두 루트(예시 자신과 그것을 담은 kang 저장소)에 동시에 속하므로, `docs/glossary` 는 한쪽에서 맞고 다른 쪽에서 `K002` 다 — 실측했다. 각 문서가 자기 keyword 를 선언해 스스로 완결되게 두었고, 그래서 저장소 루트의 `kang build` 도 exit 0 이다
+  - 같은 이유로 `npm test` 가 문서만 임시 git 저장소로 복사해 그 안에서 (1)(2)를 돈다. 그러지 않으면 생성 타입에 kang 자신의 topic 다섯이 섞인다 — 「저장소의 `.kang` 문서를 쓰지 않는다」를 어긴다
+- [x] `kang` 바이너리를 **릴리즈 아티팩트로 받아** 쓰는 형태(소스 빌드 금지) — README 의 curl 경로가 실제로 동작하는지 이 예시가 검증한다
+  - **예시는 kang 을 빌드하지 않는다** — `$KANG` 또는 PATH 에서 찾는다. `cargo` 를 부르는 자리가 예시 안에 하나도 없으므로 "소스 빌드 금지" 는 지켰다
+  - **curl 경로는 검증하지 못했다.** remote 가 없어 릴리즈가 없다. 우회를 만들지 않고 그 사실을 적었다 — 이 항목은 「완료 조건」의 태그 푸시와 함께 remote 가 붙은 뒤로 남는다. 로컬 빌드 바이너리를 `$KANG` 으로 넘겨 돌렸고 CI 도 그렇게 한다
+- [x] `npm test` 가 (1) `kang build` (2) 타입 생성 (3) `tsc --noEmit` (4) 문서 충실도 검사를 순서대로 돈다
+  - `noEmit` 은 `tsconfig.json` 에 두고 `tsc -p .` 로 부른다. 플래그를 양쪽에 두면 어느 쪽이 이기는지 읽는 사람이 확인해야 한다
+  - `experimentalDecorators: true` (Task 7 우려 1), `typescript` 5.9.3 을 devDependency 로 박음 (우려 3)
+- [x] **문서 충실도 검사** — `kang inspect` 가 v2 이므로 이 태스크에서 만들 범위를 정한다. 최소선: 코드가 참조하는 topic 이 전부 실재하고 rev 가 일치하는가. `inspect` 본체(죽은 정책 판정·참조 전파)는 별도 태스크로 가른다
+  - **최소선 위에 더한 것은 하나다 — (3)이 공허하지 않았는지 본다.** (4)는 코드의 `(topic, rev)` 짝을 생성 타입과 tsc 없이 대조한다. 최소선과 같은 것을 보지만 경로가 다르다: tsc 가 생성 타입을 프로그램에 넣지 못하면(코드가 import 를 잃거나 `include` 가 빗나가면) 애노테이션은 아무 검사도 받지 않고 통과하는데, **(3)만으로는 그 사실이 보이지 않는다.** 이 저장소가 공허한 게이트에 두 번 물렸다(Task 3 J2, Task 7 우려 2)
+  - 실측으로 하중을 확인했다 — `kangTopic` 을 지역 선언으로 바꿔 tsc 를 공허하게 만들고 핀을 낡게 두면 (3)은 통과하고 **(4)가 잡는다.** 핀을 전부 지우면 (4)가 "검사한 것이 없습니다" 로 잡는다
+  - **더하지 않은 것:** 죽은 정책 판정(문서의 topic 을 아무 코드도 구현하지 않음)은 `inspect` 본체이고 NOT in scope 다. 주석 폴백, `exception` 미구현, `uncoded` 상태 기계도 같다. **없는 검사에 이름을 붙이지 않았다**
+- [x] **정책 문서를 고치면 `npm test` 가 실패하는 것을 실제로 확인한다.** 이것이 이 태스크의 유일한 성공 기준이다
+  - 「30일」→「14일」한 낱말: `src/refund.ts(24,39): error TS2345: Argument of type '"cdd44d"' is not assignable to parameter of type '"fb0ff7"'.` exit 2. **진단이 새 rev 를 그 자리에서 말한다**
+  - 그 rev 로 코드의 핀을 고치면 exit 0. 문서와 핀을 되돌려도 exit 0. **문서를 고치지 않으면 실패하지 않는다 — 거짓 양성 없음**
+  - 없는 topic 을 가리키는 코드: `TS2345 ... is not assignable to parameter of type 'keyof KangTopics'` exit 2
+
+**수행 내역** — `examples/ts-consumer/` 신설. `npm test` 왕복 8항목 실측(통과 → 문서 수정 실패 → 핀 갱신 통과 → 되돌림 통과 → 없는 topic 실패 → 하중 둘 → 거짓 양성 없음).
+`cargo test` **340 passed**, clippy `--all-targets -D warnings` 0, `fmt --check` 0, `make index-check` exit 0, 저장소 루트 `kang build` exit 0.
+예시 문서가 저장소 코퍼스에도 속하므로 `.kang/index.tsv` 에 심볼 5개가 늘었다 — **rev 는 두 루트에서 같고 주소만 다르다**(`cdd44d`·`970bc8`).
+CI 에 붙였다(`cargo build` → `npm ci` → `npm test`, setup-node 없음). `node_modules` 를 최상위 `.gitignore` 에 넣었다 — `/` 를 붙이지 않으면 kang 의 순회도 같은 줄로 그 디렉토리를 건너뛴다.
+리포트: `.superpowers/sdd/V0004-kang-code-binding-and-dogfooding/task-8-report.md`
 
 ## Task 9 — 도그푸딩 이관
 
@@ -376,7 +395,7 @@ Task 1 은 다른 전부의 안전망이므로 **가장 먼저**. Task 2 는 매
 - [ ] `cargo test` 전부 통과, `clippy -D warnings`·`fmt --check` 통과, **CI 가 PR 에서 돈다**
 - [ ] 스펙 6.0 의 세 금지가 전부 구현됨 (V0002 미달 항목)
 - [ ] **kang 자신의 코드에 매크로가 붙어 있고, 문서를 고치면 `cargo build` 가 깨지고 `kang bless` 로 낫는다**
-- [ ] **`examples/ts-consumer` 의 `npm test` 가 통과하고, 정책 문서를 고치면 실패한다**
+- [x] **`examples/ts-consumer` 의 `npm test` 가 통과하고, 정책 문서를 고치면 실패한다** (Task 8. `kang` 획득은 로컬 빌드 바이너리 — 릴리즈 curl 경로는 remote 가 붙은 뒤로 남는다)
 - [ ] **저장소의 실제 문서가 `.kang` 으로 이관되어 `kang build` 가 exit 0** (V0002 미달 항목)
 - [ ] 참조 병합 천장이 **실제 `.kang` 코퍼스**에서 재측정되었고 측정 스크립트가 저장소에 있다
 - [ ] `kang index` 가 낸 주소를 `ImportAddress::parse` 가 되받는다 (왕복)
