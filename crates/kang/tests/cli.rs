@@ -313,6 +313,10 @@ fn build_가_git_저장소_아님을_보고한다() {
 }
 
 /// `load` 연결 — UTF-8 이 아닌 `.kang` 파일이면 `K051`.
+///
+/// **종료 코드는 2 다** (J4). 문서를 읽지 못한 것은 문서가 규칙을 어긴 것이 아니라
+/// 환경이 다른 것이고, 그래서 이 진단의 `fix` 도 `file -I`·`ls -l` 처럼 환경을 보는
+/// 명령이다. 1 을 주면 에이전트가 고칠 것 없는 문서를 뒤진다 — `K050` 과 같은 근거다.
 #[test]
 fn build_가_읽지_못한_문서를_보고한다() {
     let root = 임시_루트("wire-load");
@@ -322,7 +326,7 @@ fn build_가_읽지_못한_문서를_보고한다() {
 
     let (_, stderr, 코드) = 실행(&root, &["build"]);
 
-    assert_eq!(코드, 1, "{stderr}");
+    assert_eq!(코드, 2, "{stderr}");
     assert!(stderr.contains("K051"), "{stderr}");
     정리(&root);
 }
@@ -689,6 +693,61 @@ fn 읽는_쪽이_파이프를_닫아도_패닉하지_않는다() {
     assert_eq!(결과.status.code(), Some(0), "stderr: {stderr}");
     assert!(!stderr.contains("panicked"), "{stderr}");
     정리(&root);
+}
+
+/// **진단이 흐르는 표준 오류에도 같은 규약이 필요하다.** `kang build 2>&1 | head` 는
+/// `set -euo pipefail` 을 쓰는 CI 의 관용구인데, `eprint!` 가 쓰기 실패에 패닉하면
+/// 종료 코드가 101 로 뒤집힌다 — 스펙 6절의 표에 없는 코드다.
+///
+/// **세 코드를 함께 본다.** 진단을 내는 자리가 둘이고(`parse_project`·`진단_마감`)
+/// EPIPE 는 그 시점 코드를 유지해야 하므로, 한 코드만 못박으면 다른 자리를 놓친다.
+/// `K050` 은 `parse_project` 가, warn·error 는 `진단_마감` 이 낸다.
+///
+/// 읽는 쪽을 곧바로 닫는다 — `| head -0` 과 같은 상황이며, 파이프에 독자가 없으면
+/// 크기와 무관하게 첫 쓰기가 EPIPE 다. 실 규모 재현(진단 400건 200KB 에
+/// `| head -1`)은 리포트에 실측으로 남긴다.
+#[test]
+fn 진단을_읽는_쪽이_파이프를_닫아도_패닉하지_않는다() {
+    // 종료 코드마다 프로젝트 상태가 다르다. 0 은 warn 만, 1 은 컴파일 error,
+    // 2 는 환경 오류(git 저장소 아님)다.
+    let 사례: [(&str, Option<&str>, i32); 3] = [
+        (
+            "pipe-warn",
+            Some(
+                "---\ndescription: A\n---\n\n## 정책\n\n본문이다.\n\nexception `해외 결제` pending\n",
+            ),
+            0,
+        ),
+        (
+            "pipe-error",
+            Some("---\ndescription: A\n---\n\n## 정책\n\n`없는 이름` 을 참조한다.\n"),
+            1,
+        ),
+        ("pipe-env", None, 2),
+    ];
+
+    // 세 사례를 순회하며 표준 오류를 닫은 채 빌드를 돌린다.
+    for (이름, 문서, 기대) in 사례 {
+        let root = 임시_루트(이름);
+        // 환경 오류 사례는 git 저장소를 만들지 않는다. 그것이 `K050` 의 조건이다.
+        if let Some(문서) = 문서 {
+            git_저장소로(&root);
+            쓰기(&root, "docs/a.kang", 문서);
+        }
+
+        let mut child = Command::new(env!("CARGO_BIN_EXE_kang"))
+            .arg("build")
+            .current_dir(&root)
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("kang 바이너리를 실행할 수 있어야 한다");
+        drop(child.stderr.take());
+        let 상태 = child.wait().expect("자식을 기다릴 수 있어야 한다");
+
+        assert_eq!(상태.code(), Some(기대), "사례 {이름}");
+        정리(&root);
+    }
 }
 
 /// `std::env::args()` 는 잘못된 유니코드에 패닉한다. 인자 파싱은 도구의 최외곽
@@ -2641,7 +2700,7 @@ fn error_상태에서는_어떤_조회도_출력되지_않는다() {
 }
 
 /// 스펙 5.1.1 이 예시로 못박은 세 진단(`K001`·`K012`·`K021`)이 **바이너리 출력에서**
-/// 세 요소를 갖추는지 본다 — 관련 위치 전부, 왜 문제인지 한 문장, 그대로 적용 가능한 fix.
+/// 세 요소를 갖추는지 본다 — 관련 위치 전부, 왜 문제인지(머리글 한 줄), 그대로 적용 가능한 fix.
 ///
 /// 단위 테스트는 진단을 손으로 만들어 [`kang::check::report`] 만 보므로, 진단 함수가
 /// `compile()` 에 연결되지 않았거나 fix 가 산문으로 오염된 것은 여기서만 잡힌다.
@@ -2692,7 +2751,7 @@ fn 진단_3종의_구조가_스펙_5_1_1_과_일치한다() {
             .iter()
             .find(|블록| 블록.starts_with(&format!("error[{코드이름}]: ")))
             .unwrap_or_else(|| panic!("{코드이름} 블록이 없다: {stderr}"));
-        // 왜 문제인지 **한 문장** — 머리글 줄이 곧 그것이다. 마침표만 보면 한 낱말도
+        // 왜 문제인지 — **머리글 한 줄**이 곧 그것이다. 마침표만 보면 한 낱말도
         // 통과하므로 길이 하한을 함께 둔다. 규칙을 모르는 에이전트가 판단할 수 있어야 한다.
         let 머리글 = 블록.lines().next().expect("머리글 줄이 있어야 한다");
         assert!(머리글.ends_with('.'), "{머리글}");
@@ -2807,14 +2866,14 @@ fn 비_utf8_문서는_bless_가_손대지_않는다() {
     fs::write(root.join("docs/top.kang"), &원본).expect("파일을 쓸 수 있어야 한다");
 
     let (_, stderr, 코드) = 실행(&root, &["build"]);
-    assert_eq!(코드, 1, "{stderr}");
+    assert_eq!(코드, 2, "{stderr}");
     assert!(stderr.contains("K051"), "{stderr}");
 
     let (_, stderr, 코드) = 실행(
         &root,
         &["bless", "docs/top", "--import", "docs/base#기초 정책"],
     );
-    assert_eq!(코드, 1, "{stderr}");
+    assert_eq!(코드, 2, "{stderr}");
     assert_eq!(
         fs::read(root.join("docs/top.kang")).expect("파일이 있어야 한다"),
         원본,
@@ -2893,7 +2952,7 @@ fn k051_의_fix_를_그대로_실행하면_인코딩을_확인한다() {
     .expect("파일을 쓸 수 있어야 한다");
 
     let (_, stderr, 코드) = 실행(&root, &["build"]);
-    assert_eq!(코드, 1, "{stderr}");
+    assert_eq!(코드, 2, "{stderr}");
     assert!(stderr.contains("K051"), "{stderr}");
     // 적용 가능한 명령은 하나다. 자리를 채워야 도는 템플릿은 fix 가 아니다.
     assert_eq!(fix_적용(&root, &stderr), 1, "{stderr}");
