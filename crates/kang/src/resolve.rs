@@ -93,6 +93,16 @@ pub fn load(root: &Path) -> (Project, Vec<Diagnostic>) {
     let mut docs: HashMap<DocPath, Document> = HashMap::new();
     // 찾아낸 `.kang` 파일을 차례로 읽어 문서로 바꾼다.
     for file in files {
+        // **경로가 UTF-8 이 아니면 읽지 않는다** (`K117`). [`문서경로`] 가 `to_string_lossy`
+        // 로 조각을 만들므로, 서로 다른 잘못된 바이트열 둘이 **같은 `\u{fffd}` 로 접혀**
+        // 아래 `docs.insert` 에서 한 문서가 다른 문서를 조용히 덮는다. 게다가 그 이름은
+        // CLI 인자로 줄 수도 없어(`main` 이 비 UTF-8 인자를 거부한다) 어떤 명령으로도
+        // 가리킬 수 없다. 지금 막지 않으면 문서가 소리 없이 사라진다.
+        if file.to_str().is_none() {
+            diagnostics.push(경로_utf8_아님(&file));
+            continue;
+        }
+
         let path = 문서경로(root, &file);
 
         // **경로 어디든 제어 문자가 있으면 읽지 않는다** (`K116`). 디렉토리 이름은 오늘
@@ -811,7 +821,7 @@ fn utf8_아님(file: &Path, path: DocPath, valid_up_to: usize) -> Diagnostic {
         // 그렇다고 컴파일러가 후보를 단정하면 안 된다 — 한국어 밖 문서에서 자신 있게
         // 틀린 답을 내게 된다. 판단이 소비자에게 있다는 사실만 말한다.
         message: format!(
-            "문서 파일이 UTF-8 이 아닙니다 — {path}. fix 의 file -I 는 원본 인코딩을 추정할 뿐이므로 그 값이 맞는지 확인한 뒤 -f 에 넣어 변환하세요: iconv -f <원본 인코딩> -t UTF-8 {원본} > {임시} && mv {임시} {원본}"
+            "문서 파일이 UTF-8 이 아닙니다 — {path}. fix 의 file --mime-encoding 은 원본 인코딩을 추정할 뿐이므로 그 값이 맞는지 확인한 뒤 -f 에 넣어 변환하세요: iconv -f <원본 인코딩> -t UTF-8 {원본} > {임시} && mv {임시} {원본}"
         ),
         locations: vec![Location {
             doc: path,
@@ -822,7 +832,7 @@ fn utf8_아님(file: &Path, path: DocPath, valid_up_to: usize) -> Diagnostic {
         fixes: vec![Fix {
             kind: FixKind::Shell,
             doc: None,
-            action: format!("file -I {원본}"),
+            action: format!("file --mime-encoding {원본}"),
         }],
     }
 }
@@ -853,6 +863,47 @@ fn 디렉토리_읽기_실패(dir: &Path, error: &std::io::Error) -> Diagnostic 
             doc: None,
             // `action` 은 명령만이다.
             action: format!("ls -ld {}", 셸_인용(&dir.display().to_string())),
+        }],
+    }
+}
+
+/// 문서 파일 경로가 UTF-8 이 아니라는 진단을 만든다 (`K117`).
+///
+/// **`K051`(내용이 UTF-8 이 아님)과 다른 사실이다.** 그쪽은 파일을 열어 읽은 바이트가
+/// 문제이고 처방은 재인코딩이다. 이쪽은 **이름**이 문제이고 처방은 이름 바꾸기다 —
+/// 내용은 멀쩡할 수 있다.
+///
+/// 막지 않으면 두 가지가 조용히 일어난다. [`문서경로`] 가 `to_string_lossy` 를 쓰므로
+/// 서로 다른 잘못된 바이트열이 같은 `\u{fffd}` 조각으로 접혀 **한 문서가 다른 문서를
+/// 덮고**, 그렇게 만들어진 이름은 CLI 인자로 줄 수도 없어(`main` 이 비 UTF-8 인자를
+/// 거부한다) 어떤 명령으로도 가리킬 수 없다.
+///
+/// `[shell]` 이 아니라 `[edit]` 인 이유는 `K113`·`K116` 과 같다 — 새 이름은 그 문서가
+/// 무엇에 관한 것인지 아는 사람만 정할 수 있다.
+///
+/// # 매개변수
+/// - `file`: 문제의 파일 전체 경로
+///
+/// # 반환값
+/// `K117` 진단
+fn 경로_utf8_아님(file: &Path) -> Diagnostic {
+    Diagnostic {
+        severity: Severity::Error,
+        code: "K117",
+        message: format!(
+            "문서 파일 경로가 UTF-8 이 아닙니다 — {}. 이 이름은 CLI 주소로 가리킬 수 없고, 잘못된 바이트가 대체 문자로 접혀 다른 문서와 같은 주소가 될 수 있어 읽지 않습니다 (스펙 6.0).",
+            file.display()
+        ),
+        locations: vec![Location {
+            doc: 경로_그대로(file),
+            // 파일 이름 자체가 문제이므로 가리킬 줄이 없다.
+            line: 0,
+            note: "이 문서의 파일 경로. 표시된 이름은 잘못된 바이트를 대체 문자로 바꾼 것이라 실제 이름과 다를 수 있습니다".to_string(),
+        }],
+        fixes: vec![Fix {
+            kind: FixKind::Edit,
+            doc: None,
+            action: "이 파일의 이름을 UTF-8 로 바꾸세요. 이 문서를 가리키던 import 주소도 함께 고칩니다".to_string(),
         }],
     }
 }

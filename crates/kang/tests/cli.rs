@@ -4050,3 +4050,116 @@ fn 뒤_슬래시_표기도_무시로_읽는다() {
     );
     정리(&root);
 }
+
+/// 비 UTF-8 파일 이름 둘이 같은 주소로 접혀 한 문서를 덮으면 안 된다 (`K117`).
+///
+/// `문서경로` 가 경로 조각을 `to_string_lossy` 로 만든다. 서로 다른 잘못된 바이트열은
+/// **둘 다 `\u{fffd}`** 가 되므로 `docs.insert` 에서 같은 열쇠가 되어 한 문서가 다른
+/// 문서를 조용히 덮는다. 게다가 그 이름은 CLI 인자로 줄 수도 없다 — `main` 이 비 UTF-8
+/// 인자를 거부하므로 어떤 명령으로도 가리킬 수 없다.
+///
+/// **macOS 는 이 이름을 만들지 못한다.** APFS 가 파일 이름의 UTF-8 유효성을 강제해
+/// `Illegal byte sequence` 로 거절한다. 이 결함이 실재하는 곳은 ext4 같은 임의 바이트를
+/// 받는 파일시스템이고, CI 러너(ubuntu)가 거기다. `KANG_REQUIRE_LINUX_GATES` 가 켜진
+/// 환경에서는 건너뛰기가 실패다 — `show_출력이_유효한_yaml_이다` 와 같은 관례이며,
+/// `/dev/full` 을 쓰는 표준 출력 게이트와 같은 변수를 공유한다.
+#[cfg(unix)]
+#[test]
+fn 비_utf8_파일_이름은_문서를_덮지_않는다() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+
+    let root = 임시_루트("비utf8_이름");
+    git_저장소로(&root);
+    fs::create_dir_all(root.join("docs")).expect("docs 를 만들 수 있어야 한다");
+
+    let 본문 = "---\ndescription: 시험\n---\n\n## 첫\n\n본문.\n";
+    // `a\xff.kang` 과 `a\xfe.kang`. 둘 다 lossy 변환하면 `a\u{fffd}` 로 같아진다.
+    let 만들기 = |바이트: &[u8]| {
+        let mut 이름 = b"a".to_vec();
+        이름.extend_from_slice(바이트);
+        이름.extend_from_slice(b".kang");
+        let 경로 = root.join("docs").join(OsStr::from_bytes(&이름));
+        fs::write(&경로, 본문).is_ok()
+    };
+
+    // 파일시스템이 이 이름을 거부하면 결함 자체가 발생할 수 없다.
+    if !만들기(b"\xff") || !만들기(b"\xfe") {
+        assert!(
+            std::env::var_os("KANG_REQUIRE_LINUX_GATES").is_none(),
+            "이 파일시스템이 비 UTF-8 이름을 거부해 게이트가 빠졌다"
+        );
+        정리(&root);
+        return;
+    }
+
+    let (stdout, stderr, 코드) = 실행(&root, &["list"]);
+
+    assert_eq!(코드, 1, "읽을 수 없는 이름은 컴파일 error 다: {stderr}");
+    // 둘 다 걸려야 한다. 하나만 걸리면 나머지 하나가 여전히 프로젝트에 들어간 것이다.
+    assert_eq!(
+        stderr.matches("K117").count(),
+        2,
+        "비 UTF-8 이름 둘 다 진단이 나와야 한다: {stderr}"
+    );
+    assert_eq!(stdout, "", "error 면 stdout 은 비어야 한다");
+
+    정리(&root);
+}
+
+/// 표준 출력을 쓰지 못하면 종료 코드가 **2** 여야 한다. 1 이 아니다.
+///
+/// 계약상 1 은 "컴파일 error 존재" 이고 그때는 stderr 에 `error[Kxxx]` 진단이 함께 온다.
+/// 디스크가 찼거나 리다이렉트가 깨진 것은 진단이 **하나도 없는 1** 이 되어, 종료 코드로
+/// 분기하는 에이전트가 "문서를 고쳐라" 로 읽는다. 스펙 6절의 기준("원인이 문서 밖에
+/// 있는가")대로 환경 오류다. EPIPE 는 여전히 0 이다 — 읽는 쪽이 원하는 만큼 읽었다.
+#[cfg(unix)]
+#[test]
+fn 표준_출력을_쓰지_못하면_환경_오류로_끝난다() {
+    let root = 임시_루트("stdout_실패");
+    git_저장소로(&root);
+    예제_프로젝트_통과(&root);
+
+    // `/dev/full` 은 쓰면 항상 `ENOSPC` 를 내는 장치다. 디스크가 찬 상태를 실제 디스크를
+    // 채우지 않고 재현하는 표준 수단이며, Linux 에만 있다. macOS 에는 없으므로 로컬에서는
+    // 이 게이트가 빠진다 — `KANG_REQUIRE_LINUX_GATES` 가 CI 에서 그 빠짐을 실패로 바꾼다.
+    if !std::path::Path::new("/dev/full").exists() {
+        assert!(
+            std::env::var_os("KANG_REQUIRE_LINUX_GATES").is_none(),
+            "/dev/full 이 없어 게이트가 빠졌다"
+        );
+        정리(&root);
+        return;
+    }
+
+    let 산출 = Command::new(env!("CARGO_BIN_EXE_kang"))
+        .arg("list")
+        .current_dir(&root)
+        .stdout(
+            fs::OpenOptions::new()
+                .write(true)
+                .open("/dev/full")
+                .expect("/dev/full"),
+        )
+        .stderr(Stdio::piped())
+        .output()
+        .expect("실행할 수 있어야 한다");
+    let stderr = String::from_utf8_lossy(&산출.stderr);
+
+    assert_eq!(
+        산출.status.code(),
+        Some(2),
+        "출력을 쓰지 못한 것은 환경 오류다: {stderr}"
+    );
+    // 1 이 아니라는 것의 실질: 진단이 하나도 없다. 그래서 1 이면 거짓말이 된다.
+    assert!(
+        !stderr.contains("error[K"),
+        "이 실패에는 진단이 없어야 한다: {stderr}"
+    );
+    assert!(
+        stderr.contains("표준 출력에 쓰지 못했습니다"),
+        "무엇이 실패했는지 말해야 한다: {stderr}"
+    );
+
+    정리(&root);
+}
