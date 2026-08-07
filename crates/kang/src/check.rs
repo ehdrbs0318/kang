@@ -426,7 +426,7 @@ pub fn check_exceptions(project: &Project, table: &SymbolTable) -> Vec<Diagnosti
         //
         // 아래 세 값은 전부 클로저다. `(일반, 커버 하나)` 통과 칸이 예외마다 이것들을
         // 버리는데, 통과가 정상이고 다수인 경로다.
-        let 주소 = || 심볼_주소(doc, &SymbolKind::Exception, 이름, true);
+        let 주소 = || 심볼_주소(doc, SymbolKind::Exception, 이름, true);
         // 커버 자리들. 어느 topic 이 커버하는지가 note 다.
         let 커버_위치 = || -> Vec<Location> {
             짝.iter()
@@ -453,7 +453,7 @@ pub fn check_exceptions(project: &Project, table: &SymbolTable) -> Vec<Diagnosti
             for c in &짝 {
                 let 하나 = format!(
                     "{} 의 cover `{}` 줄",
-                    심볼_주소(c.doc, &SymbolKind::Topic, c.topic, true),
+                    심볼_주소(c.doc, SymbolKind::Topic, c.topic, true),
                     c.이름
                 );
                 match 목록.iter_mut().find(|(이미, _)| *이미 == 하나) {
@@ -660,7 +660,7 @@ pub fn check_exceptions(project: &Project, table: &SymbolTable) -> Vec<Diagnosti
                     doc: Some(c.doc.clone()),
                     action: format!(
                         "{조건}import 블록에 다음 줄을 추가하세요: import {}",
-                        심볼_주소(owner, &SymbolKind::Exception, 이름, true)
+                        심볼_주소(owner, SymbolKind::Exception, 이름, true)
                     ),
                 });
                 // **`bless` 를 짝지어 한 왕복에 닫는다.** 핀을 붙일 문서를 여기서는
@@ -677,7 +677,7 @@ pub fn check_exceptions(project: &Project, table: &SymbolTable) -> Vec<Diagnosti
                     action: format!(
                         "kang bless {} --import {}",
                         셸_인용(&c.doc.to_string()),
-                        셸_인용(&심볼_주소(owner, &SymbolKind::Exception, 이름, false))
+                        셸_인용(&심볼_주소(owner, SymbolKind::Exception, 이름, false))
                     ),
                 });
             }
@@ -757,7 +757,7 @@ pub fn check_revs(project: &Project, table: &SymbolTable) -> Vec<Diagnostic> {
 
             let 대상 = &import.target;
             let 이름 = 대상.name.join(".");
-            let 문서_문법 = 심볼_주소(&대상.doc, &대상.kind, &이름, true);
+            let 문서_문법 = 심볼_주소(&대상.doc, 대상.kind, &이름, true);
             // `bless` 는 CLI 이므로 백틱 없는 주소에 인용을 붙인다 (스펙 5.1.1·6.0).
             // 심볼 이름에는 공백이 들어가므로 인용을 빠뜨리면 셸이 인자를 쪼갠다.
             // **alias 가 아니라 대상의 정본 이름**을 넘긴다 — alias 로는 bless 가 그 import
@@ -766,7 +766,7 @@ pub fn check_revs(project: &Project, table: &SymbolTable) -> Vec<Diagnostic> {
                 format!(
                     "kang bless {} --import {}",
                     셸_인용(&doc.to_string()),
-                    셸_인용(&심볼_주소(&대상.doc, &대상.kind, &이름, false))
+                    셸_인용(&심볼_주소(&대상.doc, 대상.kind, &이름, false))
                 )
             };
 
@@ -1446,7 +1446,7 @@ fn 이름_충돌_검사(
 ///
 /// **주소 조립은 이 함수 하나가 담당한다.** `kang index`(V0004 Task 3)도 이것을 부른다 —
 /// 사본을 만들면 인덱스가 낸 주소를 `refs`·`show`·`bless` 가 못 받는 경우가 생긴다.
-pub fn 심볼_주소(doc: &DocPath, kind: &SymbolKind, name: &str, 백틱: bool) -> String {
+pub fn 심볼_주소(doc: &DocPath, kind: SymbolKind, name: &str, 백틱: bool) -> String {
     let 감싸기 = |조각: &str| {
         if 백틱 {
             format!("`{조각}`")
@@ -1719,8 +1719,8 @@ fn 미해결_심볼(
         후보
             .iter()
             .flat_map(|하나| {
-                let 문서_문법 = 심볼_주소(하나.doc, &하나.kind, &하나.name, true);
-                let cli_문법 = 심볼_주소(하나.doc, &하나.kind, &하나.name, false);
+                let 문서_문법 = 심볼_주소(하나.doc, 하나.kind, &하나.name, true);
+                let cli_문법 = 심볼_주소(하나.doc, 하나.kind, &하나.name, false);
                 // 후보가 둘 이상이면 어느 것을 고를지는 뜻이 정한다. 조건을 붙이지 않으면
                 // 진단이 "이것이 답이다" 라고 단정하게 된다.
                 let 조건 = if 후보.len() > 1 {
@@ -1863,12 +1863,12 @@ fn 계층_상위_없음(
                     Some(하나) if 다른_종류.is_some() => format!(
                         "상위 keyword 가 {} 의 것이라면, 지금의 import 줄을 그 keyword 로 바꾸세요: import {}",
                         하나.doc,
-                        심볼_주소(하나.doc, &하나.kind, &상위.join("."), true)
+                        심볼_주소(하나.doc, 하나.kind, &상위.join("."), true)
                     ),
                     Some(하나) => format!(
                         "상위가 {} 의 것이라면, import 블록에 다음 줄을 추가하세요: import {}",
                         하나.doc,
-                        심볼_주소(하나.doc, &하나.kind, &상위.join("."), true)
+                        심볼_주소(하나.doc, 하나.kind, &상위.join("."), true)
                     ),
                     None if 다른_종류.is_some() => "상위가 다른 문서의 것이라면, 그 문서에서 그것을 keyword 로 선언한 뒤, 같은 이름을 묶고 있는 이 문서의 줄을 그 import 로 바꾸세요"
                         .to_string(),
@@ -1894,7 +1894,7 @@ fn 계층_상위_없음(
 /// `K002` 진단
 fn import_대상_없음(document: &Document, import: &Import, project: &Project) -> Diagnostic {
     let 대상 = &import.target;
-    let 문서_문법 = 심볼_주소(&대상.doc, &대상.kind, &대상.name.join("."), true);
+    let 문서_문법 = 심볼_주소(&대상.doc, 대상.kind, &대상.name.join("."), true);
 
     // 문서 자체가 없으면 경로를, 심볼이 없으면 이름을 고쳐야 한다. 처방이 갈린다.
     let 처방 = if project.docs.contains_key(&대상.doc) {
@@ -1968,7 +1968,7 @@ fn 미사용_import(document: &Document, import: &Import) -> Diagnostic {
 /// # 반환값
 /// `K004` 진단
 fn 이름_여럿(document: &Document, 대상: &SymbolRef, 줄들: &[&Import]) -> Diagnostic {
-    let 문서_문법 = 심볼_주소(&대상.doc, &대상.kind, &대상.name.join("."), true);
+    let 문서_문법 = 심볼_주소(&대상.doc, 대상.kind, &대상.name.join("."), true);
 
     Diagnostic {
         severity: Severity::Error,
@@ -2004,7 +2004,7 @@ fn 이름_여럿(document: &Document, 대상: &SymbolRef, 줄들: &[&Import]) ->
 /// # 반환값
 /// `K010` 진단
 fn iknow_대상_없음(하나: &선언, 대상: &SymbolRef, project: &Project) -> Diagnostic {
-    let 문서_문법 = 심볼_주소(&대상.doc, &대상.kind, &대상.name.join("."), true);
+    let 문서_문법 = 심볼_주소(&대상.doc, 대상.kind, &대상.name.join("."), true);
 
     Diagnostic {
         severity: Severity::Error,
@@ -2079,7 +2079,7 @@ fn iknow_불완전(
                     .iter()
                     // 주소는 **상대의** 문서와 종류로 짓는다. 자기 종류를 쓰면 구분 기호가
                     // 뒤바뀌어(`.` ↔ `#` ↔ `!`) 그대로 적용한 문서가 `K010` 을 맞는다.
-                    .map(|상대| 심볼_주소(상대.doc, &상대.kind, 이름, true))
+                    .map(|상대| 심볼_주소(상대.doc, 상대.kind, 이름, true))
                     .collect();
                 let 낱말 = 종류_낱말(대표.kind);
                 // 이미 iknow 를 쓴 문서에게 "추가하세요" 라고 하면 줄을 하나 더 만들게 된다.

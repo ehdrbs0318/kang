@@ -218,7 +218,7 @@ fn 한_줄(
     종류: SymbolKind,
     name: &str,
 ) -> io::Result<()> {
-    let 주소 = 심볼_주소(doc, &종류, name, false);
+    let 주소 = 심볼_주소(doc, 종류, name, false);
     let 참조 = SymbolRef {
         doc: doc.clone(),
         kind: 종류,

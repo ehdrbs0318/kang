@@ -744,7 +744,8 @@ fn 파일_읽기_실패(file: &Path, path: DocPath, error: &std::io::Error) -> D
 /// - `message`: 무엇이 틀렸나
 /// - `note`: 그 자리에 대한 설명
 /// - `action`: 무엇을 고쳐야 하나
-/// - `고칠_문서`: `[edit]` 이 지목할 문서. 주소를 만들 수 없으면 `None`
+/// - `주소로_쓸_수_있나`: `[edit]` 이 이 문서를 지목해도 되는가. `K117` 만 `false` 다 —
+///   경로가 UTF-8 이 아니면 주소를 만들 수 없는 것이 그 진단의 본체다
 ///
 /// # 반환값
 /// 그 코드의 진단
@@ -754,21 +755,21 @@ fn 이름_거부(
     message: String,
     note: String,
     action: String,
-    고칠_문서: Option<DocPath>,
+    주소로_쓸_수_있나: bool,
 ) -> Diagnostic {
     Diagnostic {
         severity: Severity::Error,
         code,
         message,
         locations: vec![Location {
-            doc,
+            doc: doc.clone(),
             // 이름 자체가 문제이므로 가리킬 줄이 없다.
             line: 0,
             note,
         }],
         fixes: vec![Fix {
             kind: FixKind::Edit,
-            doc: 고칠_문서,
+            doc: 주소로_쓸_수_있나.then_some(doc),
             action,
         }],
     }
@@ -792,13 +793,16 @@ fn 이름_거부(
 /// # 반환값
 /// `K113` 진단
 fn 문서_이름_구분자(path: DocPath, 구분자: char) -> Diagnostic {
+    let message = format!(
+        "문서 파일 이름에 주소 구분자 `{구분자}` 가 있습니다 — {path}. 이 문서는 CLI 주소로 가리킬 수 없어 kang bless·kang refs 가 받지 못하고, 이 문서의 심볼을 import 하면 핀을 붙일 방법이 없어 빌드가 error 에 머뭅니다 (스펙 6.0)."
+    );
     이름_거부(
         "K113",
-        path.clone(),
-        format!("문서 파일 이름에 주소 구분자 `{구분자}` 가 있습니다 — {path}. 이 문서는 CLI 주소로 가리킬 수 없어 kang bless·kang refs 가 받지 못하고, 이 문서의 심볼을 import 하면 핀을 붙일 방법이 없어 빌드가 error 에 머뭅니다 (스펙 6.0)."),
+        path,
+        message,
         "이 문서의 파일 이름. 주소는 마지막 조각의 첫 `.`·`#`·`!` 에서 갈리므로 이름의 일부와 구분자를 구별할 수단이 없습니다".to_string(),
         "이 파일 이름에서 `.`·`#`·`!` 를 빼고 이름을 바꾸세요. 이 문서를 가리키던 import 주소도 함께 고칩니다. 디렉토리 이름에는 이 세 문자를 그대로 쓸 수 있습니다".to_string(),
-        Some(path),
+        true,
     )
 }
 
@@ -822,13 +826,17 @@ fn 문서_이름_구분자(path: DocPath, 구분자: char) -> Diagnostic {
 /// # 반환값
 /// `K116` 진단
 fn 경로_제어_문자(path: DocPath, 조각: String, 글자: char) -> Diagnostic {
+    let message = format!(
+        "문서 경로에 제어 문자 U+{:04X} 가 있습니다 — 조각 `{조각}`. 이 경로는 kang index 가 내는 탭 구분 인덱스의 한 줄을 여러 줄로 쪼개 위조 항목을 만들 수 있어 읽지 않습니다 (스펙 6.0).",
+        글자 as u32
+    );
     이름_거부(
         "K116",
-        path.clone(),
-        format!("문서 경로에 제어 문자 U+{:04X} 가 있습니다 — 조각 `{조각}`. 이 경로는 kang index 가 내는 탭 구분 인덱스의 한 줄을 여러 줄로 쪼개 위조 항목을 만들 수 있어 읽지 않습니다 (스펙 6.0).", 글자 as u32),
+        path,
+        message,
         "이 문서의 경로 조각. 인덱스는 한 줄에 한 심볼이고 주소가 마지막 필드이므로, 주소 안의 개행과 탭은 소비자가 구별할 수단이 없습니다".to_string(),
         "이 경로 조각에서 제어 문자(탭·개행 등)를 빼고 이름을 바꾸세요. 이 문서를 가리키던 import 주소도 함께 고칩니다".to_string(),
-        Some(path),
+        true,
     )
 }
 
@@ -931,8 +939,7 @@ fn 경로_utf8_아님(file: &Path) -> Diagnostic {
         format!("문서 파일 경로가 UTF-8 이 아닙니다 — {}. 이 이름은 CLI 주소로 가리킬 수 없고, 잘못된 바이트가 대체 문자로 접혀 다른 문서와 같은 주소가 될 수 있어 읽지 않습니다 (스펙 6.0).", file.display()),
         "이 문서의 파일 경로. 표시된 이름은 잘못된 바이트를 대체 문자로 바꾼 것이라 실제 이름과 다를 수 있습니다".to_string(),
         "이 파일의 이름을 UTF-8 로 바꾸세요. 이 문서를 가리키던 import 주소도 함께 고칩니다".to_string(),
-        // 주소를 만들 수 없는 것이 이 진단의 본체다. 지목할 문서가 없다.
-        None,
+        false,
     )
 }
 
