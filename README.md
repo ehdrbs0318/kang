@@ -9,11 +9,10 @@ kang 은 문서 컴파일러다. `.kang` 문서에서 키워드를 선언하고 
 
 ## 설치
 
-GitHub Releases 에서 미리 빌드된 바이너리를 받는다. `OWNER` 는 이 저장소의 GitHub
-소유자로 바꾼다.
+GitHub Releases 에서 미리 빌드된 바이너리를 받는다.
 
 ```sh
-curl -fsSL "https://github.com/OWNER/kang/releases/latest/download/kang-$(uname -m | sed s/arm64/aarch64/)-$(uname -s | sed 's/Darwin/apple-darwin/;s/Linux/unknown-linux-gnu/')" -o kang && chmod +x kang
+curl -fsSL "https://github.com/ehdrbs0318/kang/releases/latest/download/kang-$(uname -m | sed s/arm64/aarch64/)-$(uname -s | sed 's/Darwin/apple-darwin/;s/Linux/unknown-linux-gnu/')" -o kang && chmod +x kang
 ```
 
 올라가는 이름은 `kang-<타깃 트리플>` 이고 트리플은 `aarch64-apple-darwin`,

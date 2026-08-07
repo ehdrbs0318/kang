@@ -94,11 +94,12 @@ pub fn load(root: &Path) -> (Project, Vec<Diagnostic>) {
         // 없다" 는 **심볼 이름**에만 참이다. 주소는 문서 경로를 함께 담으므로
         // `docs/evil\ntopic deadbe forged` 같은 디렉토리 하나로 인덱스에 위조 줄을 심을 수
         // 있고, 매크로는 그 줄을 진짜 핀으로 읽는다. 여기서 막아야 그 전제가 참이 된다.
-        if let Some((조각, 글자)) = path
-            .0
-            .iter()
-            .find_map(|조각| 조각.chars().find(|글자| 글자.is_control()).map(|글자| (조각, 글자)))
-        {
+        if let Some((조각, 글자)) = path.0.iter().find_map(|조각| {
+            조각
+                .chars()
+                .find(|글자| 글자.is_control())
+                .map(|글자| (조각, 글자))
+        }) {
             diagnostics.push(경로_제어_문자(path.clone(), 조각.clone(), 글자));
             continue;
         }

@@ -14,7 +14,7 @@
 # ponytail: `make index` 뒤의 첫 `cargo build` 는 kang·kang-macros 를 다시 컴파일한다
 # (`rerun-if-env-changed=KANG_INDEX`). 약 3초이며, 아파지면 부트스트랩에 별도
 # `CARGO_TARGET_DIR` 을 준다.
-.PHONY: index index-check
+.PHONY: index index-check deps-check
 
 # 인덱스를 문서의 현재 내용으로 다시 낸다.
 index:
@@ -24,3 +24,31 @@ index:
 # `write_index` 가 문서 경로로 정렬하므로 두 번 돌리면 같은 바이트다.
 index-check: index
 	git diff --exit-code .kang/index.tsv
+
+# V0001 §10.1 의 의존성 허용 목록을 실제 Cargo.toml 과 대조한다.
+#
+# 그 절은 "목록에 없는 것은 쓰지 않는다" 를 규칙으로 세웠지만 재는 수단이 없었다 —
+# V0004 Task 4 가 "CI 에서 잴 방법을 정한다" 를 Task 5 로 이월했고 Task 5 에 그 항목이
+# 들어가지 않아 검사가 하나도 남지 않았다. 목록에 없는 의존성이 들어와도 아무것도 잡지
+# 못하는 상태였다.
+#
+# 워크스페이스 내부 path 의존은 §10.1 이 명시적으로 제외하므로 세지 않는다.
+# `cargo metadata` 대신 `cargo tree --depth 1` 을 쓴다 — jq 가 필요 없고, 재는 것이
+# "이 크레이트가 직접 쓰는 외부 크레이트" 라서 깊이 1 이 정확히 그 정의다.
+#
+# ponytail: 전이 의존성은 재지 않는다. `Cargo.lock` 이 커밋되어 있어 새 전이 의존은
+# diff 로 보인다. 전이까지 목록으로 묶어야 할 만큼 커지면 `cargo-deny` 를 들인다.
+deps-check:
+	@echo 'kang 의 외부 의존성 (허용: sha2)'
+	@cargo tree --depth 1 -p kang -e normal --prefix none --no-dedupe 2>/dev/null \
+	  | tail -n +2 | awk '{print $$1}' | grep -v '^kang-macros$$' | grep -v '^$$' | sort -u > /tmp/kang-deps.txt
+	@printf 'sha2\n' > /tmp/kang-allow.txt
+	@diff -u /tmp/kang-allow.txt /tmp/kang-deps.txt \
+	  || { echo 'kang 의 의존성이 V0001 §10.1 목록과 다릅니다. 목록을 고치고 근거를 남기거나 의존성을 빼세요.'; exit 1; }
+	@echo 'kang-macros 의 외부 의존성 (허용: proc-macro2, quote, syn)'
+	@cargo tree --depth 1 -p kang-macros -e normal --prefix none --no-dedupe 2>/dev/null \
+	  | tail -n +2 | awk '{print $$1}' | grep -v '^$$' | sort -u > /tmp/macros-deps.txt
+	@printf 'proc-macro2\nquote\nsyn\n' | sort -u > /tmp/macros-allow.txt
+	@diff -u /tmp/macros-allow.txt /tmp/macros-deps.txt \
+	  || { echo 'kang-macros 의 의존성이 V0001 §10.1 목록과 다릅니다. 목록을 고치고 근거를 남기거나 의존성을 빼세요.'; exit 1; }
+	@echo '의존성이 V0001 §10.1 목록과 일치합니다.'

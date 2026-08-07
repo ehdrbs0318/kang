@@ -25,6 +25,11 @@ jobs:
       # "인덱스를 다시 내라" 를 한 단계 멀리서 말한다. 그래서 이 게이트가 먼저 온다.
       - run: make index-check
 
+      # V0001 §10.1 의 의존성 허용 목록을 실제 Cargo.toml 과 대조한다. 그 절은 "목록에
+      # 없는 것은 쓰지 않는다" 를 규칙으로 세웠지만 재는 수단이 없었다 — 목록에 없는
+      # 의존성이 들어와도 아무것도 잡지 못했다.
+      - run: make deps-check
+
       # KANG_REQUIRE_INDEX 는 인덱스 부재를 컴파일 에러로 올린다 (B3). 스텝마다 준다 —
       # job 전역으로 두면 위의 make index 부트스트랩이 스스로 막힌다.
       - run: cargo test
@@ -56,3 +61,9 @@ jobs:
         working-directory: examples/ts-consumer
         env:
           KANG: ${{ github.workspace }}/target/debug/kang
+
+      # 커밋된 생성물이 둘인데 드리프트 게이트는 인덱스 하나뿐이었다.
+      # `test.mjs` 는 tsc 를 돌리기 **전에** `generated.ts` 를 작업 트리에 다시 쓰므로,
+      # 커밋된 사본이 문서와 어긋나 있어도 npm test 는 초록이다. 그 파일 헤더가
+      # "손으로 고치지 않습니다" 라고 적은 이상 어긋남은 잡혀야 한다.
+      - run: git diff --exit-code examples/ts-consumer/.kang/generated.ts
