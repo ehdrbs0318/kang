@@ -55,7 +55,10 @@
 - CI 가 PR 과 `main` 푸시에서 `make index-check`, `cargo test`, `clippy`, `fmt`,
   그리고 `examples/ts-consumer` 의 `npm test` 를 돌린다. TypeScript 소비자 예시가
   `kang types` 산출물을 실제로 `tsc` 에 태우는 상시 게이트다.
-- `v*` 태그를 밀면 macOS·Linux 각 두 아키텍처, 총 4타깃 바이너리가 GitHub Releases 에 올라간다.
+- `v*` 태그를 밀면 macOS·Linux 각 두 아키텍처, 총 4타깃 바이너리가 GitHub Releases 에
+  올라간다. **실증했다** — 버림 태그로 워크플로를 돌려 4타깃 전부 초록, 아티팩트 이름이
+  README 의 curl 이 만드는 네 조합과 일치, 그 curl 을 그대로 실행해 바이너리를 받고
+  `--help` 가 도는 것까지 확인했다.
 - `scripts/measure-corpus.py` — 참조 병합 천장을 실제 코퍼스에서 재는 스크립트.
 
 ### 소비자 계약

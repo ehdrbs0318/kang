@@ -82,7 +82,11 @@ docs/A!무료 상품\texception\tb721e0
   - `ci.yml` 은 linux x86_64 **한 타깃만** 돈다. `release.yml:28` 의 `cargo test` 를 빼면 **macOS(aarch64·x86_64)와 linux arm64 에서 테스트가 어디서도 돌지 않는다.**
   - 이 스위트는 플랫폼 의존이 큰 종류다 — `tests/cli.rs` 가 바이너리를 `Command` 로 띄우고 임시 디렉터리와 실제 git 저장소를 만든다(`임시_루트`, `git_저장소로`). 경로·파일 락·프로세스 동작이 OS 마다 갈리는 자리다.
   - 태그 릴리즈는 드물고 산출물이 사용자에게 나가므로, 4회 중복은 낭비가 아니라 **네 아티팩트 각각에 대한 안전망**이다. `release.yml` 을 건드리지 않았다.
-- [ ] **검증:** 일부러 실패하는 커밋을 브랜치에 올려 게이트가 빨간지 확인한다 (red-green)
+- [x] **검증:** 일부러 실패하는 커밋을 브랜치에 올려 게이트가 빨간지 확인한다 (red-green)
+  - **완료.** 인덱스의 rev 하나를 `deadbe` 로 낡게 만든 버림 브랜치로 PR 을 열었더니
+    `make index-check` 가 `git diff --exit-code` 에서 잡아 CI 가 빨갛다 (run 31146681897).
+    확인 후 PR 을 닫고 브랜치를 지웠다. 정상 PR 은 같은 게이트로 초록이다 (run 31146589659,
+    1분 12초) — **이 저장소에서 CI 가 처음 돈 것이다.**
   - **미완 — remote 가 붙은 뒤로 미룬다.** 이 저장소에는 `git remote` 가 없어 워크플로를 GitHub 에서 실제로 실행할 수 없고, `act` 도 설치되어 있지 않다. 가짜 remote 나 시뮬레이션으로 대신하지 않았다 — 그것은 이 항목이 요구하는 증거가 아니다.
   - **대신 확보한 증거:** ① `ci.yml` 이 PyYAML 로 파싱된다(`on` 이 YAML 1.1 규칙으로 boolean `True` 키가 되는데, `release.yml` 도 동일하며 GitHub·actionlint 파서에서는 문자열이다). ② `actionlint` exit 0, 그리고 **오염판으로 red-green** — 잘못된 러너 라벨 → exit 1, `actions/checkout@v4` 에 없는 입력 → exit 1. 린터에 이빨이 있다. ③ 워크플로가 돌리는 세 명령이 로컬에서 통과. ④ `KANG_REQUIRE_YAML` 2×2 (위 항목).
   - **여전히 검증 못 한 것:** 워크플로가 GitHub 러너에서 실제로 도는지, 그리고 `ubuntu-24.04` 이미지에 `clippy`·`rustfmt` 컴포넌트가 선설치되어 있는지. 후자는 `release.yml` 과 같은 방식(러너 선설치 툴체인 신뢰, `rustup` 설치 스텝 없음)을 따른 결과이며, 없을 경우 **조용히 빠지지 않고 "no such command" 로 시끄럽게 빨개진다** — 받아들일 수 있는 실패 양식이므로 `rustup component add` 를 넣지 않았다.
@@ -433,8 +437,16 @@ Task 1 은 다른 전부의 안전망이므로 **가장 먼저**. Task 2 는 매
   - **첫 측정보다 강한 근거이면서 동시에 약한 근거다** — 병합은 합친 이름이 스코프에 있어야 나는데 계층 선언이 0이라 **구조적으로 발화 불가**다. 즉 천장은 아직 시험받지 못했고, `check.rs:1155-1161` 이 그 사실을 적었다
 - [x] `kang index` 가 낸 주소를 `ImportAddress::parse` 가 되받는다 (왕복)
   - `crates/kang/tests/cli.rs:3409` 이 인덱스의 **모든** 주소를 종류별로 `refs`·`show`·`bless` 에 넣는다. exception 은 종료 코드로 못 가른다 — `bless` 가 "주소 형식 오류" 와 "그 import 없음" 에 같은 2 를 쓴다(관찰이며 이월)
-- [ ] 태그 푸시 검증 — **remote 가 붙은 뒤에만 가능하다.** 붙지 않으면 미달로 남긴다
-  - **미달로 남긴다.** V0002 에서 이미 미달이었고 조건이 바뀌지 않았다. `release.yml` 은 `actionlint` 0 이고 크로스 빌드를 손으로 확인했으나 **런타임은 아무것도 확인하지 않았다.** README 의 `OWNER` 도 플레이스홀더다
+- [x] 태그 푸시 검증 — **remote 가 붙은 뒤에만 가능하다.** 붙지 않으면 미달로 남긴다
+  - **완료.** remote 를 붙이고 버림 태그 `v0.0.1-rc1` 을 밀어 `release.yml` 을 실제로
+    돌렸다 (run 31146763738). **4타깃 전부 초록** — `aarch64-apple-darwin` 51s,
+    `x86_64-apple-darwin` 53s, `x86_64-unknown-linux-gnu` 36s,
+    `aarch64-unknown-linux-gnu` 41s. 이 파일 16-18줄의 ponytail 이 우려한
+    `ubuntu-24.04-arm` 러너를 이 계정에서 **실제로 쓸 수 있다.**
+  - 아티팩트 이름 네 개가 README 의 curl 이 만드는 네 조합과 정확히 일치한다.
+    **README 의 설치 한 줄을 그대로 실행해** 890,416 바이트 바이너리를 받고 `kang --help`
+    가 도는 것까지 확인했다. 확인 뒤 릴리즈와 태그를 지웠다.
+  - README 의 `OWNER` 플레이스홀더는 remote 를 붙일 때 `ehdrbs0318` 로 고쳤다.
 
 ## NOT in scope
 
