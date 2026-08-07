@@ -1,18 +1,19 @@
-// `build.rs` 와 매크로가 **같은 규칙으로** 인덱스 파일을 찾고 읽는다.
-//
-// 둘은 컴파일 단위가 갈려 있어 (한쪽은 build script, 한쪽은 proc-macro 라이브러리)
-// 모듈로 나눠 쓸 수 없다. 그래서 `include!` 로 소스를 공유한다. 탐색 규칙이 두 벌이
-// 되면 갈리고, 갈리면 **`build.rs` 가 추적하지 않는 인덱스를 매크로가 읽는다** — 그때
-// 검증은 한 번 성공한 뒤 영원히 캐시되고, 문서를 고쳐도 낡은 rev 로 통과한다.
-//
-// `include!` 되는 파일이라 안쪽 문서 주석(`//!`)을 쓸 수 없다. 이 파일을 고칠 때는
-// `build.rs` 도 함께 건드려라 — cargo 는 build script 를 `build.rs` 하나로 지문 삼으므로,
-// 이 파일만 고치면 build script 바이너리가 다시 컴파일되지 않는다.
+//! `build.rs` 와 매크로가 **같은 규칙으로** 인덱스 파일을 찾고 읽는다.
+//!
+//! 둘은 컴파일 단위가 갈려 있다 (한쪽은 build script, 한쪽은 proc-macro 라이브러리).
+//! `#[path]` 로 양쪽이 같은 파일을 각자의 모듈로 삼는다 — 탐색 규칙이 두 벌이 되면
+//! 갈리고, 갈리면 **`build.rs` 가 추적하지 않는 인덱스를 매크로가 읽는다.** 그때 검증은
+//! 한 번 성공한 뒤 영원히 캐시되고, 문서를 고쳐도 낡은 rev 로 통과한다.
+//!
+//! **`include!` 가 아니라 `#[path] mod` 인 이유:** `include!` 된 파일에는 `rustfmt` 가
+//! 닿지 않는다. `cargo fmt --check` 가 이 132줄을 통째로 건너뛰어, 게이트가 있는데
+//! 검사하지 않는 상태가 된다 (실측으로 확인했다 — 일부러 망가뜨린 코드를 넣어도
+//! `--check` 가 통과했다). 모듈로 두면 포맷도 rustdoc 도 그냥 따라온다.
 
 use std::io::Read;
 
 /// 인덱스를 찾지 못했을 때 위로 훑는 관례 경로.
-const 관례_경로: &str = ".kang/index.tsv";
+pub(crate) const 관례_경로: &str = ".kang/index.tsv";
 
 /// 인덱스로 받아들이는 최대 크기.
 ///
@@ -22,7 +23,7 @@ const 관례_경로: &str = ".kang/index.tsv";
 ///
 /// **상한을 두는 이유는 크기가 아니라 신뢰다.** `KANG_INDEX` 는 빌드 환경이 주는
 /// 값이고, 그것이 가리키는 대상을 rustc 프로세스 메모리에 통째로 올린다.
-const 인덱스_최대_바이트: u64 = 16 * 1024 * 1024;
+pub(crate) const 인덱스_최대_바이트: u64 = 16 * 1024 * 1024;
 
 /// 인덱스 경로를 정한다. **매크로와 `build.rs` 의 유일한 탐색 규칙이다.**
 ///
@@ -39,7 +40,7 @@ const 인덱스_최대_바이트: u64 = 16 * 1024 * 1024;
 ///
 /// # 반환값
 /// 찾은 인덱스 경로. 어느 쪽으로도 정하지 못하면 `None`
-fn 인덱스_경로() -> Option<std::path::PathBuf> {
+pub(crate) fn 인덱스_경로() -> Option<std::path::PathBuf> {
     // 환경 변수가 있으면 그것이 답이다. 파일이 없어도 관례 경로로 넘어가지 않는다 —
     // 넘어가면 "지정한 곳과 다른 곳을 읽었다" 가 된다.
     if let Some(값) = std::env::var_os("KANG_INDEX") {
@@ -70,13 +71,15 @@ fn 인덱스_경로() -> Option<std::path::PathBuf> {
 /// # 오류
 /// 읽지 못한 **짧은 사유**. 처방과 위치는 호출자가 붙인다 — 매크로와 `build.rs` 의
 /// 진단 형식이 다르기 때문이다
-fn 인덱스_읽기(경로: &std::path::Path) -> Result<String, String> {
+pub(crate) fn 인덱스_읽기(경로: &std::path::Path) -> Result<String, String> {
     let 정보 = 경로.metadata().map_err(|오류| 오류.to_string())?;
 
     // 정규 파일만 받는다. `metadata` 는 링크를 따라가므로 정규 파일을 가리키는
     // 심볼릭 링크는 통과하고, FIFO·장치 파일·디렉토리는 **열기 전에** 걸린다.
     if !정보.is_file() {
-        return Err("정규 파일이 아닙니다 — FIFO·장치 파일·디렉토리는 인덱스가 될 수 없습니다".to_string());
+        return Err(
+            "정규 파일이 아닙니다 — FIFO·장치 파일·디렉토리는 인덱스가 될 수 없습니다".to_string(),
+        );
     }
 
     // 크기를 먼저 본다. 여기서 걸러야 큰 파일을 읽는 비용 자체가 들지 않고,
@@ -109,7 +112,7 @@ fn 인덱스_읽기(경로: &std::path::Path) -> Result<String, String> {
 ///
 /// # 반환값
 /// 실제 크기와 상한을 담은 한 줄
-fn 너무_큼(크기: u64) -> String {
+pub(crate) fn 너무_큼(크기: u64) -> String {
     format!("{크기} 바이트로 상한 {인덱스_최대_바이트} 바이트를 넘습니다")
 }
 
@@ -124,7 +127,7 @@ fn 너무_큼(크기: u64) -> String {
 ///
 /// # 반환값
 /// 줄마다 `(종류, rev, 주소)`
-fn 줄들(인덱스: &str) -> impl Iterator<Item = (&str, &str, &str)> {
+pub(crate) fn 줄들(인덱스: &str) -> impl Iterator<Item = (&str, &str, &str)> {
     인덱스.lines().filter_map(|줄| {
         let mut 칸 = 줄.splitn(3, '\t');
         Some((칸.next()?, 칸.next()?, 칸.next()?))

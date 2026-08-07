@@ -38,7 +38,9 @@ use syn::{Ident, LitStr, Token};
 
 // 인덱스를 찾고 읽는 규칙은 `build.rs` 와 공유한다. 두 벌이 되면 갈리고, 갈리면
 // `build.rs` 가 추적하지 않는 인덱스를 이쪽이 읽는다 — 그때 검증이 영원히 캐시된다.
-include!("인덱스_파일.rs");
+#[path = "인덱스_파일.rs"]
+mod 인덱스_파일;
+use 인덱스_파일::*;
 
 /// kang topic 을 참조한다.
 ///
