@@ -1726,3 +1726,100 @@ fn 문서_경로는_슬래시로_출력된다() {
 
     assert_eq!(path.to_string(), "docs/details/payment");
 }
+
+/// `parse_symbol_ref` 의 형태 검사 셋이 각각 발화해야 한다.
+///
+/// 셋 다 정본 재조립 대조를 **통과한다** — `` .`결제` ``·`` `docs`/`A`. ``·
+/// `` `d`/`A`#`a`.`b` `` 는 되만든 문자열이 원문과 정확히 같다. 즉 이 세 줄이 유일한
+/// 방어선인데, 지워도 전 테스트가 통과했다. 그러면 문서 경로 없는 import 나 topic 의
+/// 계층 주소가 조용히 프로젝트에 들어간다.
+#[test]
+fn 심볼_주소의_형태_검사_셋이_각각_발화한다() {
+    // 문서 경로 없음 — 구분자가 맨 앞이라 앞쪽이 빈 조각이다.
+    let 진단 = parse::parse_document(
+        문서경로(),
+        "---\ndescription: x\n---\n\nimport .`결제`\n\n## 첫\n\n본문.\n",
+    )
+    .unwrap_err();
+    assert!(
+        진단
+            .iter()
+            .any(|d| d.message.contains("문서 경로가 없습니다")),
+        "문서 경로 없는 주소가 통과했다: {:?}",
+        진단.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    // 심볼 이름 없음 — 구분자가 맨 뒤다.
+    let 진단 = parse::parse_document(
+        문서경로(),
+        "---\ndescription: x\n---\n\nimport `docs`/`A`.\n\n## 첫\n\n본문.\n",
+    )
+    .unwrap_err();
+    assert!(
+        진단
+            .iter()
+            .any(|d| d.message.contains("심볼 이름이 없습니다")),
+        "이름 없는 주소가 통과했다: {:?}",
+        진단.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    // 계층은 keyword 의 `.` 만 갖는다 — topic(`#`) 뒤에 조각이 둘이면 안 된다.
+    let 진단 = parse::parse_document(
+        문서경로(),
+        "---\ndescription: x\n---\n\nimport `d`/`A`#`a`.`b`\n\n## 첫\n\n본문.\n",
+    )
+    .unwrap_err();
+    assert!(
+        진단
+            .iter()
+            .any(|d| d.message.contains("이름 조각이 하나만 옵니다")),
+        "topic 의 계층 주소가 통과했다: {:?}",
+        진단.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+/// `cover` 줄도 백틱 짝 검사를 받아야 한다.
+///
+/// 같은 검사가 exception·keyword·import 에는 테스트로 고정되어 있는데 `cover` 만
+/// 구멍이었다. 호출을 지우면 `` cover `짝없음 `` 이 `K104` 대신 `K111` 로, 빈 쌍과 `/` 든
+/// 이름이 각각 `K108`·`K115` 대신 `K111` 로 코드가 바뀌는데 아무 테스트도 깨지지 않았다.
+/// 진단 코드는 에이전트가 분기하는 값이다.
+#[test]
+fn cover_줄의_백틱_짝이_맞지_않으면_k104_다() {
+    let 진단 = parse::parse_document(
+        문서경로(),
+        "---\ndescription: x\n---\n\n## 첫\n\ncover `짝없음\n\n본문.\n",
+    )
+    .unwrap_err();
+
+    assert_eq!(
+        진단[0].code,
+        "K104",
+        "닫히지 않은 백틱은 K104 여야 한다 (K111 이 아니다): {:?}",
+        진단
+            .iter()
+            .map(|d| (&d.code, &d.message))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// `description:` 키는 있는데 값이 비면 `K102` 다.
+///
+/// 기존 `K102` 테스트는 키 자체가 없는 경우만 봤다. 빈 값 필터를 지우면 `description:`
+/// 만 적힌 문서가 **빈 description 으로 통과하고**, 그 문서는 `kang list` 에서 고를 근거가
+/// 없는 채 SoT 에 들어간다 — description 은 에이전트가 문서를 고르는 유일한 단서다.
+#[test]
+fn description_값이_비면_k102_다() {
+    let 진단 = parse::parse_document(문서경로(), "---\ndescription:\n---\n\n## 첫\n\n본문.\n")
+        .unwrap_err();
+
+    assert_eq!(
+        진단[0].code,
+        "K102",
+        "빈 description 은 없는 것과 같다: {:?}",
+        진단
+            .iter()
+            .map(|d| (&d.code, &d.message))
+            .collect::<Vec<_>>()
+    );
+}

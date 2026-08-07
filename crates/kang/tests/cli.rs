@@ -4576,13 +4576,6 @@ fn bless_는_같은_심볼을_import_한_모든_줄을_갱신한다() {
     let (_, stderr, 코드) = 실행(&root, &["bless", "docs/b", "--import", "docs/a.환불"]);
     assert_eq!(코드, 0, "bless 가 성공해야 한다: {stderr}");
 
-    let 내용 = fs::read_to_string(root.join("docs/b.kang")).expect("문서");
-    assert_eq!(
-        내용.matches("rev \"").count(),
-        2,
-        "두 줄 다 핀이 붙어야 한다 — 한 줄만 고치면 나머지는 해소할 방법이 없다:\n{내용}"
-    );
-
     // **핀은 둘 다 해소됐다.** 남는 error 는 `K004`(한 심볼을 두 이름으로 묶음) 하나이며
     // 그것은 사람이 이름을 하나로 정해야 하는 별개 문제다. 요점은 `K020` 이 사라진 것 —
     // 한 줄만 고쳤다면 나머지 줄의 `K020` 을 해소할 방법이 아예 없다(`bless` 는 주소로
