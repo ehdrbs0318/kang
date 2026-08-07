@@ -4354,12 +4354,13 @@ fn 산출물은_여러_문서에서도_결정적이다() {
         .filter_map(|줄| 줄.split('\t').nth(2))
         .filter_map(|주소| 주소.split(['.', '#', '!']).next())
         .collect();
-    let mut 정렬됨 = 문서들.clone();
-    정렬됨.sort_unstable();
-    정렬됨.dedup();
+    // 한 문서의 심볼이 연달아 나오므로 인접 중복만 접으면 문서 등장 순서가 된다.
     let mut 본_것 = 문서들.clone();
     본_것.dedup();
-    assert_eq!(본_것, 정렬됨, "인덱스가 문서 경로 순이 아니다: {문서들:?}");
+    assert!(
+        본_것.windows(2).all(|짝| 짝[0] < 짝[1]),
+        "인덱스가 문서 경로 순이 아니다: {문서들:?}"
+    );
     assert!(본_것.len() >= 5, "문서 다섯을 다 봤어야 한다: {본_것:?}");
 
     정리(&root);
@@ -4456,6 +4457,141 @@ fn 타입_리터럴이_탭과_제어문자를_이스케이프한다() {
     assert!(
         내용.contains("\\u0009") || 내용.contains("\\t"),
         "탭이 이스케이프되어 있어야 한다: {내용}"
+    );
+
+    정리(&root);
+}
+
+/// `show` 의 미검증 출력 절 셋을 한 번에 고정한다.
+///
+/// `referencingKeywords`·`pending: true`·`uncoded: true` 는 저장소 전체에서 단언이
+/// **0건**이었다 — 세 절을 통째로 지워도 366개가 통과했다. 이것들은 소비자 에이전트가
+/// 읽는 YAML 스키마(스펙 6.4)의 일부이고, 사라지면 에이전트가 정책의 예외 상태나
+/// 참조 관계를 못 본 채 판단한다.
+#[test]
+fn show_가_참조_키워드와_pending_과_uncoded_를_낸다() {
+    let root = 임시_루트("show_미검증_절");
+    git_저장소로(&root);
+
+    // owner 문서: keyword 하나와, 커버되지 않은 예외(pending), 그리고 uncoded topic.
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: 정책 문서\n---\n\n\
+         keyword `환불`: 결제를 되돌리는 것\n\n\
+         ## 환불의 방법\n\n\
+         `환불` 은 이렇게 한다.\n\n\
+         exception `특수 계약 환불` pending\n\n\
+         ## 코드 없는 정책 // uncoded\n\n\
+         대응하는 코드가 없는 것이 정상인 topic 이다.\n",
+    );
+    // 소비자 문서: owner 의 keyword 를 import 해 본문에서 쓴다 — 이것이
+    // `referencingKeywords` 를 채우는 유일한 경로다.
+    쓰기(
+        &root,
+        "docs/b.kang",
+        "---\ndescription: 소비자\n---\n\n\
+         import `docs`/`a`.`환불`\n\n\
+         ## 쓰는 곳\n\n\
+         `환불` 을 여기서 쓴다.\n",
+    );
+
+    // 핀을 넣어 컴파일을 통과시킨다. K031(pending 예외)은 warn 이라 exit 0 이다.
+    let (_, stderr, 코드) = 실행(&root, &["bless", "docs/b", "--import", "docs/a.환불"]);
+    assert_eq!(코드, 0, "bless 가 성공해야 한다: {stderr}");
+
+    // `pending` 과 `uncoded` 는 **선언한** 문서에 나온다.
+    let (owner, stderr, 코드) = 실행(&root, &["show", "docs/a"]);
+    assert_eq!(코드, 0, "pending 예외는 warn 이므로 통과한다: {stderr}");
+    assert!(
+        owner.contains("pending: true"),
+        "커버되지 않은 예외는 pending: true 여야 한다:\n{owner}"
+    );
+    assert!(
+        owner.contains("uncoded: true"),
+        "// uncoded 로 선언한 topic 은 uncoded: true 여야 한다:\n{owner}"
+    );
+
+    // `referencingKeywords` 는 **import 한** 문서에 나온다 — 그 문서가 밖에서 끌어온
+    // keyword 의 목록이다 (`show.rs` 의 문서 뷰).
+    let (소비자, stderr, 코드) = 실행(&root, &["show", "docs/b"]);
+    assert_eq!(코드, 0, "{stderr}");
+    assert!(
+        소비자.contains("referencingKeywords"),
+        "import 한 keyword 가 있으므로 그 절이 나와야 한다:\n{소비자}"
+    );
+    assert!(
+        소비자.contains("결제를 되돌리는 것"),
+        "그 절이 owner 의 정의를 담아야 한다:\n{소비자}"
+    );
+
+    정리(&root);
+}
+
+/// `bless` 는 같은 심볼을 import 한 **모든** 줄을 갱신해야 한다.
+///
+/// `bless.rs` 의 rustdoc 이 명시한 실패 모드다 — 한 줄만 고치면 나머지 줄의 `K020` 을
+/// 해소할 방법이 없어 빌드가 **영구히** 깨진다. `bless` 는 주소로 대상을 지목하므로
+/// "그 심볼의 두 번째 줄만" 고르는 인자가 없기 때문이다.
+///
+/// 기존 bless 픽스처는 전부 대상별 import 가 한 줄뿐이라, 누적 루프를 첫 일치에서
+/// `break` 로 바꿔도 통과했다.
+///
+/// **이 상태가 도달 가능한 이유:** 한 문서가 같은 심볼을 두 번 import 하는 것은 `K004`
+/// 가 거절하지만, `bless` 는 `compile()` 이 아니라 `parse_project()` 를 쓴다 — error
+/// 상태에서 실행되는 것이 정상이기 때문이다 (핀 없음도 error 다). 그래서 `K004` 인 문서에
+/// 대해서도 돌고, 그때 같은 심볼을 가리키는 줄이 둘이다.
+#[test]
+fn bless_는_같은_심볼을_import_한_모든_줄을_갱신한다() {
+    let root = 임시_루트("bless_다중줄");
+    git_저장소로(&root);
+
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: owner\n---\n\nkeyword `환불`: 결제를 되돌리는 것\n\n## 방법\n\n`환불` 이다.\n",
+    );
+    // 같은 심볼을 두 줄이 import 한다. alias 가 달라야 K052(같은 로컬 이름 두 번)를
+    // 피하면서 두 줄이 살아남는다.
+    쓰기(
+        &root,
+        "docs/b.kang",
+        "---\ndescription: 소비자\n---\n\n\
+         import `docs`/`a`.`환불`\n\
+         import `docs`/`a`.`환불` as `되돌리기`\n\n\
+         ## 쓰는 곳\n\n\
+         `환불` 과 `되돌리기` 를 쓴다.\n",
+    );
+
+    // 핀이 없으므로 K020 이 **두 줄** 모두에 대해 난다.
+    let (_, stderr, 코드) = 실행(&root, &["build"]);
+    assert_eq!(코드, 1, "핀이 없으므로 error 다: {stderr}");
+    assert_eq!(
+        stderr.matches("K020").count(),
+        2,
+        "import 두 줄 모두 핀이 없다: {stderr}"
+    );
+
+    // 한 번의 bless 가 두 줄을 다 고쳐야 한다.
+    let (_, stderr, 코드) = 실행(&root, &["bless", "docs/b", "--import", "docs/a.환불"]);
+    assert_eq!(코드, 0, "bless 가 성공해야 한다: {stderr}");
+
+    let 내용 = fs::read_to_string(root.join("docs/b.kang")).expect("문서");
+    assert_eq!(
+        내용.matches("rev \"").count(),
+        2,
+        "두 줄 다 핀이 붙어야 한다 — 한 줄만 고치면 나머지는 해소할 방법이 없다:\n{내용}"
+    );
+
+    // **핀은 둘 다 해소됐다.** 남는 error 는 `K004`(한 심볼을 두 이름으로 묶음) 하나이며
+    // 그것은 사람이 이름을 하나로 정해야 하는 별개 문제다. 요점은 `K020` 이 사라진 것 —
+    // 한 줄만 고쳤다면 나머지 줄의 `K020` 을 해소할 방법이 아예 없다(`bless` 는 주소로
+    // 대상을 지목하므로 "두 번째 줄만" 을 고를 인자가 없다).
+    let (_, stderr, 코드) = 실행(&root, &["build"]);
+    assert_eq!(코드, 1, "K004 는 남는다: {stderr}");
+    assert!(
+        !stderr.contains("K020"),
+        "핀은 두 줄 다 해소됐어야 한다: {stderr}"
     );
 
     정리(&root);
