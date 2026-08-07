@@ -375,6 +375,23 @@ fn parse_keyword_line(path: &DocPath, rest: &str, line_no: usize) -> Result<Keyw
         ));
     }
 
+    // **읽어낸 조각으로 정규 표기를 되만들어 원문과 대조한다.** [`scan_symbols`] 는 백틱
+    // 쌍 사이의 텍스트를 그냥 버리므로, 이 대조가 없으면 `` keyword `결제` blah `수단` ``
+    // 이 **exit 0 으로** `결제.수단` 이 되고 `blah` 는 어디에도 남지 않는다. 조용히 다른
+    // 뜻으로 읽는 것은 거부보다 나쁘다 — 사용자는 자기가 쓴 것이 무엇이 되었는지 모른다.
+    // [`parse_symbol_ref`] 가 주소에 대해 하는 것과 같은 대조다.
+    let canonical = 백틱_결합(&names, ".");
+    if canonical != name_part.trim() {
+        return Err(keyword_문법_오류(
+            path,
+            line_no,
+            format!(
+                "keyword 이름 \"{}\" 이 `{canonical}` 로 읽혔습니다. 이름은 백틱으로 감싼 조각을 `.` 으로만 이어 씁니다.",
+                name_part.trim()
+            ),
+        ));
+    }
+
     // 줄 끝의 `#`상세 topic`` 은 선택이다. 없으면 전부가 한 줄 정의다.
     // 마커는 공백 뒤에만 온다 (스펙 4.3 예시). 이 조건이 없으면 `C#` 같은 심볼의
     // `#` 와 그 닫는 백틱이 마커로 오인되어 합법 선언이 거부된다.

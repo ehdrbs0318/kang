@@ -153,6 +153,58 @@ keyword `언어`: `C#` 과 `F#` 을 뜻한다
     assert_eq!(doc.keywords[0].definition, "`C#` 과 `F#` 을 뜻한다");
 }
 
+/// keyword 이름의 조각 사이에 낀 텍스트는 조용히 사라지면 안 된다.
+///
+/// `scan_symbols` 는 백틱 쌍 사이의 텍스트를 그냥 버린다. 정본 재조립 대조가 없으면
+/// `` keyword `결제` blah `수단` `` 이 **exit 0 으로** `결제.수단` 이 되고 `blah` 는
+/// 어디에도 남지 않는다 — 사용자는 자기가 쓴 것이 무엇이 되었는지 모른다. 조용히 다른
+/// 뜻으로 읽는 것은 거부보다 나쁘다.
+#[test]
+fn keyword_이름_조각_사이의_텍스트는_에러다() {
+    let source = r#"---
+description: 결제 정책 문서
+---
+
+keyword `결제`: 상위 정의다
+keyword `결제` blah `수단`: 하위 정의다
+"#;
+
+    let diagnostics = parse::parse_document(문서경로(), source).unwrap_err();
+
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(diagnostics[0].code, "K103");
+    assert_eq!(diagnostics[0].locations[0].line, 6);
+    // 무엇으로 읽혔는지 보여 줘야 사용자가 자기 의도와 대조할 수 있다.
+    assert!(
+        diagnostics[0].message.contains("blah"),
+        "원문을 인용해야 한다: {}",
+        diagnostics[0].message
+    );
+    assert!(
+        diagnostics[0].message.contains("`결제`.`수단`"),
+        "무엇으로 읽혔는지 말해야 한다: {}",
+        diagnostics[0].message
+    );
+    assert!(!diagnostics[0].fixes.is_empty());
+}
+
+/// 정당한 계층 선언은 그대로 통과해야 한다. 위 검사가 넓게 잡으면 이 단언이 깨진다.
+#[test]
+fn 백틱을_점으로_이은_계층_이름은_통과한다() {
+    let source = r#"---
+description: 결제 정책 문서
+---
+
+keyword `결제`: 상위 정의다
+keyword `결제`.`수단`: 하위 정의다
+"#;
+
+    let document = parse::parse_document(문서경로(), source).expect("정당한 계층 선언이다");
+
+    assert_eq!(document.keywords.len(), 2);
+    assert_eq!(document.keywords[1].name.0, vec!["결제", "수단"]);
+}
+
 /// 상세 마커는 줄 끝의 선택 항목이다. 뒤에 텍스트가 남으면 정의가 조용히 잘리므로 error 다.
 #[test]
 fn 줄_끝이_아닌_상세_마커는_에러다() {
