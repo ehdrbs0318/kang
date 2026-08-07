@@ -50,6 +50,12 @@ jobs:
         env:
           KANG_REQUIRE_INDEX: '1'
 
+      # 만든 바이너리로 이 저장소의 문서를 실제로 컴파일한다. 네 타깃 중 러너에서 돌 수
+      # 있는 것만 잰다 — 크로스 빌드한 바이너리는 여기서 실행되지 않는다. 그래도 이 한
+      # 줄이 "빌드는 됐지만 돌지 않는 바이너리" 를 릴리즈로 내보내는 것을 막는다.
+      - if: matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'aarch64-unknown-linux-gnu'
+        run: ./target/${{ matrix.target }}/release/kang build
+
       # 설치 스크립트가 uname 으로 고를 수 있도록 이름에 타깃 트리플을 넣는다.
       # README 의 curl 한 줄이 만드는 이름이 바로 이것이다.
       - run: mv target/${{ matrix.target }}/release/kang kang-${{ matrix.target }}

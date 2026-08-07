@@ -256,9 +256,9 @@ fn 인덱스와_어긋난_참조가_빌드를_세운다() {
         "{오류}"
     );
 
-    // ⑧ 여기부터 두 경우는 `build.rs` 의 **환경 변수** 추적을 잰다. `KANG_INDEX` 가 없고
-    //    인덱스 파일도 없으면 `build.rs` 는 파일 추적 지시를 하나도 내지 않으므로, 다음
-    //    빌드를 부르는 것은 환경 변수 변경 하나뿐이다. 먼저 통과 상태를 만든다.
+    // ⑧ 여기부터 두 경우는 `build.rs` 의 **환경 변수** 추적을 잰다. 인덱스 파일이 없으면
+    //    이 임시 프로젝트에는 추적할 파일이 없으므로, 다음 빌드를 부르는 것은 환경 변수
+    //    변경뿐이다. 먼저 통과 상태를 만든다.
     fs::remove_file(&인덱스).expect("인덱스를 지울 수 있어야 한다");
     let (코드, 오류) = 빌드(&루트, None, false);
     assert_eq!(코드, 0, "인덱스가 없으면 통과해야 한다: {오류}");
@@ -285,6 +285,21 @@ fn 인덱스와_어긋난_참조가_빌드를_세운다() {
     assert_ne!(
         코드, 0,
         "KANG_REQUIRE_INDEX 변경이 재빌드를 불러야 한다: {오류}"
+    );
+
+    // ⑫ `KANG_INDEX` 가 정규 파일이 아닌 것을 가리키면 **열기 전에** 거절한다.
+    //
+    //    FIFO 를 가리키면 여는 순간 쓰는 쪽을 기다리며 rustc 가 매달리고, `/dev/zero`
+    //    를 가리키면 끝없는 0 을 읽어 메모리를 다 쓴다. 그 둘을 테스트로 직접 재면
+    //    실패가 "매달림" 이라 테스트 자체가 끝나지 않는다 — 같은 갈래인 디렉토리로
+    //    잰다. 걸리는 자리가 `인덱스_읽기` 하나이므로 셋이 같은 판정을 지난다.
+    //    **문면까지 재는 이유**는 그냥 읽으면 여기서도 실패하기 때문이다. 그때의
+    //    사유는 OS 의 "Is a directory" 이고, 그것은 검사가 있었다는 증거가 아니다.
+    let (코드, 오류) = 빌드(&루트, Some(&루트.join(".kang")), false);
+    assert_eq!(코드, 0, "인덱스를 못 읽으면 warn 이고 통과다: {오류}");
+    assert!(
+        오류.contains("정규 파일이 아닙니다"),
+        "정규 파일 검사를 거쳐야 한다: {오류}"
     );
 
     let _ = fs::remove_dir_all(&루트);
@@ -353,5 +368,239 @@ fn 인덱스가_문서보다_낡으면_빌드가_말한다() {
         stderr.contains("kang index"),
         "처방을 담아야 한다: {stderr}"
     );
+    let _ = fs::remove_dir_all(&루트);
+}
+
+/// `build.rs` 를 그 자리에서 컴파일해 한 번 돌리고 stdout 을 준다.
+///
+/// **build script 를 `cargo` 로 띄울 수는 없다.** cargo 는 그것을 자기 판단으로 돌리고
+/// 출력을 삼키며, 무엇보다 `CARGO_MANIFEST_DIR` 을 `kang-macros` 자신의 디렉토리로
+/// 고정한다 — 관례 경로 탐색이 어디서부터 올라가는지 잴 수가 없다. `rustc` 로 직접
+/// 컴파일해 환경을 우리가 정해 주면 그 규칙을 그대로 관찰할 수 있다. 외부 의존성이
+/// 늘지 않는다 (`build.rs` 는 std 만 쓴다).
+///
+/// # 매개변수
+/// - `작업`: 컴파일 산출물을 둘 디렉토리
+/// - `기준`: build script 에 줄 `CARGO_MANIFEST_DIR`
+/// - `인덱스`: `Some` 이면 `KANG_INDEX` 로 준다. `None` 이면 관례 경로를 위로 훑게 한다
+///
+/// # 반환값
+/// build script 가 낸 stdout
+fn 빌드스크립트(작업: &Path, 기준: &Path, 인덱스: Option<&Path>) -> String {
+    let 소스 = Path::new(env!("CARGO_MANIFEST_DIR")).join("build.rs");
+    let 바이너리 = 작업.join("build-script");
+    let 컴파일 = Command::new("rustc")
+        .args(["--edition", "2024"])
+        .arg(&소스)
+        .arg("-o")
+        .arg(&바이너리)
+        .output()
+        .expect("rustc 를 실행할 수 있어야 한다");
+    assert!(
+        컴파일.status.success(),
+        "build.rs 가 컴파일되어야 한다: {}",
+        String::from_utf8_lossy(&컴파일.stderr)
+    );
+
+    let mut 명령 = Command::new(&바이너리);
+    명령
+        .env("CARGO_MANIFEST_DIR", 기준)
+        .env_remove("KANG_INDEX")
+        .env_remove("KANG_REQUIRE_INDEX");
+    // 인덱스를 명시하면 위로 훑기를 건너뛴다.
+    if let Some(경로) = 인덱스 {
+        명령.env("KANG_INDEX", 경로);
+    }
+
+    let 결과 = 명령
+        .output()
+        .expect("build script 를 실행할 수 있어야 한다");
+    assert!(
+        결과.status.success(),
+        "build script 는 통과해야 한다: {}",
+        String::from_utf8_lossy(&결과.stderr)
+    );
+    String::from_utf8_lossy(&결과.stdout).into_owned()
+}
+
+/// build script 시험용 저장소를 만든다. 인덱스와 문서 하나를 관례 자리에 둔다.
+///
+/// # 매개변수
+/// - `이름`: 테스트를 구분하는 이름
+/// - `추가_줄`: 인덱스에 덧붙일 줄들 (없으면 빈 문자열)
+///
+/// # 반환값
+/// 만들어진 저장소 루트
+fn 시험_저장소(이름: &str, 추가_줄: &str) -> PathBuf {
+    let 루트 = std::env::temp_dir().join(format!("kang-macros-bs-{}-{이름}", std::process::id()));
+    let _ = fs::remove_dir_all(&루트);
+
+    let 문서 = 루트.join("docs/a.kang");
+    fs::create_dir_all(문서.parent().expect("상위 디렉토리")).expect("docs 를 만들 수 있어야 한다");
+    fs::write(
+        &문서,
+        "---\ndescription: 시험\n---\n\n## 결제의 기본\n\n내용이다.\n",
+    )
+    .expect("문서를 쓸 수 있어야 한다");
+
+    let 인덱스 = 루트.join(".kang/index.tsv");
+    fs::create_dir_all(인덱스.parent().expect("상위 디렉토리"))
+        .expect("인덱스 디렉토리를 만들 수 있어야 한다");
+    fs::write(
+        &인덱스,
+        format!("topic\t{첫_핀}\tdocs/a#결제의 기본\n{추가_줄}"),
+    )
+    .expect("인덱스를 쓸 수 있어야 한다");
+
+    루트
+}
+
+/// `KANG_INDEX` 없이 관례 경로로 찾은 인덱스도 재빌드 추적에 오른다.
+///
+/// **이것이 빠지면 검증이 한 번 성공한 뒤 영원히 캐시된다.** 매크로는 `KANG_INDEX` 가
+/// 없으면 `CARGO_MANIFEST_DIR` 부터 위로 훑어 `.kang/index.tsv` 를 읽는데, `build.rs` 가
+/// 그 파일을 cargo 에게 말하지 않으면 인덱스를 다시 내도 아무것도 재컴파일되지 않는다 —
+/// 문서를 고쳐도 낡은 rev 로 통과한다.
+#[test]
+fn 관례_경로로_찾은_인덱스도_재빌드_추적에_오른다() {
+    let 루트 = 시험_저장소("관례_추적", "");
+    // 소비자 크레이트는 저장소 안쪽에 있다. 인덱스는 거기서 두 단계 위에 있으므로
+    // 위로 훑기가 실제로 돌아야 찾는다.
+    let 크레이트 = 루트.join("crates/소비자");
+    fs::create_dir_all(&크레이트).expect("크레이트 디렉토리를 만들 수 있어야 한다");
+
+    let stdout = 빌드스크립트(&루트, &크레이트, None);
+    let 인덱스 = 루트.join(".kang/index.tsv");
+    assert!(
+        stdout.contains(&format!("cargo::rerun-if-changed={}", 인덱스.display())),
+        "관례 경로로 찾은 인덱스를 추적해야 한다: {stdout}"
+    );
+    // 문서도 함께 올라야 문서만 고쳤을 때 신선도 판정이 다시 돈다.
+    assert!(
+        stdout.contains(&format!(
+            "cargo::rerun-if-changed={}",
+            루트.join("docs/a.kang").display()
+        )),
+        "문서도 추적해야 한다: {stdout}"
+    );
+
+    let _ = fs::remove_dir_all(&루트);
+}
+
+/// 인덱스가 가리키는 문서가 사라지면 빌드가 그 사실을 말한다.
+///
+/// **mtime 판정으로는 삭제와 이름 변경이 잡히지 않는다.** 그 둘은 어떤 생존 문서의
+/// 시각도 올리지 않으므로 "인덱스보다 새로운 문서" 가 하나도 없다. 그동안 인덱스에는
+/// 사라진 문서의 심볼이 남고 매크로는 그것으로 검증을 통과시킨다.
+#[test]
+fn 인덱스가_사라진_문서를_가리키면_빌드가_말한다() {
+    // `docs/gone.kang` 은 만들지 않는다 — 지우거나 이름을 바꾼 뒤의 인덱스와 같다.
+    let 루트 = 시험_저장소("사라진_문서", "topic\tdeadbe\tdocs/gone#없어진 것\n");
+    let 인덱스 = 루트.join(".kang/index.tsv");
+
+    let stdout = 빌드스크립트(&루트, &루트, Some(&인덱스));
+    assert!(
+        stdout.contains("cargo::warning=kang 인덱스가 사라진 문서를 가리킵니다"),
+        "사라진 문서를 말해야 한다: {stdout}"
+    );
+    assert!(
+        stdout.contains("gone.kang"),
+        "어느 문서가 사라졌는지 지목해야 한다: {stdout}"
+    );
+    assert!(
+        stdout.contains("kang index"),
+        "처방을 담아야 한다: {stdout}"
+    );
+    // 살아 있는 문서를 사라졌다고 말하면 진단이 거짓이 된다.
+    assert!(
+        !stdout.contains("docs/a.kang)") && !stdout.contains("docs/a.kang,"),
+        "살아 있는 문서를 지목하면 안 된다: {stdout}"
+    );
+
+    let _ = fs::remove_dir_all(&루트);
+}
+
+/// 문서 순회가 심볼릭 링크를 따라가지 않는다.
+///
+/// `Path::is_dir()` 은 링크를 따라가므로 저장소에 링크 순환이 있으면 순회가 자기
+/// 자신으로 되돌아오고, `/` 를 가리키는 링크가 하나 있으면 **모든 `cargo build` 가
+/// 저장소 밖을 훑는다.** 컴파일러 본체(`resolve::수집`)가 같은 자리에서 `DirEntry` 의
+/// 종류를 보는 이유가 이것이고, 여기도 같게 맞춘다.
+#[cfg(unix)]
+#[test]
+fn 문서_순회가_심볼릭_링크를_따라가지_않는다() {
+    let 루트 = 시험_저장소("링크", "");
+    // `docs/순환` 이 저장소 루트를 가리킨다. 링크를 따라가면 `docs/순환/docs/순환/…`
+    // 으로 자기 자신을 끝없이 되짚는다.
+    let 링크 = 루트.join("docs/순환");
+    std::os::unix::fs::symlink("..", &링크).expect("링크를 만들 수 있어야 한다");
+
+    let 인덱스 = 루트.join(".kang/index.tsv");
+    let stdout = 빌드스크립트(&루트, &루트, Some(&인덱스));
+
+    // 링크 밖의 문서는 그대로 보여야 한다 — 순회 자체가 죽으면 이 단언이 먼저 깨진다.
+    assert!(
+        stdout.contains(&format!(
+            "cargo::rerun-if-changed={}",
+            루트.join("docs/a.kang").display()
+        )),
+        "링크가 아닌 문서는 여전히 보여야 한다: {stdout}"
+    );
+    // 링크를 통해 닿은 경로가 하나라도 있으면 따라간 것이다.
+    assert!(
+        !stdout.contains(&링크.display().to_string()),
+        "심볼릭 링크를 통해 순회하면 안 된다: {stdout}"
+    );
+
+    let _ = fs::remove_dir_all(&루트);
+}
+
+/// 파일 이름에 든 개행이 새 cargo 지시가 되면 안 된다.
+///
+/// cargo 지시는 한 줄에 하나이고 이스케이프 문법이 없다. 값에 개행이 들어가면 그 뒷부분이
+/// **새 지시**로 읽히므로, `docs/a\ncargo::rustc-env=X=Y.kang` 이라는 파일 하나로 임의의
+/// cargo 지시를 심을 수 있다. `.cargo/config.toml` 이 `KANG_INDEX` 를 심으므로 이
+/// 스크립트는 이 저장소의 **모든** `cargo build`·`cargo test` 에서 돈다.
+///
+/// 컴파일러 쪽은 `K116` 이 같은 것을 막지만(`crates/kang/src/resolve.rs`) build script 는
+/// 컴파일러를 거치지 않고 파일 시스템을 직접 훑으므로 그 방어가 닿지 않는다.
+#[test]
+fn 파일_이름의_개행이_cargo_지시가_되지_못한다() {
+    let 루트 = 시험_저장소("지시_주입", "");
+
+    // 이 이름이 그대로 stdout 에 실리면 둘째 줄이 유효한 cargo 지시가 된다.
+    let 악성 = 루트.join("docs/a\ncargo::rustc-env=INJECTED=yes.kang");
+    fs::write(
+        &악성,
+        "---\ndescription: 주입 시험\n---\n\n## 첫\n\n본문.\n",
+    )
+    .expect("개행이 든 이름의 문서를 만들 수 있어야 한다");
+
+    let 인덱스 = 루트.join(".kang/index.tsv");
+    let stdout = 빌드스크립트(&루트, &루트, Some(&인덱스));
+
+    // 이것이 이 시험의 전부다 — 어떤 줄도 `cargo::rustc-env=INJECTED` 로 시작하지 않는다.
+    let 주입된: Vec<&str> = stdout
+        .lines()
+        .filter(|줄| 줄.starts_with("cargo::rustc-env=INJECTED"))
+        .collect();
+    assert!(
+        주입된.is_empty(),
+        "파일 이름이 cargo 지시가 됐다: {주입된:?}\n전체:\n{stdout}"
+    );
+
+    // 조용히 건너뛰지 않는다. 추적이 빠진 문서는 고쳐도 재빌드가 걸리지 않으므로,
+    // 그 사실을 말하지 않으면 검증이 낡은 채로 통과한다.
+    assert!(
+        stdout.contains("제어 문자가 든 경로를 재빌드 추적에서 뺐습니다"),
+        "무엇을 뺐는지 말해야 한다: {stdout}"
+    );
+
+    // 경로를 이스케이프해서 보여 준다 — 사용자가 어느 파일인지 알아야 고칠 수 있다.
+    assert!(
+        stdout.contains("docs/a\\ncargo::rustc-env=INJECTED=yes.kang"),
+        "문제의 경로를 이스케이프해 보여야 한다: {stdout}"
+    );
+
     let _ = fs::remove_dir_all(&루트);
 }

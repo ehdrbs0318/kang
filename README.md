@@ -38,6 +38,8 @@ kang — 문서 컴파일러
   kang keywords [경로]                 키워드 목록
   kang refs <키워드>                   키워드를 참조하는 topic
   kang show <문서|토픽>                문서/토픽 조회 (YAML)
+  kang index <경로>                    심볼 인덱스 산출 (탭 구분)
+  kang types <경로>                    TypeScript 타입 산출 (topic)
   kang --help                          이 도움말
 
 아직 구현되지 않은 명령 (부르면 종료 코드 3 이며, 다른 방법이 없습니다):
@@ -54,7 +56,7 @@ kang — 문서 컴파일러
 종료 코드:
   0  성공
   1  컴파일 error 존재
-  2  사용법 오류, 또는 환경 오류 (git 저장소가 아님)
+  2  사용법 오류, 또는 환경 오류 (git 저장소가 아님, 문서를 읽지 못함, 산출물을 쓰지 못함)
   3  아직 구현되지 않은 기능 (kang inspect)
 ```
 

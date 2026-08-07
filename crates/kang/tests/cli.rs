@@ -3586,6 +3586,53 @@ fn 인덱스는_쓰지_못하면_옛_인덱스를_지키며_시끄럽게_실패�
     정리(&root);
 }
 
+#[test]
+fn 산출은_kang_이_만들지_않은_파일을_덮어쓰지_않는다() {
+    let root = 임시_루트("산출_덮어쓰기");
+    git_저장소로(&root);
+    인덱스_픽스처(&root);
+
+    // 되돌릴 수 없는 두 경우. 경로를 그대로 받아 쓰므로 오타 한 번이 파일을 지운다.
+    쓰기(&root, "Cargo.toml", "name = \"중요한 설정\"\n");
+    let 설정_원본 = fs::read_to_string(root.join("Cargo.toml")).expect("설정");
+
+    let (stdout, stderr, 코드) = 실행(&root, &["types", "Cargo.toml"]);
+    assert_eq!(코드, 2, "남의 파일을 덮어쓰려 하면 환경 오류다: {stderr}");
+    assert_eq!(stdout, "", "실패했으면 stdout 은 비어야 한다");
+    assert!(
+        stderr.contains("kang 이 만들지 않은"),
+        "무엇이 막았는지 말해야 한다: {stderr}"
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("Cargo.toml")).expect("설정이 남아야 한다"),
+        설정_원본,
+        "kang types 가 남의 파일을 덮어썼다"
+    );
+
+    // `.kang` 원본을 산출 대상으로 주는 것은 소스를 지우는 것이다.
+    let 문서 = root.join("docs/a.kang");
+    let 문서_원본 = fs::read_to_string(&문서).expect("문서");
+    let (_, stderr, 코드) = 실행(&root, &["index", "docs/a.kang"]);
+    assert_eq!(코드, 2, "문서를 덮어쓰려 하면 환경 오류다: {stderr}");
+    assert_eq!(
+        fs::read_to_string(&문서).expect("문서가 남아야 한다"),
+        문서_원본,
+        "kang index 가 문서 원본을 덮어썼다"
+    );
+
+    // 재실행은 정상 사용이다. 자기 산출물은 그대로 덮어써야 한다.
+    let (_, stderr, 코드) = 실행(&root, &["index", ".kang/index.tsv"]);
+    assert_eq!(코드, 0, "첫 산출은 성공해야 한다: {stderr}");
+    let (_, stderr, 코드) = 실행(&root, &["index", ".kang/index.tsv"]);
+    assert_eq!(코드, 0, "재실행이 막히면 안 된다: {stderr}");
+    let (_, stderr, 코드) = 실행(&root, &["types", ".kang/generated.ts"]);
+    assert_eq!(코드, 0, "첫 타입 산출은 성공해야 한다: {stderr}");
+    let (_, stderr, 코드) = 실행(&root, &["types", ".kang/generated.ts"]);
+    assert_eq!(코드, 0, "타입 재실행이 막히면 안 된다: {stderr}");
+
+    정리(&root);
+}
+
 #[cfg(unix)]
 #[test]
 fn 경로의_개행이_인덱스에_위조_줄을_심지_못한다() {

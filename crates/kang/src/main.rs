@@ -54,7 +54,7 @@ const 사용법: &str = "kang — 문서 컴파일러
 종료 코드:
   0  성공
   1  컴파일 error 존재
-  2  사용법 오류, 또는 환경 오류 (git 저장소가 아님)
+  2  사용법 오류, 또는 환경 오류 (git 저장소가 아님, 문서를 읽지 못함, 산출물을 쓰지 못함)
   3  아직 구현되지 않은 기능 (kang inspect)";
 
 /// 인자를 서브커맨드로 갈라 실행하고 그 종료 코드로 프로세스를 끝낸다.
@@ -115,8 +115,20 @@ fn main() {
         ["show", 대상] => 조회(대상),
         ["bless", 문서, "--import", 심볼] => 축복(문서, 심볼),
         ["init"] => 초기화(),
-        ["index", 경로] => 산출(경로, "인덱스", index::write_index, "tsv.tmp"),
-        ["types", 경로] => 산출(경로, "타입", index::write_types, "ts.tmp"),
+        ["index", 경로] => 산출(
+            경로,
+            "인덱스",
+            index::write_index,
+            index::인덱스_형식인가,
+            "tsv.tmp",
+        ),
+        ["types", 경로] => 산출(
+            경로,
+            "타입",
+            index::write_types,
+            index::타입_형식인가,
+            "ts.tmp",
+        ),
         // v1 에 없는 것과 **v1 이 만들지 않기로 한 것**은 다르다. 앞의 것은 다음 빌드를
         // 기다리면 되지만 이것은 기다려도 오지 않는다 (스펙 6절).
         ["inspect"] => 미구현("kang inspect", "v2 기능이며 아직 구현되지 않았습니다."),
@@ -384,6 +396,7 @@ fn 산출(
     경로: &str,
     무엇: &str,
     생성기: fn(&Project, &SymbolTable, &mut Vec<u8>) -> std::io::Result<()>,
+    내_산출물인가: fn(&str) -> bool,
     임시_확장자: &str,
 ) -> i32 {
     let (project, table) = match compile() {
@@ -407,6 +420,21 @@ fn 산출(
     };
 
     let 파일 = std::path::PathBuf::from(경로);
+
+    // **이미 있는 파일이 내 산출물로 보이지 않으면 덮어쓰지 않는다.** 경로를 그대로 받아
+    // 쓰므로 `kang types Cargo.toml` 이나 `kang index docs/policy.kang` 한 번이 그 파일을
+    // 지운다. 산출물은 언제든 다시 만들 수 있지만 남의 파일은 그렇지 않고 되돌릴 방법이
+    // 없다. 재실행은 정상 사용이므로 내가 낸 것으로 보이면 그대로 덮어쓴다.
+    if let Ok(기존) = std::fs::read_to_string(&파일)
+        && !내_산출물인가(&기존)
+    {
+        eprintln!(
+            "그 자리에 kang 이 만들지 않은 파일이 있어 {무엇}을 쓰지 않았습니다 ({}).\n\n  fix:\n    [edit]  다른 경로를 주거나, 그 파일이 필요 없다면 지우고 다시 실행하세요",
+            파일.display()
+        );
+        return 2;
+    }
+
     // 상위 디렉토리가 없으면 만든다. `.kang/index.tsv` 처럼 새 디렉토리에 두는 것이
     // 정상 사용이고, 여기서 실패하면 원자적 쓰기가 임시 파일부터 실패한다.
     match 파일.parent() {
