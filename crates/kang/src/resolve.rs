@@ -35,6 +35,26 @@ pub struct Project {
     pub docs: HashMap<DocPath, Document>,
 }
 
+impl Project {
+    /// 문서 경로를 정렬해 돌려준다. **출력 순서가 실행마다 같아야 하는 모든 자리가 쓴다.**
+    ///
+    /// [`Project::docs`] 는 `HashMap` 이라 순회 순서가 실행마다 다르다. 정렬하지 않으면
+    /// 진단 순서도, `SymbolId` 배정도, 커밋한 인덱스·타입 산출물도 매번 달라진다 —
+    /// 생성물을 커밋하는 결정(V0004 Task 3 J2)이 이 정렬에 기대고 있다.
+    ///
+    /// **`sort_by` 이지 `sort_by_key` 가 아니다.** [`DocPath`] 는 `Vec<String>` 래퍼이므로
+    /// 키를 만들면 비교마다 조각을 통째로 복제한다. 이 관용구가 아홉 자리에 복제되어
+    /// 있었고 그중 하나가 이미 그 함정에 빠져 있었다.
+    ///
+    /// # 반환값
+    /// 조각 순으로 정렬된 문서 경로들
+    pub fn 경로들(&self) -> Vec<&DocPath> {
+        let mut 순서: Vec<&DocPath> = self.docs.keys().collect();
+        순서.sort_by(|a, b| a.0.cmp(&b.0));
+        순서
+    }
+}
+
 /// 프로젝트 루트를 찾는다. git 저장소 루트가 곧 kang 프로젝트 루트다.
 /// git 저장소가 아니면 그 사실을 진단으로 돌려준다.
 ///
@@ -213,10 +233,7 @@ impl SymbolTable {
     pub fn build(project: &Project) -> (SymbolTable, Vec<Diagnostic>) {
         // HashMap 의 나열 순서는 보장되지 않는다. 정렬해야 SymbolId 와 진단 순서가
         // 실행마다 같다.
-        let mut 순서: Vec<&DocPath> = project.docs.keys().collect();
-        // DocPath 는 Vec<String> 래퍼이므로 조각을 그대로 비교한다.
-        // to_string() 으로 비교하면 비교마다 String 을 새로 할당한다.
-        순서.sort_by(|a, b| a.0.cmp(&b.0));
+        let 순서 = project.경로들();
 
         let mut symbols: Vec<Symbol> = Vec::new();
         let mut by_name: HashMap<String, Vec<SymbolId>> = HashMap::new();
@@ -715,6 +732,48 @@ fn 파일_읽기_실패(file: &Path, path: DocPath, error: &std::io::Error) -> D
     }
 }
 
+/// 이름 때문에 문서를 읽지 못한다는 진단을 만든다 (`K113`·`K116`·`K117`).
+///
+/// **셋이 한 가족이다** — 전부 "이 이름은 주소가 될 수 없다" 를 말하고, 전부 파일을 열기
+/// 전에 발화하며(가리킬 줄이 없어 `line: 0`), 전부 처방이 `[edit]` 이다. 새 이름은 그
+/// 문서가 무엇에 관한 것인지 아는 사람만 정할 수 있고 컴파일러가 지어내면 처방이 아니다.
+///
+/// # 매개변수
+/// - `code`: 진단 코드
+/// - `doc`: 진단이 가리킬 문서 경로
+/// - `message`: 무엇이 틀렸나
+/// - `note`: 그 자리에 대한 설명
+/// - `action`: 무엇을 고쳐야 하나
+/// - `고칠_문서`: `[edit]` 이 지목할 문서. 주소를 만들 수 없으면 `None`
+///
+/// # 반환값
+/// 그 코드의 진단
+fn 이름_거부(
+    code: &'static str,
+    doc: DocPath,
+    message: String,
+    note: String,
+    action: String,
+    고칠_문서: Option<DocPath>,
+) -> Diagnostic {
+    Diagnostic {
+        severity: Severity::Error,
+        code,
+        message,
+        locations: vec![Location {
+            doc,
+            // 이름 자체가 문제이므로 가리킬 줄이 없다.
+            line: 0,
+            note,
+        }],
+        fixes: vec![Fix {
+            kind: FixKind::Edit,
+            doc: 고칠_문서,
+            action,
+        }],
+    }
+}
+
 /// 문서 파일 이름에 주소 구분자가 있다는 진단을 만든다 (스펙 6.0 `:414`).
 ///
 /// **이 이름은 어떤 CLI 명령으로도 가리킬 수 없다.** 주소는 마지막 조각의 첫
@@ -733,24 +792,14 @@ fn 파일_읽기_실패(file: &Path, path: DocPath, error: &std::io::Error) -> D
 /// # 반환값
 /// `K113` 진단
 fn 문서_이름_구분자(path: DocPath, 구분자: char) -> Diagnostic {
-    Diagnostic {
-        severity: Severity::Error,
-        code: "K113",
-        message: format!(
-            "문서 파일 이름에 주소 구분자 `{구분자}` 가 있습니다 — {path}. 이 문서는 CLI 주소로 가리킬 수 없어 kang bless·kang refs 가 받지 못하고, 이 문서의 심볼을 import 하면 핀을 붙일 방법이 없어 빌드가 error 에 머뭅니다 (스펙 6.0)."
-        ),
-        locations: vec![Location {
-            doc: path.clone(),
-            // 파일 이름 자체가 문제이므로 가리킬 줄이 없다.
-            line: 0,
-            note: "이 문서의 파일 이름. 주소는 마지막 조각의 첫 `.`·`#`·`!` 에서 갈리므로 이름의 일부와 구분자를 구별할 수단이 없습니다".to_string(),
-        }],
-        fixes: vec![Fix {
-            kind: FixKind::Edit,
-            doc: Some(path),
-            action: "이 파일 이름에서 `.`·`#`·`!` 를 빼고 이름을 바꾸세요. 이 문서를 가리키던 import 주소도 함께 고칩니다. 디렉토리 이름에는 이 세 문자를 그대로 쓸 수 있습니다".to_string(),
-        }],
-    }
+    이름_거부(
+        "K113",
+        path.clone(),
+        format!("문서 파일 이름에 주소 구분자 `{구분자}` 가 있습니다 — {path}. 이 문서는 CLI 주소로 가리킬 수 없어 kang bless·kang refs 가 받지 못하고, 이 문서의 심볼을 import 하면 핀을 붙일 방법이 없어 빌드가 error 에 머뭅니다 (스펙 6.0)."),
+        "이 문서의 파일 이름. 주소는 마지막 조각의 첫 `.`·`#`·`!` 에서 갈리므로 이름의 일부와 구분자를 구별할 수단이 없습니다".to_string(),
+        "이 파일 이름에서 `.`·`#`·`!` 를 빼고 이름을 바꾸세요. 이 문서를 가리키던 import 주소도 함께 고칩니다. 디렉토리 이름에는 이 세 문자를 그대로 쓸 수 있습니다".to_string(),
+        Some(path),
+    )
 }
 
 /// 경로 조각에 제어 문자가 있다는 진단을 만든다 (`K116`).
@@ -773,25 +822,14 @@ fn 문서_이름_구분자(path: DocPath, 구분자: char) -> Diagnostic {
 /// # 반환값
 /// `K116` 진단
 fn 경로_제어_문자(path: DocPath, 조각: String, 글자: char) -> Diagnostic {
-    Diagnostic {
-        severity: Severity::Error,
-        code: "K116",
-        message: format!(
-            "문서 경로에 제어 문자 U+{:04X} 가 있습니다 — 조각 `{조각}`. 이 경로는 kang index 가 내는 탭 구분 인덱스의 한 줄을 여러 줄로 쪼개 위조 항목을 만들 수 있어 읽지 않습니다 (스펙 6.0).",
-            글자 as u32
-        ),
-        locations: vec![Location {
-            doc: path.clone(),
-            // 경로 자체가 문제이므로 가리킬 줄이 없다.
-            line: 0,
-            note: "이 문서의 경로 조각. 인덱스는 한 줄에 한 심볼이고 주소가 마지막 필드이므로, 주소 안의 개행과 탭은 소비자가 구별할 수단이 없습니다".to_string(),
-        }],
-        fixes: vec![Fix {
-            kind: FixKind::Edit,
-            doc: Some(path),
-            action: "이 경로 조각에서 제어 문자(탭·개행 등)를 빼고 이름을 바꾸세요. 이 문서를 가리키던 import 주소도 함께 고칩니다".to_string(),
-        }],
-    }
+    이름_거부(
+        "K116",
+        path.clone(),
+        format!("문서 경로에 제어 문자 U+{:04X} 가 있습니다 — 조각 `{조각}`. 이 경로는 kang index 가 내는 탭 구분 인덱스의 한 줄을 여러 줄로 쪼개 위조 항목을 만들 수 있어 읽지 않습니다 (스펙 6.0).", 글자 as u32),
+        "이 문서의 경로 조각. 인덱스는 한 줄에 한 심볼이고 주소가 마지막 필드이므로, 주소 안의 개행과 탭은 소비자가 구별할 수단이 없습니다".to_string(),
+        "이 경로 조각에서 제어 문자(탭·개행 등)를 빼고 이름을 바꾸세요. 이 문서를 가리키던 import 주소도 함께 고칩니다".to_string(),
+        Some(path),
+    )
 }
 
 /// 문서 파일이 UTF-8 이 아니라는 진단을 만든다.
@@ -887,25 +925,15 @@ fn 디렉토리_읽기_실패(dir: &Path, error: &std::io::Error) -> Diagnostic 
 /// # 반환값
 /// `K117` 진단
 fn 경로_utf8_아님(file: &Path) -> Diagnostic {
-    Diagnostic {
-        severity: Severity::Error,
-        code: "K117",
-        message: format!(
-            "문서 파일 경로가 UTF-8 이 아닙니다 — {}. 이 이름은 CLI 주소로 가리킬 수 없고, 잘못된 바이트가 대체 문자로 접혀 다른 문서와 같은 주소가 될 수 있어 읽지 않습니다 (스펙 6.0).",
-            file.display()
-        ),
-        locations: vec![Location {
-            doc: 경로_그대로(file),
-            // 파일 이름 자체가 문제이므로 가리킬 줄이 없다.
-            line: 0,
-            note: "이 문서의 파일 경로. 표시된 이름은 잘못된 바이트를 대체 문자로 바꾼 것이라 실제 이름과 다를 수 있습니다".to_string(),
-        }],
-        fixes: vec![Fix {
-            kind: FixKind::Edit,
-            doc: None,
-            action: "이 파일의 이름을 UTF-8 로 바꾸세요. 이 문서를 가리키던 import 주소도 함께 고칩니다".to_string(),
-        }],
-    }
+    이름_거부(
+        "K117",
+        경로_그대로(file),
+        format!("문서 파일 경로가 UTF-8 이 아닙니다 — {}. 이 이름은 CLI 주소로 가리킬 수 없고, 잘못된 바이트가 대체 문자로 접혀 다른 문서와 같은 주소가 될 수 있어 읽지 않습니다 (스펙 6.0).", file.display()),
+        "이 문서의 파일 경로. 표시된 이름은 잘못된 바이트를 대체 문자로 바꾼 것이라 실제 이름과 다를 수 있습니다".to_string(),
+        "이 파일의 이름을 UTF-8 로 바꾸세요. 이 문서를 가리키던 import 주소도 함께 고칩니다".to_string(),
+        // 주소를 만들 수 없는 것이 이 진단의 본체다. 지목할 문서가 없다.
+        None,
+    )
 }
 
 /// 디렉토리 항목의 종류를 확인하지 못했다는 진단을 만든다.

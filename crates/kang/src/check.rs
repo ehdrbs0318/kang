@@ -77,10 +77,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 pub fn check_cycles(project: &Project) -> Vec<Diagnostic> {
     // HashMap 의 나열 순서는 보장되지 않는다. 정렬해야 시작점 선택이 실행마다 같고,
     // 그래야 체인과 진단 순서를 골든 파일로 고정할 수 있다.
-    let mut 순서: Vec<&DocPath> = project.docs.keys().collect();
-    // DocPath 는 Vec<String> 래퍼이므로 조각을 그대로 비교한다.
-    // to_string() 으로 비교하면 비교마다 String 을 새로 할당한다.
-    순서.sort_by(|a, b| a.0.cmp(&b.0));
+    let 순서 = project.경로들();
 
     let mut 완료: HashSet<&DocPath> = HashSet::new();
     let mut 스택: Vec<(&DocPath, usize)> = Vec::new();
@@ -279,11 +276,7 @@ struct 선언<'a> {
 /// # 반환값
 /// 규칙을 어긴 자리마다 만들어진 진단들. 어긴 것이 없으면 빈 벡터
 pub fn check_symbols(project: &Project, table: &SymbolTable) -> Vec<Diagnostic> {
-    // HashMap 의 나열 순서는 보장되지 않는다. 정렬해야 진단 순서가 실행마다 같다.
-    let mut 순서: Vec<&DocPath> = project.docs.keys().collect();
-    // DocPath 는 Vec<String> 래퍼이므로 조각을 그대로 비교한다.
-    let 정렬 = |a: &&DocPath, b: &&DocPath| a.0.cmp(&b.0);
-    순서.sort_by(정렬);
+    let 순서 = project.경로들();
 
     // 이름 충돌과 미해결 심볼은 둘 다 "이 이름을 선언한 문서가 누구인가" 를 물으므로
     // 색인을 먼저 완성한다. BTreeMap 이라 이름 순회가 결정적이다.
@@ -361,8 +354,7 @@ struct 커버<'a> {
 /// 상태 기계를 어긴 자리마다 만들어진 진단들. 어긴 것이 없으면 빈 벡터
 pub fn check_exceptions(project: &Project, table: &SymbolTable) -> Vec<Diagnostic> {
     // HashMap 의 나열 순서는 보장되지 않는다. 정렬해야 진단 순서가 실행마다 같다.
-    let mut 순서: Vec<&DocPath> = project.docs.keys().collect();
-    순서.sort_by(|a, b| a.0.cmp(&b.0));
+    let 순서 = project.경로들();
 
     // cover 를 프로젝트 전체에서 먼저 모은다. 진리표는 "이 예외를 커버하는 것이 몇 개인가"
     // 를 묻는데 커버는 다른 파일에 있을 수 있어, 한 문서만 보고는 답할 수 없다.
@@ -750,8 +742,7 @@ pub fn check_exceptions(project: &Project, table: &SymbolTable) -> Vec<Diagnosti
 /// 핀이 없거나 어긋난 import 줄마다 만들어진 진단들. 어긴 것이 없으면 빈 벡터
 pub fn check_revs(project: &Project, table: &SymbolTable) -> Vec<Diagnostic> {
     // HashMap 의 나열 순서는 보장되지 않는다. 정렬해야 진단 순서가 실행마다 같다.
-    let mut 순서: Vec<&DocPath> = project.docs.keys().collect();
-    순서.sort_by(|a, b| a.0.cmp(&b.0));
+    let 순서 = project.경로들();
 
     let mut diagnostics: Vec<Diagnostic> = Vec::new();
     for doc in 순서 {
@@ -1511,7 +1502,7 @@ fn 대상_설명(대상: &SymbolRef, project: &Project) -> String {
         format!(
             "문서 {} 에는 그 이름의 {} 선언이 없습니다.",
             대상.doc,
-            종류_낱말(&대상.kind)
+            종류_낱말(대상.kind)
         )
     } else {
         format!(
@@ -1585,12 +1576,12 @@ fn 계층_상위_검사(
             .imports
             .iter()
             .find(|import| import.target.name[..] == *상위)
-            .map(|import| 종류_낱말(&import.target.kind))
+            .map(|import| 종류_낱말(import.target.kind))
             .or_else(|| {
                 선언_훑기(document)
                     .into_iter()
                     .find(|하나| 하나.name == 이름)
-                    .map(|하나| 종류_낱말(&하나.kind))
+                    .map(|하나| 종류_낱말(하나.kind))
             });
         diagnostics.push(계층_상위_없음(
             document,
@@ -1668,7 +1659,7 @@ fn 직접_상위(조각들: &[String]) -> Option<&[String]> {
 ///
 /// # 반환값
 /// 선언 문법에 쓰이는 낱말
-fn 종류_낱말(kind: &SymbolKind) -> &'static str {
+pub fn 종류_낱말(kind: SymbolKind) -> &'static str {
     match kind {
         SymbolKind::Keyword => "keyword",
         SymbolKind::Topic => "topic",
@@ -2027,7 +2018,7 @@ fn iknow_대상_없음(하나: &선언, 대상: &SymbolRef, project: &Project) -
             line: 하나.line,
             note: format!(
                 "여기 {} 선언의 iknow 가 그 대상을 가리킵니다 — `{}`",
-                종류_낱말(&하나.kind),
+                종류_낱말(하나.kind),
                 하나.name
             ),
         }],
@@ -2073,9 +2064,9 @@ fn iknow_불완전(
                 // 첫 자리에만 "여기서", 나머지는 "여기서도" 라고 말한다. 어느 쪽이 원인인지는
                 // 컴파일러가 알 수 없으므로 순서를 주장하지 않는다.
                 note: if 자리 == 0 {
-                    format!("여기서 선언했습니다 — {} {표기}", 종류_낱말(&하나.kind))
+                    format!("여기서 선언했습니다 — {} {표기}", 종류_낱말(하나.kind))
                 } else {
-                    format!("여기서도 선언했습니다 — {} {표기}", 종류_낱말(&하나.kind))
+                    format!("여기서도 선언했습니다 — {} {표기}", 종류_낱말(하나.kind))
                 },
             })
             .collect(),
@@ -2090,7 +2081,7 @@ fn iknow_불완전(
                     // 뒤바뀌어(`.` ↔ `#` ↔ `!`) 그대로 적용한 문서가 `K010` 을 맞는다.
                     .map(|상대| 심볼_주소(상대.doc, &상대.kind, 이름, true))
                     .collect();
-                let 낱말 = 종류_낱말(&대표.kind);
+                let 낱말 = 종류_낱말(대표.kind);
                 // 이미 iknow 를 쓴 문서에게 "추가하세요" 라고 하면 줄을 하나 더 만들게 된다.
                 let 이미_있음 = 대표.iknow.iter().any(|대상| 대상.name.join(".") == 이름);
                 Fix {

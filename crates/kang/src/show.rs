@@ -235,8 +235,7 @@ impl<'a> 뷰<'a> {
     /// 선언 색인과 참조 색인을 갖춘 뷰
     fn 새로(project: &'a Project, table: &'a SymbolTable) -> Self {
         // HashMap 의 나열 순서는 보장되지 않는다. 정렬해야 출력이 실행마다 같다.
-        let mut 순서: Vec<&'a DocPath> = project.docs.keys().collect();
-        순서.sort_by(|a, b| a.0.cmp(&b.0));
+        let 순서 = project.경로들();
 
         let mut 선언들: Vec<선언자리<'a>> = Vec::new();
         let mut 참조들: Vec<(SymbolId, String)> = Vec::new();
@@ -558,8 +557,7 @@ impl<'a> 뷰<'a> {
     /// 커버하는 문서와 topic. 커버가 없으면 `None`
     fn 커버하는_topic(&self, 대상: SymbolId) -> Option<(&'a DocPath, &'a Topic)> {
         // HashMap 의 나열 순서는 보장되지 않는다. 정렬해야 결과가 실행마다 같다.
-        let mut 순서: Vec<&'a DocPath> = self.project.docs.keys().collect();
-        순서.sort_by(|a, b| a.0.cmp(&b.0));
+        let 순서 = self.project.경로들();
 
         // 문서를 경로 순으로, 그 안의 topic 은 선언 순으로 훑는다.
         for doc in 순서 {

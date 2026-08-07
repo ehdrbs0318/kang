@@ -25,7 +25,7 @@
 //! 주소를 `refs`·`show`·`bless` 가 못 받는 경우가 생긴다.
 
 use crate::ast::{DocPath, SymbolKind, SymbolRef};
-use crate::check::심볼_주소;
+use crate::check::{심볼_주소, 종류_낱말};
 use crate::hash;
 use crate::resolve::{Project, SymbolTable};
 use std::io::{self, Write};
@@ -45,7 +45,7 @@ use std::io::{self, Write};
 /// 쓰기가 실패하면 그 사정을 그대로 올린다. 호출자가 부분 결과를 버릴 책임을 진다.
 pub fn write_index(project: &Project, table: &SymbolTable, out: &mut impl Write) -> io::Result<()> {
     순회(project, table, |종류, rev, 주소| {
-        writeln!(out, "{}\t{rev}\t{주소}", 종류.이름())
+        writeln!(out, "{}\t{rev}\t{주소}", 종류_낱말(종류))
     })
 }
 
@@ -125,8 +125,8 @@ pub fn write_types(project: &Project, table: &SymbolTable, out: &mut impl Write)
 
     순회(project, table, |종류, rev, 주소| match 종류 {
         // topic 만 낸다 (위 rustdoc 의 근거).
-        심볼종류::Topic => writeln!(out, "  \"{}\": \"{rev}\";", ts_리터럴(주소)),
-        심볼종류::Keyword | 심볼종류::Exception => Ok(()),
+        SymbolKind::Topic => writeln!(out, "  \"{}\": \"{rev}\";", ts_리터럴(주소)),
+        SymbolKind::Keyword | SymbolKind::Exception => Ok(()),
     })?;
 
     // **본문이 있는 함수로 낸다.** `declare` 로 내면 컴파일된 JS 에 그 export 가 없어
@@ -167,12 +167,11 @@ pub fn write_types(project: &Project, table: &SymbolTable, out: &mut impl Write)
 fn 순회(
     project: &Project,
     table: &SymbolTable,
-    mut 낼것: impl FnMut(심볼종류, &str, &str) -> io::Result<()>,
+    mut 낼것: impl FnMut(SymbolKind, &str, &str) -> io::Result<()>,
 ) -> io::Result<()> {
     // 문서 경로로 정렬해 출력이 실행마다 같게 만든다. `Project::docs` 는 HashMap 이라
     // 순회 순서가 실행마다 다르다 — 정렬하지 않으면 커밋한 산출물이 매번 diff 를 낸다.
-    let mut 경로들: Vec<_> = project.docs.keys().collect();
-    경로들.sort_by_key(|p| p.0.clone());
+    let 경로들 = project.경로들();
 
     // 문서마다 그 문서가 **선언한** 심볼만 낸다. import 한 것은 owner 의 줄에 이미 있다.
     for 경로 in 경로들 {
@@ -184,7 +183,7 @@ fn 순회(
                 &mut 낼것,
                 table,
                 경로,
-                심볼종류::Keyword,
+                SymbolKind::Keyword,
                 &k.name.0.join("."),
             )?;
         }
@@ -192,9 +191,9 @@ fn 순회(
         // topic 과 그 topic 이 선언한 exception 을 함께 낸다. exception 의 해시 입력은
         // 선언 topic 의 본문이므로(스펙 4.8) 두 줄의 rev 가 같은 것이 정상이다.
         for t in &문서.topics {
-            한_줄(&mut 낼것, table, 경로, 심볼종류::Topic, &t.name)?;
+            한_줄(&mut 낼것, table, 경로, SymbolKind::Topic, &t.name)?;
             for e in &t.exceptions {
-                한_줄(&mut 낼것, table, 경로, 심볼종류::Exception, &e.name)?;
+                한_줄(&mut 낼것, table, 경로, SymbolKind::Exception, &e.name)?;
             }
         }
     }
@@ -213,16 +212,16 @@ fn 순회(
 /// # 오류
 /// `낼것` 이 낸 오류를 그대로 올린다.
 fn 한_줄(
-    낼것: &mut impl FnMut(심볼종류, &str, &str) -> io::Result<()>,
+    낼것: &mut impl FnMut(SymbolKind, &str, &str) -> io::Result<()>,
     table: &SymbolTable,
     doc: &DocPath,
-    종류: 심볼종류,
+    종류: SymbolKind,
     name: &str,
 ) -> io::Result<()> {
-    let 주소 = 심볼_주소(doc, &종류.kind(), name, false);
+    let 주소 = 심볼_주소(doc, &종류, name, false);
     let 참조 = SymbolRef {
         doc: doc.clone(),
-        kind: 종류.kind(),
+        kind: 종류,
         name: name.split('.').map(|s| s.to_string()).collect(),
     };
 
@@ -267,42 +266,4 @@ fn ts_리터럴(주소: &str) -> String {
         }
     }
     결과
-}
-
-/// 인덱스가 다루는 세 종류.
-///
-/// [`SymbolKind`] 를 그대로 쓸 수 없다 — `Clone` 을 파생하지 않아 주소 조립과
-/// [`SymbolRef`] 구성에 두 번 쓸 수 없고, `ast.rs` 는 굳은 파일이다. 종류 이름 문자열도
-/// 여기 함께 두어 인덱스의 종류 칸과 주소의 구분자가 갈리지 않게 한다.
-#[derive(Copy, Clone)]
-enum 심볼종류 {
-    Keyword,
-    Topic,
-    Exception,
-}
-
-impl 심볼종류 {
-    /// 대응하는 [`SymbolKind`] 를 새로 만든다.
-    ///
-    /// # 반환값
-    /// 같은 종류를 가리키는 [`SymbolKind`]
-    fn kind(self) -> SymbolKind {
-        match self {
-            심볼종류::Keyword => SymbolKind::Keyword,
-            심볼종류::Topic => SymbolKind::Topic,
-            심볼종류::Exception => SymbolKind::Exception,
-        }
-    }
-
-    /// 인덱스의 종류 칸에 쓰는 이름.
-    ///
-    /// # 반환값
-    /// `keyword`·`topic`·`exception` 중 하나
-    fn 이름(self) -> &'static str {
-        match self {
-            심볼종류::Keyword => "keyword",
-            심볼종류::Topic => "topic",
-            심볼종류::Exception => "exception",
-        }
-    }
 }

@@ -516,7 +516,7 @@ fn 목록(스코프: Option<&str>) -> i32 {
     let mut out = std::io::stdout().lock();
     let mut 맞은_문서 = 0;
     // 문서를 경로 순으로 훑는다. 경로는 계층 축약 없이 전체 경로로 찍는다.
-    for path in 정렬된_경로(&project) {
+    for path in project.경로들() {
         // 스코프 밖의 문서는 건너뛴다.
         if !path.0.starts_with(&조각) {
             continue;
@@ -553,7 +553,7 @@ fn 키워드들(스코프: Option<&str>) -> i32 {
     let mut out = std::io::stdout().lock();
     let mut 맞은_문서 = 0;
     // 문서를 경로 순으로 훑는다.
-    for path in 정렬된_경로(&project) {
+    for path in project.경로들() {
         // 스코프 밖의 문서는 건너뛴다.
         if !path.0.starts_with(&조각) {
             continue;
@@ -637,7 +637,7 @@ fn 참조들(주소: &str) -> i32 {
 
     // 문서를 경로 순으로, 그 안의 topic 은 선언 순서로 훑는다.
     let mut out = std::io::stdout().lock();
-    for path in 정렬된_경로(&project) {
+    for path in project.경로들() {
         let scope = table.scope(path);
         for topic in &project.docs[path].topics {
             // 분할은 진단을 내는 층과 **같은 함수**를 쓴다. 두 층이 같은 문장을 다르게
@@ -804,19 +804,4 @@ fn 경로_조각(스코프: Option<&str>) -> Vec<String> {
             .map(str::to_string)
             .collect()
     })
-}
-
-/// 프로젝트의 문서 경로를 정렬해 돌려준다.
-///
-/// # 매개변수
-/// - `project`: 파싱을 마친 프로젝트
-///
-/// # 반환값
-/// 경로 순으로 정렬된 문서 경로들
-fn 정렬된_경로(project: &Project) -> Vec<&DocPath> {
-    // HashMap 의 나열 순서는 보장되지 않는다. 정렬해야 출력이 실행마다 같다.
-    let mut 경로들: Vec<&DocPath> = project.docs.keys().collect();
-    // DocPath 는 Vec<String> 래퍼다. 조각을 그대로 비교하면 비교마다 String 을 만들지 않는다.
-    경로들.sort_by(|a, b| a.0.cmp(&b.0));
-    경로들
 }
