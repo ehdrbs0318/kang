@@ -3936,3 +3936,70 @@ fn gitignore_가_무시한_디렉토리는_순회하지_않는다() {
     );
     정리(&root);
 }
+
+#[test]
+fn 앞_슬래시_패턴은_루트만_무시하고_하위_같은_이름은_남긴다() {
+    let root = 임시_루트("gitignore_앵커");
+    git_저장소로(&root);
+    // git 에서 `/build` 는 **루트의** build 하나만 가리킨다. `docs/build/` 는 추적된다.
+    쓰기(&root, ".gitignore", "/build\n");
+    쓰기(
+        &root,
+        "build/생성물.kang",
+        "---\ndescription: 루트 build 는 무시된다\n---\n\n## 생성된 것\n\n내용이다.\n",
+    );
+    // 이것이 이 시험의 전부다 — git 이 추적하는 문서가 프로젝트에서 사라지면 안 된다.
+    쓰기(
+        &root,
+        "docs/build/정책.kang",
+        "---\ndescription: 하위 build 는 살아 있다\n---\n\n## 빌드 정책\n\n내용이다.\n",
+    );
+
+    let (stdout, stderr, 코드) = 실행(&root, &["list"]);
+    assert_eq!(코드, 0, "정상 프로젝트다: {stderr}");
+    assert!(
+        !stdout.contains("build/생성물"),
+        "루트의 앵커된 디렉토리는 무시되어야 한다: {stdout}"
+    );
+    assert!(
+        stdout.contains("docs/build/정책:"),
+        "앵커 패턴이 하위의 같은 이름까지 숨겼다 — git 이 추적하는 문서가 사라진다: {stdout}"
+    );
+    정리(&root);
+}
+
+#[test]
+fn 뒤_슬래시_표기도_무시로_읽는다() {
+    let root = 임시_루트("gitignore_뒤슬래시");
+    git_저장소로(&root);
+    // `target/` 은 가장 흔한 표기다. 뒤의 `/` 는 "디렉토리만" 을 뜻할 뿐 앵커가 아니므로
+    // 모든 깊이에 걸린다 — 이 저장소의 `node_modules` 가 그 동작에 기대고 있다.
+    쓰기(&root, ".gitignore", "target/\n");
+    쓰기(
+        &root,
+        "target/생성물.kang",
+        "---\ndescription: 무시되어야 한다\n---\n\n## 생성된 것\n\n내용이다.\n",
+    );
+    쓰기(
+        &root,
+        "crates/target/생성물.kang",
+        "---\ndescription: 앵커가 아니므로 여기도 무시된다\n---\n\n## 생성된 것\n\n내용이다.\n",
+    );
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: 보이는 문서\n---\n\n## 정책\n\n내용이다.\n",
+    );
+
+    let (stdout, stderr, 코드) = 실행(&root, &["list"]);
+    assert_eq!(코드, 0, "정상 프로젝트다: {stderr}");
+    assert!(
+        stdout.contains("docs/a:"),
+        "보이는 문서는 나와야 한다: {stdout}"
+    );
+    assert!(
+        !stdout.contains("target/생성물"),
+        "뒤 슬래시 표기를 못 읽어 무시가 풀렸다: {stdout}"
+    );
+    정리(&root);
+}

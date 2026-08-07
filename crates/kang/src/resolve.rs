@@ -78,7 +78,14 @@ pub fn find_root(cwd: &Path) -> Result<PathBuf, Diagnostic> {
 pub fn load(root: &Path) -> (Project, Vec<Diagnostic>) {
     let mut diagnostics: Vec<Diagnostic> = Vec::new();
     let mut files: Vec<PathBuf> = Vec::new();
-    수집(root, &무시할_디렉토리(root), &mut files, &mut diagnostics);
+    let (무시_어디서나, 무시_루트만) = 무시할_디렉토리(root);
+    수집(
+        root,
+        &무시_어디서나,
+        &무시_루트만,
+        &mut files,
+        &mut diagnostics,
+    );
 
     // 파일 시스템의 나열 순서는 보장되지 않는다. 정렬해야 진단 순서가 실행마다 같다.
     files.sort();
@@ -433,49 +440,77 @@ fn 이름_묶기(
     scope.insert(name, (id, line));
 }
 
-/// 루트 `.gitignore` 가 최상위에서 무시하는 디렉토리 이름을 모은다.
+/// 루트 `.gitignore` 가 무시하는 디렉토리 이름을 앵커 여부로 갈라 모은다.
 ///
-/// gitignore 문법의 부분집합만 읽는다. 한 줄에 이름 하나이며 앞뒤의 `/` 만 떼고,
-/// 주석과 빈 줄은 건너뛴다. 글로브와 부정 패턴, 중첩 gitignore, 경로가 든 패턴은
-/// 보지 않는다.
+/// gitignore 문법의 부분집합만 읽는다. 한 줄에 이름 하나이며, 주석과 빈 줄은 건너뛴다.
+/// 글로브와 부정 패턴, 중첩 gitignore, 조각이 둘 이상인 경로 패턴은 보지 않는다.
 ///
-/// ponytail: 부분집합인 채로 둔다. 노리는 것은 최상위의 큰 생성물 디렉토리 하나이고
-/// 그것이 순회 비용의 전부였다. 무시된 디렉토리 안에 문서를 두는 것은 지원 대상이
-/// 아니다 — 그 문서는 커밋되지 않는다. 글로브가 실제로 필요해지면 git 에게 목록을
+/// **앞의 `/` 는 의미를 바꾸므로 떼기 전에 읽는다.** git 에서 `/target` 은 루트의
+/// `target` 하나만 가리키고 `node_modules` 는 **모든 깊이**의 그 이름을 가리킨다.
+/// 둘을 같은 목록에 넣으면 `/build` 가 `docs/build/` 까지 숨겨 **git 이 추적하는 문서가
+/// 진단 한 줄 없이 프로젝트에서 사라진다.** 이 저장소 자신이 양쪽을 다 쓴다 —
+/// `/target` 은 루트 전용이고 `node_modules` 는 `examples/ts-consumer` 를 빼는 데
+/// 모든 깊이 동작에 기대고 있다.
+///
+/// 뒤의 `/` 는 "디렉토리만" 을 뜻할 뿐 앵커와 무관하므로 그대로 뗀다 — `target/` 은
+/// 가장 흔한 표기다.
+///
+/// ponytail: 부분집합인 채로 둔다. 노리는 것은 큰 생성물 디렉토리이고 그것이 순회
+/// 비용의 전부였다. 글로브와 중첩 gitignore 가 실제로 필요해지면 git 에게 목록을
 /// 물어보는 방식으로 갈아탄다. 추적되지 않은 새 문서까지 함께 받는 형태여야 한다.
 ///
 /// # 매개변수
 /// - `root`: 프로젝트 루트
 ///
 /// # 반환값
-/// 건너뛸 디렉토리 이름들. `.gitignore` 가 없으면 빈 목록
-fn 무시할_디렉토리(root: &Path) -> Vec<String> {
+/// `(모든 깊이에서 건너뛸 이름, 루트에서만 건너뛸 이름)`.
+/// `.gitignore` 가 없으면 둘 다 빈 목록
+fn 무시할_디렉토리(root: &Path) -> (Vec<String>, Vec<String>) {
     // 읽지 못하면 아무것도 무시하지 않는다. 순회가 느려질 뿐 문서가 사라지지는 않는다.
     let Ok(내용) = std::fs::read_to_string(root.join(".gitignore")) else {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     };
 
-    // 한 줄에 이름 하나만 읽는다. 경로가 든 패턴은 최상위 이름이 아니므로 버린다.
-    내용
-        .lines()
-        .map(str::trim)
-        .filter(|줄| !줄.is_empty() && !줄.starts_with('#') && !줄.starts_with('!'))
-        .map(|줄| 줄.trim_start_matches('/').trim_end_matches('/'))
-        .filter(|줄| !줄.is_empty() && !줄.contains('/') && !줄.contains('*'))
-        .map(str::to_string)
-        .collect()
+    let mut 어디서나 = Vec::new();
+    let mut 루트만 = Vec::new();
+
+    // 한 줄에 이름 하나만 읽는다. 조각이 둘 이상인 경로 패턴은 이름이 아니므로 버린다.
+    for 줄 in 내용.lines().map(str::trim) {
+        // 빈 줄·주석·부정 패턴은 이 부분집합이 다루지 않는다.
+        if 줄.is_empty() || 줄.starts_with('#') || 줄.starts_with('!') {
+            continue;
+        }
+        // 앵커 여부를 먼저 읽는다. 떼고 나면 구별할 수 없다.
+        let 앵커 = 줄.starts_with('/');
+        let 이름 = 줄.trim_start_matches('/').trim_end_matches('/');
+        // 남은 것이 이름 하나가 아니면 이 부분집합의 대상이 아니다.
+        if 이름.is_empty() || 이름.contains('/') || 이름.contains('*') {
+            continue;
+        }
+        // 앵커된 패턴은 루트의 그 이름 하나만 가리킨다.
+        if 앵커 {
+            루트만.push(이름.to_string());
+        } else {
+            어디서나.push(이름.to_string());
+        }
+    }
+
+    (어디서나, 루트만)
 }
 
 /// 루트 아래를 재귀 순회하며 `.kang` 파일 경로를 모은다.
 ///
 /// # 매개변수
 /// - `dir`: 순회할 디렉토리
-/// - `무시`: 파고들지 않을 디렉토리 이름들. [`무시할_디렉토리`] 가 만든다
+/// - `무시`: 어느 깊이에서든 파고들지 않을 디렉토리 이름들. [`무시할_디렉토리`] 가 만든다
+/// - `무시_루트만`: 루트에서만 건너뛸 이름들. 재귀 호출에는 빈 조각을 넘긴다 —
+///   그것이 `/target` 같은 앵커 패턴을 루트 하나로 묶는 방법이다
 /// - `files`: 찾은 파일 경로를 모을 곳
 /// - `diagnostics`: 진단을 모을 곳
 fn 수집(
     dir: &Path,
     무시: &[String],
+    무시_루트만: &[String],
     files: &mut Vec<PathBuf>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
@@ -510,10 +545,15 @@ fn 수집(
             continue;
         }
 
-        // `.gitignore` 가 최상위에서 무시한 디렉토리는 파고들지 않는다. 이 저장소에서
-        // `target/` 이 79,384 파일이라 `kang build` 가 428ms 였고, 그 디렉토리를 빼면
-        // 같은 코퍼스가 2.3ms 다 — 186배다. 문서 자체가 아니라 순회가 비용이었다.
-        if 무시.iter().any(|무시할| 무시할 == &이름) {
+        // `.gitignore` 가 무시한 디렉토리는 파고들지 않는다. 이 저장소에서 `target/` 이
+        // 79,384 파일이라 `kang build` 가 428ms 였고, 그 디렉토리를 빼면 같은 코퍼스가
+        // 2.3ms 다 — 186배다. 문서 자체가 아니라 순회가 비용이었다.
+        //
+        // 앵커 목록은 이 호출이 루트일 때만 비어 있지 않다. 재귀는 빈 조각을 넘기므로
+        // `/target` 은 루트의 그것 하나만 걸리고 `docs/target/` 은 걸리지 않는다.
+        if 무시.iter().any(|무시할| 무시할 == &이름)
+            || 무시_루트만.iter().any(|무시할| 무시할 == &이름)
+        {
             continue;
         }
 
@@ -532,7 +572,9 @@ fn 수집(
         // 링크된 문서는 보이지 않는다. 실제로 링크로 문서를 두는 프로젝트가 나오면
         // 방문한 정규 경로 집합을 들고 다니는 순회로 올린다.
         if kind.is_dir() {
-            수집(&entry.path(), 무시, files, diagnostics);
+            // 앵커 목록은 넘기지 않는다. `/target` 은 루트의 그것 하나만 가리키므로
+            // 하위 디렉토리에서는 그 이름이 평범한 문서 디렉토리일 수 있다.
+            수집(&entry.path(), 무시, &[], files, diagnostics);
         } else if kind.is_file() && entry.path().extension().is_some_and(|ext| ext == "kang") {
             files.push(entry.path());
         }
