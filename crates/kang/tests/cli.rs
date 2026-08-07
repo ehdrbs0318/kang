@@ -3586,6 +3586,115 @@ fn 인덱스는_쓰지_못하면_옛_인덱스를_지키며_시끄럽게_실패�
     정리(&root);
 }
 
+#[cfg(unix)]
+#[test]
+fn 경로의_개행이_인덱스에_위조_줄을_심지_못한다() {
+    let root = 임시_루트("경로_개행_위조");
+    git_저장소로(&root);
+
+    // 디렉토리 이름에 개행을 넣으면 주소가 인덱스의 마지막 필드에서 두 줄로 쪼개진다.
+    // 두 번째 줄은 `종류\trev\t주소` 세 필드를 갖춘 **정상으로 보이는** 항목이 되고,
+    // 매크로는 그 가짜 rev 로 코드를 검증한다.
+    let 악성 = root.join("docs").join("evil\ntopic deadbe forged");
+    fs::create_dir_all(&악성).expect("개행이 든 디렉토리를 만들 수 있어야 한다");
+    fs::write(
+        악성.join("a.kang"),
+        "---\ndescription: 위조 시험\n---\n\n## 첫 토픽\n\n본문.\n",
+    )
+    .expect("문서를 쓸 수 있어야 한다");
+
+    let (stdout, stderr, 코드) = 실행(&root, &["index", ".kang/index.tsv"]);
+
+    assert_eq!(코드, 1, "제어 문자가 든 경로는 컴파일 error 다: {stderr}");
+    assert!(stderr.contains("K116"), "K116 이 나와야 한다: {stderr}");
+    assert_eq!(stdout, "", "error 면 stdout 은 비어야 한다");
+
+    // 핵심 단언: 인덱스를 아예 쓰지 않았다. 부분 결과가 나가면 소비자가 위조 줄을 읽는다.
+    assert!(
+        !root.join(".kang/index.tsv").exists(),
+        "error 상태에서 인덱스를 쓰면 안 된다"
+    );
+
+    정리(&root);
+}
+
+#[cfg(unix)]
+#[test]
+fn 임시_파일_자리의_심볼릭_링크를_따라가지_않는다() {
+    use std::os::unix::fs::symlink;
+
+    let root = 임시_루트("임시_링크");
+    git_저장소로(&root);
+    인덱스_픽스처(&root);
+
+    // 저장소 밖의 남의 파일. 공격자가 커밋할 수 있는 것은 링크뿐이고, 링크가 가리키는
+    // 곳은 실행하는 사람의 홈이나 시스템 파일이다.
+    let 남의_파일 = root.join("건드리면_안_되는_파일");
+    fs::write(&남의_파일, "이 내용은 그대로여야 한다").expect("남의 파일을 만들 수 있어야 한다");
+
+    // `쓰기_원자적으로` 가 만들 임시 이름 자리에 링크를 심는다. `.tsv` 를 `.tmp` 로
+    // 바꾼 이름이며, 저장소에 커밋해 둘 수 있는 형태다.
+    fs::create_dir_all(root.join(".kang")).expect("디렉토리");
+    let 임시_자리 = root.join(".kang/index.tsv.tmp");
+    symlink(&남의_파일, &임시_자리).expect("링크를 걸 수 있어야 한다");
+
+    let (stdout, stderr, 코드) = 실행(&root, &["index", ".kang/index.tsv"]);
+
+    assert_eq!(코드, 2, "링크가 막고 있으면 환경 오류로 끝나야 한다: {stderr}");
+    assert_eq!(stdout, "", "실패했으면 stdout 은 비어야 한다");
+
+    // 이것이 이 시험의 전부다 — 남의 파일이 잘리지 않았다.
+    let 남은_내용 = fs::read_to_string(&남의_파일).expect("남의 파일이 살아 있어야 한다");
+    assert_eq!(
+        남은_내용, "이 내용은 그대로여야 한다",
+        "임시 파일 쓰기가 심볼릭 링크를 따라가 저장소 밖 파일을 덮어썼다"
+    );
+
+    // 링크 자체도 그대로 남아야 한다. 지우면 남의 자리를 우리가 치우는 셈이다.
+    let 종류 = fs::symlink_metadata(&임시_자리).expect("링크가 남아야 한다");
+    assert!(종류.file_type().is_symlink(), "심어 둔 링크를 지우면 안 된다");
+
+    정리(&root);
+}
+
+#[test]
+fn 임시_파일이_이미_있으면_열지_않고_그_사정을_말한다() {
+    let root = 임시_루트("임시_충돌");
+    git_저장소로(&root);
+    인덱스_픽스처(&root);
+
+    // 먼저 성공한 인덱스를 만들어 둔다. 실패가 옛 인덱스를 건드리지 않는지 함께 잰다.
+    실행(&root, &["index", ".kang/index.tsv"]);
+    let 옛_인덱스 = fs::read(root.join(".kang/index.tsv")).expect("첫 인덱스는 성공해야 한다");
+
+    // 겹쳐 도는 다른 kang 이 남긴 것과 같은 모양. 이름이 같으므로 시끄럽게 실패해야
+    // 한다 — bless.rs 의 ponytail 이 적은 계약이다.
+    let 임시_자리 = root.join(".kang/index.tsv.tmp");
+    fs::write(&임시_자리, "겹쳐 도는 다른 실행이 쓰던 것").expect("임시 파일을 만들 수 있어야 한다");
+
+    let (stdout, stderr, 코드) = 실행(&root, &["index", ".kang/index.tsv"]);
+
+    assert_eq!(코드, 2, "겹친 실행은 시끄럽게 실패해야 한다: {stderr}");
+    assert_eq!(stdout, "", "실패했으면 stdout 은 비어야 한다");
+    assert!(
+        stderr.contains("이미 있습니다"),
+        "무엇이 막고 있는지 말해야 한다: {stderr}"
+    );
+    assert!(
+        stderr.contains(".kang/index.tsv.tmp"),
+        "실패한 경로를 지목해야 한다: {stderr}"
+    );
+
+    // 남의 임시 파일을 우리가 지우거나 덮어쓰지 않았다.
+    let 남은 = fs::read_to_string(&임시_자리).expect("임시 파일이 남아야 한다");
+    assert_eq!(남은, "겹쳐 도는 다른 실행이 쓰던 것", "남의 임시 파일을 덮어썼다");
+
+    let 지금 = fs::read(root.join(".kang/index.tsv")).expect("옛 인덱스가 남아야 한다");
+    assert_eq!(지금, 옛_인덱스, "실패한 쓰기가 옛 인덱스를 바꿨다");
+
+    정리(&root);
+}
+
 // ─── kang types (V0004 Task 7) ────────────────────────────────────────────────
 
 #[test]

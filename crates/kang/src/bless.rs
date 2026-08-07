@@ -29,6 +29,7 @@ use crate::hash;
 use crate::parse::parse_document;
 use crate::resolve::{Project, SymbolTable};
 use kang_macros as kang;
+use std::io::Write;
 use std::path::Path;
 
 /// 갱신 대상 import 를 가리키는 주소. `docs/A.결제` 를 파싱한 결과다.
@@ -296,6 +297,14 @@ fn 핀_박기(줄: &str, 옛_핀: Option<&str>, 새_핀: &str) -> Result<String,
 /// id 를 붙이면 두 rename 이 모두 성공해 "나중 쪽이 이기고 앞선 쪽은 성공했다고 착각"
 /// 하는 **조용한 유실**로 바뀐다. 잠금이 필요해지면 그때 올린다.
 ///
+/// **임시 파일은 [`std::fs::OpenOptions::create_new`] 로 만든다.** 이것이 위 ponytail 의
+/// "시끄럽게 실패한다" 를 실제로 성립시키는 장치이며, 동시에 신뢰 경계 하나를 더 지킨다.
+/// [`std::fs::write`] 는 이미 있는 자리를 **따라간다** — 저장소에
+/// `.kang/index.tsv.tmp -> ~/.ssh/authorized_keys` 같은 심볼릭 링크를 커밋해 두면
+/// `kang index` 가 저장소 밖 파일을 잘라 버리고 그 자리에 링크를 남긴다. `create_new` 는
+/// 무엇이든 이미 있으면 열지 않으므로 링크를 따라갈 수 없고, 겹친 두 프로세스가 같은
+/// inode 를 함께 여는 일도 없앤다.
+///
 /// # 매개변수
 /// - `파일`: 바꿔 쓸 파일
 /// - `내용`: 새 내용 전체
@@ -309,14 +318,40 @@ pub fn 쓰기_원자적으로(
 ) -> Result<(), String> {
     let 임시 = 파일.with_extension(임시_확장자);
 
+    // 이미 있는 자리는 열지 않는다. 겹친 실행이거나 심어 둔 링크이거나 둘 중 하나이며,
+    // 어느 쪽이든 따라가면 안 된다. 그 자리를 지우지도 않는다 — 남의 파일일 수 있다.
+    let 열기 = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&임시);
+    let mut 손잡이 = match 열기 {
+        Ok(손잡이) => 손잡이,
+        Err(오류) if 오류.kind() == std::io::ErrorKind::AlreadyExists => {
+            return Err(format!(
+                "임시 파일이 이미 있습니다 ({}) — 같은 문서를 겨냥한 다른 kang 이 돌고 \
+                 있거나, 그 자리에 파일이 심어져 있습니다. 돌고 있는 것이 없다면 지우고 \
+                 다시 실행하세요",
+                임시.display()
+            ));
+        }
+        Err(오류) => {
+            return Err(format!(
+                "임시 파일을 만들지 못했습니다 ({}) — {오류}",
+                임시.display()
+            ));
+        }
+    };
+
     // 실패한 자리에 임시 파일이 남으면 사용자 저장소에 쓰레기가 쌓인다.
-    if let Err(오류) = std::fs::write(&임시, 내용) {
+    if let Err(오류) = 손잡이.write_all(내용.as_bytes()) {
+        drop(손잡이);
         let _ = std::fs::remove_file(&임시);
         return Err(format!(
             "임시 파일에 쓰지 못했습니다 ({}) — {오류}",
             임시.display()
         ));
     }
+    drop(손잡이);
 
     // mode 를 못 옮기는 것은 편집을 포기할 이유가 아니다. 핀을 넣는 것이 주 목적이고
     // 권한은 사용자가 다시 줄 수 있다.
