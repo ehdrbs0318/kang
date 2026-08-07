@@ -4292,3 +4292,171 @@ fn 한_줄의_조각이_많아도_빌드가_서지_않는다() {
 
     정리(&root);
 }
+
+/// 산출물은 **두 번 돌리면 같은 바이트**여야 한다 (V0004 Task 3 J2).
+///
+/// 생성물을 커밋하는 결정이 이 성질에 기대고 있다 — 실행마다 순서가 흔들리면 커밋된
+/// `index.tsv` 와 `generated.ts` 가 매번 diff 를 내고 CI 의 드리프트 게이트가 무작위로
+/// 빨개진다. `Project::docs` 는 `HashMap` 이라 순회 순서가 실행마다 다르므로, 정렬이
+/// 유일한 방어선이다.
+///
+/// **문서를 여럿 둔다.** 기존 인덱스·타입 테스트는 전부 문서 하나짜리 픽스처를 써서
+/// 정렬 코드가 요소 2개 이상으로 돌아본 적이 없었다 — 정렬을 지워도 통과했다.
+#[test]
+fn 산출물은_여러_문서에서도_결정적이다() {
+    let root = 임시_루트("산출_결정성");
+    git_저장소로(&root);
+
+    // 사전 순과 삽입 순이 다르도록 이름을 고른다. 정렬이 빠지면 둘이 갈린다.
+    for (경로, 이름) in [
+        ("docs/z.kang", "z"),
+        ("docs/a.kang", "a"),
+        ("docs/m.kang", "m"),
+        ("docs/b.kang", "b"),
+        ("docs/y.kang", "y"),
+    ] {
+        쓰기(
+            &root,
+            경로,
+            &format!(
+                "---\ndescription: 문서 {이름}\n---\n\nkeyword `개념{이름}`: 정의\n\n## {이름} 의 정책\n\n본문.\n"
+            ),
+        );
+    }
+
+    // 같은 프로젝트에서 여러 번 산출해 바이트가 같은지 본다. 한 번의 실행 안에서는
+    // HashMap 순서가 고정이므로 **프로세스를 새로 띄워야** 순서 흔들림이 드러난다.
+    let mut 인덱스_모음 = Vec::new();
+    let mut 타입_모음 = Vec::new();
+    for _ in 0..5 {
+        let (_, stderr, 코드) = 실행(&root, &["index", ".kang/index.tsv"]);
+        assert_eq!(코드, 0, "{stderr}");
+        인덱스_모음.push(fs::read(root.join(".kang/index.tsv")).expect("인덱스"));
+
+        let (_, stderr, 코드) = 실행(&root, &["types", ".kang/generated.ts"]);
+        assert_eq!(코드, 0, "{stderr}");
+        타입_모음.push(fs::read(root.join(".kang/generated.ts")).expect("타입"));
+    }
+
+    assert!(
+        인덱스_모음.windows(2).all(|짝| 짝[0] == 짝[1]),
+        "인덱스가 실행마다 다르다 — 커밋한 산출물이 매번 diff 를 낸다"
+    );
+    assert!(
+        타입_모음.windows(2).all(|짝| 짝[0] == 짝[1]),
+        "타입이 실행마다 다르다"
+    );
+
+    // 실제로 정렬되어 있는지도 본다. "매번 같다" 만으로는 순서가 틀려도 통과한다.
+    let 인덱스 = String::from_utf8(인덱스_모음.remove(0)).expect("UTF-8");
+    let 문서들: Vec<&str> = 인덱스
+        .lines()
+        .filter_map(|줄| 줄.split('\t').nth(2))
+        .filter_map(|주소| 주소.split(['.', '#', '!']).next())
+        .collect();
+    let mut 정렬됨 = 문서들.clone();
+    정렬됨.sort_unstable();
+    정렬됨.dedup();
+    let mut 본_것 = 문서들.clone();
+    본_것.dedup();
+    assert_eq!(본_것, 정렬됨, "인덱스가 문서 경로 순이 아니다: {문서들:?}");
+    assert!(본_것.len() >= 5, "문서 다섯을 다 봤어야 한다: {본_것:?}");
+
+    정리(&root);
+}
+
+/// `[shell]` fix 의 셸 인용이 작은따옴표를 견뎌야 한다.
+///
+/// 진단의 `[shell]` 항목은 **에이전트가 그대로 복사해 실행하는 것**이 설계 전제다
+/// (`crates/kang/src/skill.md`). 경로나 심볼 이름에 `'` 가 들어가면 인용이 닫히지 않은 채
+/// 나가고, 그것을 실행하면 셸이 다음 줄을 계속 읽거나 엉뚱한 것을 실행한다.
+///
+/// 기존 테스트는 경로에 **공백**이 든 경우만 봤다.
+#[test]
+fn 셸_fix_는_작은따옴표가_든_이름을_인용한다() {
+    let root = 임시_루트("셸_인용_따옴표");
+    git_저장소로(&root);
+
+    // 이름에 `'` 를 넣는다. 스펙 6.0 이 금지하지 않으므로 오늘 합법이다.
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: 인용 시험\n---\n\nkeyword `it's 결제`: 정의다\n\n## 첫 정책\n\n본문.\n",
+    );
+    // 그 심볼을 핀 없이 import 해 K020 을 띄운다 — 그 fix 가 [shell] bless 명령이다.
+    쓰기(
+        &root,
+        "docs/b.kang",
+        "---\ndescription: 소비자\n---\n\nimport `docs`/`a`.`it's 결제`\n\n## 쓰는 곳\n\n`it's 결제` 를 쓴다.\n",
+    );
+
+    let (_, stderr, 코드) = 실행(&root, &["build"]);
+    assert_eq!(코드, 1, "핀이 없으므로 error 다: {stderr}");
+
+    // fix 줄에서 셸 명령을 뽑아 **실제로 실행**한다. 인용이 깨졌으면 셸이 실패한다.
+    let 명령 = stderr
+        .lines()
+        .find(|줄| 줄.contains("[shell]"))
+        .and_then(|줄| 줄.split_once("[shell]"))
+        .map(|(_, 뒤)| 뒤.trim().to_string())
+        .expect("[shell] fix 가 있어야 한다");
+    assert!(명령.contains("bless"), "bless 명령이어야 한다: {명령}");
+
+    // `kang` 은 PATH 에 없다. 인용을 그대로 둔 채 명령 이름만 시험 바이너리로 바꾼다 —
+    // 이 시험이 재는 것은 **인자의 인용**이지 설치 여부가 아니다.
+    let 실행할것 = 명령.replacen("kang ", &format!("{} ", env!("CARGO_BIN_EXE_kang")), 1);
+    let 결과 = Command::new("sh")
+        .args(["-c", &실행할것])
+        .current_dir(&root)
+        .output()
+        .expect("셸을 실행할 수 있어야 한다");
+    assert!(
+        결과.status.success(),
+        "렌더된 fix 를 그대로 실행하지 못했다: {명령}\n{}",
+        String::from_utf8_lossy(&결과.stderr)
+    );
+
+    // 그 명령이 실제로 핀을 넣었으므로 이제 통과해야 한다.
+    let (_, stderr, 코드) = 실행(&root, &["build"]);
+    assert_eq!(코드, 0, "fix 를 적용했으면 통과해야 한다: {stderr}");
+
+    정리(&root);
+}
+
+/// 생성된 TypeScript 는 제어 문자가 든 이름에서도 문법이 깨지지 않아야 한다.
+///
+/// 인덱스 쪽은 탭이 든 이름을 명시적으로 시험하는데(`인덱스_주소는_탭을_살린다`) 타입
+/// 쪽은 `"` 와 `\` 만 봤다. 탭이 든 topic 이름 하나면 생성된 `.ts` 가 통째로 문법 오류가
+/// 되어 `tsc` 가 파일 전체를 거부한다 — 소비자의 빌드가 그 한 줄로 선다.
+#[test]
+fn 타입_리터럴이_탭과_제어문자를_이스케이프한다() {
+    let root = 임시_루트("타입_제어문자");
+    git_저장소로(&root);
+    // topic 이름에 탭이 든 문서. `##` 뒤의 이름이 그대로 topic 이름이 된다.
+    쓰기(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: 제어문자 시험\n---\n\n## 앞\t뒤\n\n본문.\n",
+    );
+
+    let (_, stderr, 코드) = 실행(&root, &["types", ".kang/generated.ts"]);
+    assert_eq!(코드, 0, "정상 프로젝트다: {stderr}");
+
+    let 내용 = fs::read_to_string(root.join(".kang/generated.ts")).expect("타입 파일");
+    // 생짜 탭이 리터럴 안에 있으면 그 줄이 문법 오류다.
+    let 리터럴_줄: Vec<&str> = 내용.lines().filter(|줄| 줄.contains("\":")).collect();
+    for 줄 in &리터럴_줄 {
+        assert!(
+            !줄.contains('\t'),
+            "생짜 탭이 TS 리터럴에 들어갔다 — tsc 가 파일 전체를 거부한다: {줄:?}"
+        );
+    }
+    // 구현은 `\u0009` 로 낸다. `\t` 든 `\u0009` 든 tsc 에는 같고, 요점은 생짜 탭이
+    // 아니라는 것이다 — 위 단언이 그것을 이미 봤다.
+    assert!(
+        내용.contains("\\u0009") || 내용.contains("\\t"),
+        "탭이 이스케이프되어 있어야 한다: {내용}"
+    );
+
+    정리(&root);
+}
