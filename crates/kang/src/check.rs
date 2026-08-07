@@ -291,11 +291,11 @@ pub fn check_symbols(project: &Project, table: &SymbolTable) -> Vec<Diagnostic> 
     for doc in &순서 {
         let document = &project.docs[*doc];
         let scope = table.scope(doc);
-        let (참조, 사용) = 참조_해석(document, &scope);
+        let (참조, 사용) = 참조_해석(document, scope);
         iknow_실재_검사(document, project, table, &mut diagnostics);
         import_검사(document, project, table, &사용, &mut diagnostics);
         계층_상위_검사(document, &선언들, &mut diagnostics);
-        미해결_검사(document, &참조, &scope, &선언들, &mut diagnostics);
+        미해결_검사(document, &참조, scope, &선언들, &mut diagnostics);
     }
 
     이름_충돌_검사(&선언들, &mut diagnostics);

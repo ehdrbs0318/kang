@@ -292,7 +292,7 @@ impl<'a> 뷰<'a> {
                 // **분할은 진단을 내는 층과 같은 함수를 쓴다.** 두 층이 같은 문장을 다르게
                 // 읽으면 빌드가 통과하는 문서에서 조회가 조용히 틀린 답을 낸다.
                 let 주소 = format!("{doc}#{}", topic.name);
-                for (이름, _) in check::이름_분할(&topic.refs, &scope) {
+                for (이름, _) in check::이름_분할(&topic.refs, scope) {
                     // 스코프에 없는 이름은 미해결 심볼이며 compile() 이 이미 거절했다.
                     let Some(&id) = scope.get(&이름) else {
                         continue;
@@ -459,7 +459,7 @@ impl<'a> 뷰<'a> {
         let scope = self.table.scope(doc);
         let mut 대상들: Vec<SymbolId> = Vec::new();
         // 분할은 진단을 내는 층과 같은 함수를 쓴다.
-        for (이름, _) in check::이름_분할(&topic.refs, &scope) {
+        for (이름, _) in check::이름_분할(&topic.refs, scope) {
             // 스코프에 없는 이름은 미해결 심볼이며 compile() 이 이미 거절했다.
             let Some(&id) = scope.get(&이름) else {
                 continue;

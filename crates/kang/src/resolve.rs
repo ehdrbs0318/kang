@@ -388,10 +388,28 @@ impl SymbolTable {
     /// # 매개변수
     /// - `doc`: 스코프를 볼 문서
     ///
+    /// **참조를 돌려준다.** 값으로 돌려주면 호출마다 매핑을 통째로 딥 클론하고, 그 키가
+    /// 전부 `String` 이라 이름 수만큼 새 할당이 난다. `show` 의 세 자리가 이것을 루프
+    /// 안에서 부르고 그중 둘은 **키 하나를 읽으려고** 전체를 복제했다 — 문서 하나에서
+    /// keyword 마다 같은 문서의 스코프를 다시 복제해 O(keyword²) 였다.
+    ///
+    /// **실측한 이득은 크지 않다.** 문서 400·pending 예외 100·문서당 keyword 80 코퍼스에서
+    /// `kang show` 10회가 611ms → 582ms 로 5% 다. 리뷰가 예상한 2.7배는 재현되지 않았고,
+    /// 그 코퍼스에서 시간을 지배하는 것은 `show.rs` 의 `O(예외 × 문서)` 순회다(그 파일의
+    /// ponytail 이 이미 적은 천장이다). 그래도 되돌리지 않는다 — 없앤 것은 순수 낭비이고,
+    /// 호출부를 한 줄도 고치지 않으며, 되레 clippy 가 잉여 `&` 셋을 잡아 줬다.
+    ///
+    /// # 매개변수
+    /// - `doc`: 스코프를 볼 문서
+    ///
     /// # 반환값
     /// 로컬 이름에서 심볼 식별자로 가는 매핑. 모르는 문서면 빈 매핑
-    pub fn scope(&self, doc: &DocPath) -> HashMap<String, SymbolId> {
-        self.scopes.get(doc).cloned().unwrap_or_default()
+    pub fn scope(&self, doc: &DocPath) -> &HashMap<String, SymbolId> {
+        // 모르는 문서에도 같은 타입을 돌려주려면 빈 매핑이 어딘가에 살아 있어야 한다.
+        // 정적 하나면 충분하다 — 내용이 없으므로 공유해도 구별할 수 없다.
+        static 빈_맵: std::sync::LazyLock<HashMap<String, SymbolId>> =
+            std::sync::LazyLock::new(HashMap::new);
+        self.scopes.get(doc).unwrap_or(&빈_맵)
     }
 
     /// 같은 이름으로 선언된 심볼들을 모아 반환한다. iknow 검사에 쓴다.
