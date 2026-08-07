@@ -155,8 +155,8 @@ pub fn load(root: &Path) -> (Project, Vec<Diagnostic>) {
         // `main.rs` 의 인자 파서가 이미 "그때 처방은 이름을 고치는 것"(스펙 6.0)이라고
         // 적어 두었으나, 정작 그 이름이 있다는 사실을 아무도 말하지 않고 있었다.
         // 첫 조각만 본다 — `docs/-a` 는 주소가 `-` 로 시작하지 않아 그대로 가리킬 수 있다.
-        if path.0.first().is_some_and(|조각| 조각.starts_with('-')) {
-            diagnostics.push(대시로_시작하는_경로(path));
+        if let Some(첫) = path.0.first().filter(|조각| 조각.starts_with('-')).cloned() {
+            diagnostics.push(대시로_시작하는_경로(path, 첫));
             continue;
         }
 
@@ -836,18 +836,18 @@ fn 문서_이름_구분자(path: DocPath, 구분자: char) -> Diagnostic {
 /// 여기는 그 결정을 실제로 말하는 자리다.
 ///
 /// # 매개변수
-/// - `path`: 그 파일의 문서 경로. 첫 조각이 문제다
+/// - `path`: 그 파일의 문서 경로
+/// - `첫`: `-` 로 시작하는 첫 조각. 호출자가 이미 찾았으므로 그대로 받는다
 ///
 /// # 반환값
 /// `K118` 진단
-fn 대시로_시작하는_경로(path: DocPath) -> Diagnostic {
-    let 첫 = path.0.first().cloned().unwrap_or_default();
+fn 대시로_시작하는_경로(path: DocPath, 첫: String) -> Diagnostic {
     let message = format!(
         "문서 경로의 첫 조각이 `-` 로 시작합니다 — `{첫}`. 이 주소는 CLI 인자로 주면 플래그로 읽혀 kang show·kang refs·kang bless 가 받지 못하므로 읽지 않습니다 (스펙 6.0)."
     );
     이름_거부(
         "K118",
-        path.clone(),
+        path,
         message,
         "이 문서의 첫 경로 조각. `-` 로 시작하는 인자는 명령이 플래그로 가르므로 위치 인자가 될 수 없습니다".to_string(),
         "이 조각의 이름에서 앞의 `-` 를 빼세요. 하위 조각은 `-` 로 시작해도 됩니다 — 주소 전체가 `-` 로 시작하지 않으면 됩니다".to_string(),
