@@ -4197,3 +4197,53 @@ fn init_은_깨진_초안이_있으면_예제를_만들지_않는다() {
 
     정리(&root);
 }
+
+/// 첫 경로 조각이 `-` 로 시작하는 문서는 어떤 조회 명령으로도 가리킬 수 없다 (`K118`).
+///
+/// `build` 는 통과하고 `list` 에도 나오는데 `show`·`refs`·`bless` 만 "모르는 플래그입니다"
+/// 로 끝나는, 가장 헷갈리는 상태였다. `main.rs` 의 인자 파서가 이미 이 경우의 처방을
+/// "이름을 고친다"(스펙 6.0)로 정해 두었으나 그 이름이 있다는 사실을 아무도 말하지 않았다.
+#[test]
+fn 첫_조각이_대시로_시작하는_문서는_거부된다() {
+    let root = 임시_루트("대시_경로");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "-docs/a.kang",
+        "---\ndescription: x\n---\n\n## 첫 정책\n\n본문.\n",
+    );
+
+    let (stdout, stderr, 코드) = 실행(&root, &["build"]);
+    assert_eq!(코드, 1, "가리킬 수 없는 이름은 컴파일 error 다: {stderr}");
+    assert!(stderr.contains("K118"), "K118 이 나와야 한다: {stderr}");
+    assert_eq!(stdout, "", "error 면 stdout 은 비어야 한다");
+
+    정리(&root);
+}
+
+/// 하위 조각의 `-` 는 합법이다. 위 검사가 넓게 잡으면 이 단언이 먼저 깨진다.
+///
+/// 주소가 `docs/-a` 이면 인자 전체가 `-` 로 시작하지 않으므로 플래그로 읽히지 않는다.
+#[test]
+fn 하위_조각의_대시는_그대로_가리킬_수_있다() {
+    let root = 임시_루트("대시_하위");
+    git_저장소로(&root);
+    쓰기(
+        &root,
+        "docs/-a.kang",
+        "---\ndescription: x\n---\n\n## 첫 정책\n\n본문.\n",
+    );
+
+    let (_, stderr, 코드) = 실행(&root, &["build"]);
+    assert_eq!(코드, 0, "합법 이름이다: {stderr}");
+
+    // 이것이 이 시험의 요점 — 실제로 가리킬 수 있어야 한다.
+    let (stdout, stderr, 코드) = 실행(&root, &["show", "docs/-a"]);
+    assert_eq!(코드, 0, "show 가 받아야 한다: {stderr}");
+    assert!(
+        stdout.contains("docs/-a"),
+        "그 문서를 냈어야 한다: {stdout}"
+    );
+
+    정리(&root);
+}
