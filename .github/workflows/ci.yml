@@ -1,0 +1,107 @@
+name: ci
+
+# 일상 푸시와 PR 에서 돈다. release.yml 은 v* 태그에서만 도므로, 여기가 유일한 상시
+# 게이트다. 매트릭스는 release.yml 에만 둔다 — CI 에서 4타깃을 돌릴 이유가 없다.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  check:
+    # release.yml 과 같은 러너 이미지를 쓰고, 같은 방식으로 Rust 를 얻는다(러너에 선설치된
+    # 툴체인, rustup 설치 스텝 없음). ubuntu-latest 는 시간이 지나면 다른 이미지로 흘러가
+    # "CI 는 통과하는데 릴리즈가 깨진다" 를 만들므로 쓰지 않는다.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      # tests/cli.rs 의 show YAML 게이트는 파서가 없으면 건너뛴다. release.yml 과 똑같이
+      # 파서를 깔고 KANG_REQUIRE_YAML 로 "건너뛰기" 자체를 실패로 만든다.
+      - run: python3 -m pip install --break-system-packages --quiet pyyaml
+
+      # 인덱스를 커밋하므로(Task 3 J2) 문서와 인덱스가 어긋난 커밋이 랜딩될 수 없어야 한다.
+      # 어긋난 채로 오면 아래 cargo 스텝들도 rev 핀 불일치로 빨개지지만, 그 진단은
+      # "인덱스를 다시 내라" 를 한 단계 멀리서 말한다. 그래서 이 게이트가 먼저 온다.
+      - run: make index-check
+
+      # V0001 §10.1 의 의존성 허용 목록을 실제 Cargo.toml 과 대조한다. 그 절은 "목록에
+      # 없는 것은 쓰지 않는다" 를 규칙으로 세웠지만 재는 수단이 없었다 — 목록에 없는
+      # 의존성이 들어와도 아무것도 잡지 못했다.
+      - run: make deps-check
+
+      # KANG_REQUIRE_INDEX 는 인덱스 부재를 컴파일 에러로 올린다 (B3). 스텝마다 준다 —
+      # job 전역으로 두면 위의 make index 부트스트랩이 스스로 막힌다.
+      - run: cargo test
+        env:
+          KANG_REQUIRE_YAML: '1'
+          KANG_REQUIRE_INDEX: '1'
+          # 게이트 둘이 Linux 에서만 성립한다 — 비 UTF-8 파일 이름(APFS 가 거부한다)과
+          # `/dev/full`(macOS 에 없다). 로컬에서는 조용히 빠지므로 이 변수가 러너에서
+          # 그 빠짐을 실패로 바꾼다.
+          KANG_REQUIRE_LINUX_GATES: '1'
+
+      - run: cargo clippy --all-targets -- -D warnings
+        env:
+          KANG_REQUIRE_INDEX: '1'
+      - run: cargo fmt --check
+
+      # 아래 스텝 전부가 이 바이너리를 쓴다.
+      - run: cargo build
+        env:
+          KANG_REQUIRE_INDEX: '1'
+
+      # ─── 여기부터 kang 이 자기 자신에게 쓰인다 ────────────────────────────────
+      #
+      # 위의 cargo 스텝들은 kang 을 **만드는** 것을 잰다. 아래는 kang 이 **일하는** 것을
+      # 잰다. 이 저장소의 문서가 `.kang` 이므로 kang 의 첫 사용자는 kang 자신이고,
+      # 도그푸딩이 CI 에 없으면 "컴파일러가 자기 문서를 컴파일하지 못하는" 상태로 랜딩할
+      # 수 있다. `make index-check` 가 `kang index` 를 돌기는 하지만 그것은 인덱스 산출의
+      # 부산물이고, `kang build` exit 0 이 도그푸딩의 실제 주장이다.
+
+      # 저장소의 `.kang` 문서 전부를 컴파일한다. 미선언 참조·중복 정의·rev 핀 불일치가
+      # 하나라도 있으면 여기서 선다.
+      - run: ./target/debug/kang build
+
+      # 조회 명령이 실제로 도는지 본다. `build` 만 초록이고 `show` 가 깨지는 상태는
+      # 소비자에게 kang 이 쓸모없다는 뜻이다 — 에이전트가 문서를 받아 가는 통로가 `show` 다.
+      - run: |
+          ./target/debug/kang list
+          ./target/debug/kang keywords
+          ./target/debug/kang show CONTEXT > /dev/null
+
+      # README 의 「명령」 블록은 `kang --help` 의 사본이다. 사본이 원본보다 낡으면 공개
+      # 저장소의 첫인상이 거짓 사용법이 된다 — 실제로 `index`·`types` 두 줄이 빠져 있었다.
+      # 바이너리가 내는 것을 그대로 대조한다.
+      - run: |
+          sed -n '/^kang — 문서 컴파일러$/,/^```$/p' README.md | sed '$d' > /tmp/readme-help.txt
+          ./target/debug/kang --help > /tmp/actual-help.txt
+          diff /tmp/readme-help.txt /tmp/actual-help.txt
+
+      # 저장소 자신의 스킬 파일은 `crates/kang/src/skill.md` 템플릿의 사본이다.
+      # `kang init` 은 marker 가 있으면 영원히 건너뛰므로(사용자 편집을 지키려는 계약이다)
+      # 템플릿이 앞서가도 사본은 그대로 남는다 — 실제로 그렇게 갈라졌고, 소비자 에이전트가
+      # 읽는 유일한 계약 문서가 출하한 기능을 "없다" 고 말하고 있었다.
+      - run: diff crates/kang/src/skill.md .claude/skills/kang/SKILL.md
+
+      # examples/ts-consumer 의 npm test 가 `kang types` 산출물을 tsc 에 실제로 태우는
+      # 유일한 상시 게이트다. cargo test 는 생성된 TS 의 문자열만 보므로 그 파일이
+      # 타입 체크되는지는 재지 못한다 (Task 7 우려 2).
+      #
+      # 러너 이미지의 node 를 쓰고 setup-node 스텝을 두지 않는다 — Rust 를 얻는 방식과
+      # 같다. node 가 없으면 이 스텝이 그 사실을 말하며 실패한다.
+      #
+      # 예시 자신은 kang 을 빌드하지 않는다(소비자에게 Rust 툴체인이 없다는 것이 전제다).
+      # 여기서 만든 바이너리를 $KANG 으로 준다.
+      - run: npm ci
+        working-directory: examples/ts-consumer
+      - run: npm test
+        working-directory: examples/ts-consumer
+        env:
+          KANG: ${{ github.workspace }}/target/debug/kang
+
+      # 커밋된 생성물이 둘인데 드리프트 게이트는 인덱스 하나뿐이었다.
+      # `test.mjs` 는 tsc 를 돌리기 **전에** `generated.ts` 를 작업 트리에 다시 쓰므로,
+      # 커밋된 사본이 문서와 어긋나 있어도 npm test 는 초록이다. 그 파일 헤더가
+      # "손으로 고치지 않습니다" 라고 적은 이상 어긋남은 잡혀야 한다.
+      - run: git diff --exit-code examples/ts-consumer/.kang/generated.ts

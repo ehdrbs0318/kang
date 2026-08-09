@@ -1,0 +1,18 @@
+{
+  "compilerOptions": {
+    "target": "es2022",
+    "module": "commonjs",
+    "strict": true,
+
+    // kang 이 생성하는 `kangTopic` 은 `MethodDecorator` 를 돌려주는 레거시(experimental)
+    // 데코레이터다 (V0003 5절). TS 5 의 기본인 표준(Stage 3) 데코레이터로 읽으면
+    // TS1241·TS1270 이 난다 — 런타임이 2인자로 부르는데 3인자를 기대한다는 진단이다.
+    "experimentalDecorators": true,
+
+    // 이 프로젝트는 타입 검사만 한다. 산출물을 내지 않으므로 실수로 .js 가 생기지 않는다.
+    "noEmit": true
+  },
+
+  // `.kang/` 은 숨은 디렉토리라 와일드카드에 걸리지 않으므로 직접 적는다.
+  "include": ["src", ".kang/generated.ts"]
+}

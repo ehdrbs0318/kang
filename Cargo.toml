@@ -1,0 +1,10 @@
+# 워크스페이스 루트.
+#
+# 크레이트를 가른 것은 선택이 아니라 Rust 의 요구다 — `proc-macro = true` 는 같은
+# 크레이트의 바이너리·라이브러리와 공존하지 못한다.
+#
+# **허용 의존성은 크레이트마다 다르고 V0001 §10.1 이 목록이다.** `kang` 은 `sha2` 하나,
+# `kang-macros` 는 `syn`·`quote`·`proc-macro2`. 목록에 없는 것을 넣지 않는다.
+[workspace]
+members = ["crates/kang", "crates/kang-macros"]
+resolver = "3"

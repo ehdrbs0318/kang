@@ -17,6 +17,9 @@
 - 로깅 규칙 적용 대상 아님 — CLI 단발 실행이라 로그 레벨 시스템을 두지 않는다. 진단 출력이 그 역할을 한다.
 - 모든 진단 메시지는 **수정 위치와 방법**을 포함한다. LLM이 스스로 고칠 수 있어야 한다.
 - 테스트는 `cargo test` 하나로 전부 돈다.
+- **`FixKind::Shell` 의 `action` 은 경로·이름을 반드시 인용한다.** 스펙 4.2·6.0·6.1 이 세 곳에서 못박은 조항이며 "인용 여부를 스스로 판단하게 두면 틀린다" 가 근거다. `format!("... ls -l {}", p)` 처럼 맨 보간을 하면 `/Users/x/My Project` 에서 셸이 두 인자로 쪼개 **원인 진단 대신 새로운 잘못된 사실**을 준다. 작은따옴표로 감싸되 값 안의 `'` 를 `'\''` 로 치환한다.
+
+**Task 4 가 `resolve::셸_인용(value: &str) -> String` 을 `pub(crate)` 로 만들어 뒀다. 셸 fix 를 새로 만드는 태스크는 반드시 이것을 거친다.** 매개변수가 `&Path` 가 아니라 `&str` 인 이유는 경로만이 아니라 심볼 이름도 인용 대상이기 때문이다 (`kang bless docs/B --import 'docs/A.결제'`, 스펙 6.0).
 
 ## 파일 구조
 
@@ -67,17 +70,20 @@ pub fn normalize(text: &str) -> String;
 pub fn rev(text: &str) -> String;
 ```
 
-- [ ] **Step 1: `cargo init --name kang` 실행, `Cargo.toml`에 `sha2` 추가**
-- [ ] **Step 2: 실패하는 테스트 작성** — 시나리오 3개
+- [x] **Step 1: `cargo init --name kang` 실행, `Cargo.toml`에 `sha2` 추가**
+- [x] **Step 2: 실패하는 테스트 작성** — 시나리오 3개
   - `줄_끝_공백은_해시를_바꾸지_않는다`
   - `연속_빈_줄은_하나로_축약된다`
   - `본문이_다르면_해시가_다르다`
-- [ ] **Step 3: `cargo test` — 컴파일 실패 확인**
-- [ ] **Step 4: `normalize`, `rev` 구현**
+- [x] **Step 3: `cargo test` — 컴파일 실패 확인**
+- [x] **Step 4: `normalize`, `rev` 구현**
   - 줄 단위로 `trim_end`, 빈 줄 2개 이상은 1개로, 전체 `trim`
   - `sha2::Sha256` 결과를 hex로 만들고 앞 6자
-- [ ] **Step 5: `cargo test` 통과 확인**
-- [ ] **Step 6: 커밋** — `feat: rev 해시 산출과 정규화 규칙`
+- [x] **Step 5: `cargo test` 통과 확인**
+- [x] **Step 6: 커밋** — `feat: rev 해시 산출과 정규화 규칙`
+  - c5eb31d·14d6b81 / 테스트 3
+
+**수행 내역** — c5eb31d·14d6b81 / 테스트 3. normalize/rev 확정. lib 크레이트 전환으로 tests 가 내부 접근
 
 ---
 
@@ -153,6 +159,11 @@ pub struct Keyword {
     pub definition: String,
     pub detail: Option<String>,   // #`상세 topic` 이름
     pub iknow: Vec<SymbolRef>,
+    /// 한 줄 정의 안의 백틱 심볼과 등장 줄.
+    /// 스펙 4.2 는 "본문과 **선언부**의 모든 백틱은 심볼 참조" 이므로
+    /// keyword 정의 안의 참조도 Task 6 의 미해결 심볼 검사 대상이다.
+    /// 이 필드가 없으면 keyword 정의가 kang 의 강제를 빠져나가는 은신처가 된다.
+    pub refs: Vec<(String, usize)>,
     pub line: usize,
 }
 
@@ -206,7 +217,7 @@ pub fn parse_document(path: DocPath, source: &str) -> Result<Document, Vec<Diagn
 - 백틱 스캔: `` \` `` 는 리터럴, ` ``` ` 펜스 내부는 건너뛴다. 그 외 백틱 쌍은 심볼 참조로 `refs` 에 기록.
 - 줄 번호를 모든 노드에 기록한다. 진단 품질이 여기 달려 있다.
 
-- [ ] **Step 1: 실패하는 테스트 작성** — 시나리오 10개
+- [x] **Step 1: 실패하는 테스트 작성** — 시나리오 10개
   - `frontmatter_description_을_읽는다`
   - `description_이_없으면_에러다`
   - `keyword_의_이름과_한줄정의를_읽는다`
@@ -217,11 +228,14 @@ pub fn parse_document(path: DocPath, source: &str) -> Result<Document, Vec<Diagn
   - `frontmatter_블록_자체가_없으면_에러다`
   - `keyword_에_한줄정의가_없으면_에러다`
   - `짝이_맞지_않는_백틱은_에러다`
-- [ ] **Step 2: `cargo test` — 실패 확인**
-- [ ] **Step 3: `ast.rs` 타입 정의 (`Diagnostic` 포함)**
-- [ ] **Step 4: `parse.rs` 구현 — frontmatter, keyword, topic, 백틱 스캔**
-- [ ] **Step 5: `cargo test` 통과 확인**
-- [ ] **Step 6: 커밋** — `feat: frontmatter/keyword/topic 파싱`
+- [x] **Step 2: `cargo test` — 실패 확인**
+- [x] **Step 3: `ast.rs` 타입 정의 (`Diagnostic` 포함)**
+- [x] **Step 4: `parse.rs` 구현 — frontmatter, keyword, topic, 백틱 스캔**
+- [x] **Step 5: `cargo test` 통과 확인**
+- [x] **Step 6: 커밋** — `feat: frontmatter/keyword/topic 파싱`
+  - c877e2e~1f40f96 (13커밋) / 테스트 29
+
+**수행 내역** — c877e2e~1f40f96 (13커밋) / 테스트 29. K101~K105. **리뷰가 컨트롤러의 `\\` 이스케이프 발명을 반박해 되돌림**(스펙 4.2 는 `` \` `` 하나만 정의)
 
 ---
 
@@ -247,7 +261,19 @@ pub fn parse_document(path: DocPath, source: &str) -> Result<Document, Vec<Diagn
 - `// uncoded` 는 topic 헤딩 줄 뒤에만 붙는다.
 - 이 modifier들은 topic `body` 에서 제외한다 — rev 해시에 들어가면 안 된다.
 
-- [ ] **Step 1: 실패하는 테스트 작성** — 시나리오 11개
+**컨트롤러 이월 (Task 2 리뷰 2회에서 나옴 — 반드시 처리)**
+
+- **`K105` 의 판정 범위를 좁혀야 한다.** Task 2 는 topic 헤딩 줄에 백틱이 하나라도 있으면 `K105` error 를 낸다 (근거: 스펙 6.0 이 CLI 인자에서 백틱을 금지하므로 헤딩에 백틱이 있으면 그 topic 은 주소를 댈 수 없다). 그런데 **스펙 4.4 는 `// iknow` 가 topic 헤딩에 붙는다고 하고 그 대상은 백틱을 포함한다** — `` ## 결제의 방법 // iknow `docs`/`B`.`결제의 방법` `` 은 합법 문서인데 지금 `K105` 로 거부된다.
+
+  따라서 Task 3 은 **헤딩에서 modifier(`// iknow …`, `// uncoded`)를 먼저 잘라낸 뒤 남은 헤딩 텍스트에만 `K105` 를 적용**하도록 고쳐야 한다. 순서를 반대로 하면 합법 문서가 거부된다.
+
+- **`Topic.name` 에서도 modifier 를 제거해야 한다.** 지금은 헤딩 원문 전체가 `name` 이 되므로, modifier 를 안 자르면 `` 조직의 문서 검토 절차 // uncoded `` 같은 조회 불가 이름이 **에러 없이** 만들어진다. `K105` 만 조용해지고 이름이 깨지는 것이 최악이다 — 둘을 함께 고친다.
+
+- **topic 밖 줄의 백틱 짝 검사.** Task 2 의 `parse.rs` 는 첫 `##` 이전 줄에서 `topics.last_mut()` 가 `None` 이라 조기 `continue` 하므로 백틱 짝 검사(`K104`)를 받지 않는다. Task 3 이 `import` 줄을 파싱하며 이 구간을 다루게 되므로, **import 줄과 그 밖의 topic 외 줄에 백틱 짝 검사를 적용할지 여기서 결정하고 명시한다.** import 줄은 반드시 검사해야 한다 — 심볼 주소가 백틱으로 쓰인다.
+
+- **타입 재정의 금지.** Task 2 가 확정한 `ast.rs` 의 14개 타입은 필드 이름·타입·순서가 고정이다. Task 3 은 빈 필드를 **채우기만** 한다. 필드를 늘려야 할 이유가 생기면 구현하지 말고 컨트롤러에 보고한다.
+
+- [x] **Step 1: 실패하는 테스트 작성** — 시나리오 11개
   - `keyword_import_를_읽는다`
   - `topic_import_를_읽는다`
   - `exception_import_를_읽는다`
@@ -261,11 +287,14 @@ pub fn parse_document(path: DocPath, source: &str) -> Result<Document, Vec<Diagn
   - `uncoded_modifier_는_body_에서_제외된다`
   - `구분자가_없는_import_는_에러다`
   - `알_수_없는_modifier_는_에러다`
-- [ ] **Step 2: `cargo test` — 실패 확인**
-- [ ] **Step 3: import 파싱 구현 (경로 구분자 → kind 판정)**
-- [ ] **Step 4: exception / cover / modifier 파싱 구현**
-- [ ] **Step 5: `cargo test` 통과 확인**
-- [ ] **Step 6: 커밋** — `feat: import/exception/cover/modifier 파싱`
+- [x] **Step 2: `cargo test` — 실패 확인**
+- [x] **Step 3: import 파싱 구현 (경로 구분자 → kind 판정)**
+- [x] **Step 4: exception / cover / modifier 파싱 구현**
+- [x] **Step 5: `cargo test` 통과 확인**
+- [x] **Step 6: 커밋** — `feat: import/exception/cover/modifier 파싱`
+  - c99bf18~40eda89 (10커밋) / 테스트 80
+
+**수행 내역** — c99bf18~40eda89 (10커밋) / 테스트 80. K106~K112. K105 범위를 topic 헤딩으로 좁힘, 스펙 3절에 「topic 밖 금지」 추가
 
 ---
 
@@ -324,7 +353,7 @@ impl SymbolTable {
 - `by_name` 은 `HashMap<String, Vec<SymbolId>>` 로 미리 색인해 둔다. 매번 선형 스캔하면 iknow 검사가 O(n²)가 된다.
 - 읽기 실패와 잘못된 UTF-8 은 그 파일에 대한 진단으로 바꾸고 나머지 파일 처리를 계속한다. 한 파일 때문에 전체가 죽으면 안 된다.
 
-- [ ] **Step 1: 실패하는 테스트 작성** — 시나리오 9개
+- [x] **Step 1: 실패하는 테스트 작성** — 시나리오 9개
   - `git_루트를_프로젝트_루트로_찾는다`
   - `하위_디렉토리에서_실행해도_DocPath_가_같다`
   - `git_저장소가_아니면_진단을_낸다`
@@ -333,11 +362,14 @@ impl SymbolTable {
   - `자기_파일의_심볼을_스코프에서_찾는다`
   - `import_한_alias_를_스코프에서_찾는다`
   - `같은_이름_심볼을_by_name_으로_모은다`
-- [ ] **Step 2: `cargo test` — 실패 확인**
-- [ ] **Step 3: `find_root` 와 `load` 구현 (git 루트 탐색 + 재귀 순회 + 파싱)**
-- [ ] **Step 4: `SymbolTable` 구현**
-- [ ] **Step 5: `cargo test` 통과 확인**
-- [ ] **Step 6: 커밋** — `feat: 프로젝트 로드와 전역 심볼 테이블`
+- [x] **Step 2: `cargo test` — 실패 확인**
+- [x] **Step 3: `find_root` 와 `load` 구현 (git 루트 탐색 + 재귀 순회 + 파싱)**
+- [x] **Step 4: `SymbolTable` 구현**
+- [x] **Step 5: `cargo test` 통과 확인**
+- [x] **Step 6: 커밋** — `feat: 프로젝트 로드와 전역 심볼 테이블`
+  - f230932~b06d6ca (4커밋) / 테스트 106
+
+**수행 내역** — f230932~b06d6ca (4커밋) / 테스트 106. find_root/load/SymbolTable, K050~K052. `셸_인용` 을 전역 제약으로
 
 ---
 
@@ -363,15 +395,18 @@ pub fn check_cycles(project: &Project) -> Vec<Diagnostic>;
 - 순환 검출은 DFS + 방문 색칠. 순환 발견 시 스택을 그대로 체인으로 출력하고 "공통 개념을 상위 파일로 추출하라"를 `fix` 에 담는다.
 - 그래프 값을 구조체로 남기지 않는다. `ancestors()` 를 v2 로 내린 뒤 질의 메서드가 없어져 `check.rs` 의 함수 하나로 충분하다. `ancestors()` 와 참조 전파는 **v2**다. 참조 전파는 코드가 topic 을 참조할 때 정의되는 규칙이고 코드 연동이 v2 이므로 v1 에 호출자가 없다. `show` 의 재귀 임베드는 `Document.imports` 를 직접 순회한다.
 
-- [ ] **Step 1: 실패하는 테스트 작성** — 시나리오 4개
+- [x] **Step 1: 실패하는 테스트 작성** — 시나리오 4개
   - `직접_순환을_검출한다`
   - `3단계_순환의_체인_전체를_출력한다`
   - `iknow_상호_명시는_순환이_아니다`
   - `자기_파일_import_는_순환이다`
-- [ ] **Step 2: `cargo test` — 실패 확인**
-- [ ] **Step 3: 파일 그래프 구성과 DFS 순환 검출 구현**
-- [ ] **Step 4: `cargo test` 통과 확인**
-- [ ] **Step 5: 커밋** — `feat: import 그래프와 순환 검출`
+- [x] **Step 2: `cargo test` — 실패 확인**
+- [x] **Step 3: 파일 그래프 구성과 DFS 순환 검출 구현**
+- [x] **Step 4: `cargo test` 통과 확인**
+- [x] **Step 5: 커밋** — `feat: import 그래프와 순환 검출`
+  - 76673a0~d93dd26 (4커밋) / 테스트 117
+
+**수행 내역** — 76673a0~d93dd26 (4커밋) / 테스트 117. K040 파일 단위 순환. `compile()` 배선표를 Task 9 로 이월
 
 ---
 
@@ -410,6 +445,24 @@ pub fn report(diags: &[Diagnostic]) -> String;
 - **iknow 는 import 가 아니므로 미사용 검사 대상이 아니다.** 경로 실재와 상호성만 본다 (스펙 4.4).
 - 사용 여부는 topic 별로 추적한다. 파일 전체에서 한 번이라도 쓰였으면 통과.
 
+**컨트롤러 이월 (Task 4 리뷰에서 나옴 — 반드시 처리)**
+
+- **`scope()` 의 키는 계층 전체 경로인데 본문 `refs` 는 백틱 쌍마다 조각이다.** `Symbol.name` 과 `scope()` 키는 `"결제수단.카드"` 처럼 `.` 로 이은 전체 이름인데, 파서는 본문의 `` `결제수단`.`카드` `` 를 `("결제수단", n)` 과 `("카드", n)` **두 항목**으로 `refs` 에 넣는다.
+
+  **`refs` 각 항목을 `scope()` 에서 그대로 조회하면 합법 문서에 미해결 심볼 error 가 난다.** 조회 전에 인접 조각을 합쳐야 한다 — `Topic.body` 가 헤딩 포함 원문을, `Keyword.definition` 이 원문 정의를 그대로 보관하므로 인접성 복원 경로가 열려 있다. resolve 쪽 선택(전체 경로 키)은 스펙 4.3·5.1 에 맞으므로 그쪽을 바꾸지 마라.
+
+- **`SymbolId` 에는 kind·name·선언 줄 공개 접근자가 없다.** `by_name`/`owner` 로 파일을 좁힌 뒤 `Project.docs` 를 다시 훑어 `K012` 출력의 줄 번호를 만든다. 착수 시 이 왕복이 실제로 성립하는지 먼저 확인하고, 안 되면 구현하지 말고 컨트롤러에 보고하라.
+
+**알려진 한계 — 파서 지원 없이는 못 고친다 (Task 6 재검증에서 확정)**
+
+`Topic.refs` 와 `Keyword.refs` 는 `(이름, 줄)` 만 담고 **원문에서 조각들이 `.` 으로 이어져 있었는지를 담지 않는다.** Task 6 의 참조 해석은 그래서 스코프만 보고 조각을 합치며, 전부 해석되는 분할이 여럿이면 왼쪽 최장을 택한다.
+
+그 결과 **합법 문서를 거부하는 경로가 하나 남는다.** 본문이 `` `A` 와 `B` `` 처럼 두 이름을 따로 언급했는데 `A.B` 도 스코프에 있으면 하나로 합쳐지고, 뒤 조각을 단독으로 import 한 줄이 **미사용(`K003`)으로 오인된다.** 놓치는 진단이 아니라 실제 거부다.
+
+**근본 해결은 파서가 조각의 원문 인접성을 `refs` 에 싣는 것이다** — `Vec<(String, usize)>` 를 인접 그룹을 표현할 수 있는 형태로 바꾸는 `ast.rs`·`parse.rs` 변경이고, 그러면 Task 6 의 백트래킹 자체가 불필요해진다. **v1 범위에서는 감수하고, Task 12 통합 검증에서 실제 코퍼스 빈도를 측정한 뒤 승급 여부를 정한다.**
+
+- **문서 간 이름 충돌은 Task 4 가 진단하지 않는다.** `SymbolTable::build` 는 한 문서 안의 로컬 이름 중복(`K052`)만 낸다. 다른 파일의 같은 이름은 `by_name` 으로 사실만 노출되며, "iknow 없음" 조건을 붙여 진단하는 것이 이 태스크의 몫이다 (`K010`-`K019` 대역).
+
 **진단 출력 포맷** — **스펙 5.1.1 에 완성된 예시 3건이 있다.** 그 **형식**을 따른다. 즉흥으로 정하지 않는다.
 
 테스트는 문자 단위 일치가 아니라 **구조 일치**를 본다. 예시에 박힌 경로와 줄 번호까지 맞추려면 fixture 를 역설계해야 하고 스펙 오타 수정마다 테스트가 깨진다. 검사할 것은 `code` 값, `locations` 개수와 각 `note` 유무, `fixes` 의 종류·순서, 셸 명령의 인용 여부다.
@@ -419,7 +472,7 @@ pub fn report(diags: &[Diagnostic]) -> String;
 - `fixes` 각 항목은 문서 경로와 **적용할 행동**을 갖는다. 줄 번호를 수정 좌표로 쓰지 않는다 (ADR-0003).
 - 셸 명령을 담는 `fix` 는 **인용을 붙여 출력**한다. 에이전트가 복사해 그대로 실행할 수 있어야 한다.
 
-- [ ] **Step 1: 실패하는 테스트 작성** — 시나리오 13개
+- [x] **Step 1: 실패하는 테스트 작성** — 시나리오 13개
   - `미선언_백틱_심볼은_에러다`
   - `없는_파일을_import_하면_에러다`
   - `없는_심볼을_import_하면_에러다`
@@ -437,11 +490,14 @@ pub fn report(diags: &[Diagnostic]) -> String;
   - `rev_불일치_진단의_구조가_스펙_5_1_1_과_일치한다`
   - `edit_fix_는_문서_문법으로_shell_fix_는_CLI_문법으로_출력된다`
   - `fixes_는_적용_순서대로_나온다`
-- [ ] **Step 2: `cargo test` — 실패 확인**
-- [ ] **Step 3: `report` 구현** — 스펙 5.1.1 의 예시 3건과 구조가 일치해야 한다
-- [ ] **Step 4: `check_symbols` 의 8개 규칙 구현**
-- [ ] **Step 5: `cargo test` 통과 확인**
-- [ ] **Step 6: 커밋** — `feat: 심볼 진단 규칙`
+- [x] **Step 2: `cargo test` — 실패 확인**
+- [x] **Step 3: `report` 구현** — 스펙 5.1.1 의 예시 3건과 구조가 일치해야 한다
+- [x] **Step 4: `check_symbols` 의 8개 규칙 구현**
+- [x] **Step 5: `cargo test` 통과 확인**
+- [x] **Step 6: 커밋** — `feat: 심볼 진단 규칙`
+  - 865fa42~1fd97a6 (17커밋) / 테스트 164
+
+**수행 내역** — 865fa42~1fd97a6 (17커밋) / 테스트 164. K001~K012·K019. **합법 입력 거부를 다섯 번 잡음** — 계층 참조를 DP 분할로, 상위 import 를 하위 선언이 쓰는 것으로 인정
 
 ---
 
@@ -469,16 +525,27 @@ pub fn check_exceptions(project: &Project, table: &SymbolTable) -> Vec<Diagnosti
 
 추가로 **한 exception 을 둘 이상의 topic 이 cover 하면 error** 다.
 
-- [ ] **Step 1: 실패하는 테스트 작성** — 시나리오 5개
+**컨트롤러 이월 (Task 6 에서 나옴 — 반드시 처리)**
+
+**`cover` 대상이 존재하지 않으면 error 다.** Task 6 은 `Topic.covers` 를 **사용 여부 판정에만** 썼고 대상의 실재는 검사하지 않는다 — 그 층이 침묵하기로 한 것이므로 **여기서 진단하지 않으면 아무도 안 한다.**
+
+`` cover `없는 예외` `` 처럼 어떤 topic 도 선언하지 않은 이름을 cover 하면, 진리표는 그것을 그냥 매칭 실패로 흘려보내고 문서는 통과한다. kang 이 막으려는 dangling 참조가 정확히 이 모양이다.
+
+당신은 진리표를 위해 exception↔cover 매핑을 이미 만든다. 거기에 "매칭되지 않은 cover" 분기를 더하는 것이 Task 6 이 그 매핑을 다시 만드는 것보다 짧다.
+
+- [x] **Step 1: 실패하는 테스트 작성** — 시나리오 5개
   - `커버되지_않은_exception_은_에러다`
   - `커버된_exception_은_통과한다`
   - `pending_이고_커버가_없으면_warn_이다`
   - `pending_인데_커버가_있으면_에러다`
   - `한_exception_을_둘이_커버하면_에러다`
-- [ ] **Step 2: `cargo test` — 실패 확인**
-- [ ] **Step 3: `check_exceptions` 구현**
-- [ ] **Step 4: `cargo test` 통과 확인**
-- [ ] **Step 5: 커밋** — `feat: exception 상태 기계 검증`
+- [x] **Step 2: `cargo test` — 실패 확인**
+- [x] **Step 3: `check_exceptions` 구현**
+- [x] **Step 4: `cargo test` 통과 확인**
+- [x] **Step 5: 커밋** — `feat: exception 상태 기계 검증`
+  - 69b0139~1f82d2b (4커밋) / 테스트 185
+
+**수행 내역** — 69b0139~1f82d2b (4커밋) / 테스트 185. K030~K034. **fix 가 새 진단을 낳지 않는 것을 처음으로 증명**(6검사 테스트)
 
 ---
 
@@ -510,17 +577,20 @@ pub fn check_revs(project: &Project, table: &SymbolTable) -> Vec<Diagnostic>;
 - **줄 번호를 쓰지 않는다** (ADR-0003). 문서를 고친 뒤 bless 하는 것이 정상 워크플로이므로 줄이 밀린다.
 - **diff 를 출력하지 않는다.** kang 은 이전 본문을 저장하지 않는다. 무엇이 바뀌었는지는 `git diff` 가 보여준다는 안내만 넣는다.
 
-- [ ] **Step 1: 실패하는 테스트 작성** — 시나리오 6개
+- [x] **Step 1: 실패하는 테스트 작성** — 시나리오 6개
   - `rev_핀이_없으면_에러다`
   - `rev_핀이_일치하면_통과한다`
   - `대상_본문이_바뀌면_에러다`
   - `exception_핀은_선언_topic_본문의_해시다`
   - `이름을_유지한_채_선언_topic_을_바꾸면_커버_문서가_깨진다`
   - `진단_fix_가_bless_심볼_주소_형식이다`
-- [ ] **Step 2: `cargo test` — 실패 확인**
-- [ ] **Step 3: `check_revs` 구현**
-- [ ] **Step 4: `cargo test` 통과 확인**
-- [ ] **Step 5: 커밋** — `feat: rev 핀 검증`
+- [x] **Step 2: `cargo test` — 실패 확인**
+- [x] **Step 3: `check_revs` 구현**
+- [x] **Step 4: `cargo test` 통과 확인**
+- [x] **Step 5: 커밋** — `feat: rev 핀 검증`
+  - 7625722~6bd6361 (3커밋) / 테스트 201
+
+**수행 내역** — 7625722~6bd6361 (3커밋) / 테스트 201. K020·K021. 저장소 전역 이월 4건을 Task 12 로
 
 ---
 
@@ -580,6 +650,16 @@ fn compile() -> Result<(Project, SymbolTable), Vec<Diagnostic>>;
 
 **환경 오류에는 `--help` 를 출력하지 않는다.** git 저장소가 아닌 것은 명령을 잘못 쓴 게 아니다. 여기서 help 를 보여주면 에이전트가 철자를 의심하며 재시도한다. `git init` 지시만 낸다.
 
+**컨트롤러 이월 (Task 4 에서 나옴) — `Location.line == 0` 은 "가리킬 줄이 없음" 이다.**
+
+`K050`(git 저장소 아님)·`K051`(파일을 읽지 못함) 처럼 **줄을 가리킬 수 없는 진단**이 있다. `Location.line` 은 `usize` 라 `Option` 을 쓸 수 없고(타입 계약 고정), `1` 을 적으면 진단이 존재하지 않는 줄을 가리켜 거짓말이 된다. 그래서 Task 4 가 `0` 을 "줄 없음" 센티널로 쓴다.
+
+`report()` 렌더러는 `line == 0` 을 **특별 처리해야 한다** — `docs/A:0` 으로 찍으면 안 된다. 파일 경로만 쓰거나(`K051`), 경로도 의미 없으면 위치 표기를 통째로 생략한다(`K050`).
+
+**그리고 `line == 0` 인 진단은 `Location.doc` 이 문서 주소가 아니다.** `DocPath` 는 원래 "루트 기준 상대 경로 조각들" 인데, `K050`·`K051`(디렉토리)은 절대 경로 전체를 조각 하나에 담는다 (`DocPath(vec!["/Users/x/tmp"])`). `Display` 가 `/` join 이라 화면 출력은 맞지만 **문서로 열거나 주소로 재구성하면 안 된다.** `line == 0` 이 그 판별자다.
+
+**`resolve::find_root` 는 절대 경로를 요구한다.** 상대 경로를 주면 `ancestors()` 의 마지막 빈 경로가 프로세스 cwd 기준으로 해석되어 빈 루트를 `Ok` 로 돌려준다. `std::env::current_dir()` 을 그대로 넘겨라 — 항상 절대 경로다.
+
 **핵심 규칙**: **조회** 명령은 전부 `compile()` 을 먼저 거친다. error가 있으면 진단만 출력하고 종료 코드 1로 끝낸다. 문서는 한 줄도 출력하지 않는다.
 
 **`bless` 와 `init` 은 `compile()` 을 거치지 않는다.** `bless` 가 필요한 상황은 정의상 전부 error 다 — 핀 없음도 error, 핀 불일치도 error. `compile()` 을 통과해야 실행된다면 `bless` 는 영원히 실행될 수 없다. 대신 `parse_project()` 까지만 쓴다.
@@ -593,13 +673,39 @@ fn parse_project() -> Result<(Project, SymbolTable), Vec<Diagnostic>>;
 fn compile() -> Result<(Project, SymbolTable), Vec<Diagnostic>>;
 ```
 
+**컨트롤러 이월 (Task 5 리뷰에서 나옴 — 최우선 연결점)**
+
+**`compile()` 이 진단 함수를 하나라도 빠뜨리면 그 규칙은 조용히 발화하지 않는다.** Task 5 시점에 `check_cycles` 를 부르는 곳이 `src` 안에 없었다 — 함수와 테스트는 완성됐지만 프로덕션 경로에 연결되지 않은 상태다. 이후 태스크가 만드는 진단 함수도 같은 위험을 갖는다.
+
+`compile()` 은 **다음 전부**를 돌리고 진단을 모은다. 하나라도 빠지면 그 스펙 규칙이 죽는다.
+
+| 함수 | 모듈 | 태스크 | 스펙 |
+|---|---|---|---|
+| `parse_document` (파일마다) | `parse` | 2·3 | 4절 문법 |
+| `find_root` · `load` | `resolve` | 4 | 3절 |
+| `SymbolTable::build` | `resolve` | 4 | 4.3 |
+| `check_cycles` | `check` | 5 | 5.3 |
+| `check_symbols` | `check` | 6 | 5.1 |
+| `check_exceptions` | `check` | 7 | 5.2 |
+| `check_revs` | `check` | 8 | 4.8 |
+
+**연결 자체를 테스트로 못박아라.** 각 규칙이 위반되는 최소 프로젝트를 만들고 `compile()` 이 그 진단을 내는지 확인한다 — 함수를 직접 부르는 단위 테스트만으로는 연결 누락을 잡지 못한다.
+
+**컨트롤러 이월 (Task 7 에서 나옴) — 종료 코드는 진단 개수가 아니라 `Severity::Error` 개수로 판정한다.**
+
+`K031`(`pending` 인데 cover 없음)이 **유일하게 `Severity::Warn`** 이다. 스펙 5.2 가 그 칸을 error 가 아니라 경고로 정했고, 전역 제약이 "`kang build` 기본 심각도는 error. error 발생 시 종료 코드 1" 이다.
+
+따라서 `compile()` 이 `Err` 를 돌려주는 조건도, `main` 이 종료 코드 1 을 내는 조건도 **진단 벡터가 비어 있지 않은지가 아니라 그 안에 `Severity::Error` 가 있는지**다. `diagnostics.is_empty()` 로 판정하면 `K031` 하나만 있는 정상 문서가 빌드 실패로 처리된다.
+
+`K031` 만 있는 프로젝트가 **종료 코드 0** 이고 그 경고가 출력에는 나오는 것을 테스트로 못박아라.
+
 경계는 이렇다. **파싱이 실패하면 `bless` 도 실패한다** — 대상 import 줄을 찾을 수 없기 때문이다. 파싱이 성공하면 진단이 몇 개든 `bless` 는 진행한다.
 
 **`--help` 는 에이전트의 첫 접점이다.** 인자를 틀린 에이전트가 다음에 하는 일이 `kang --help` 다. 여기서 명령·인자 형식·종료 코드를 전부 보여줘야 재시도가 성공한다. 사용법 오류 시에도 같은 텍스트를 출력한다.
 
 `ponytail:` 인자 파싱을 직접 쓴다. 플래그는 `bless --import` 하나뿐이라 `match` 로 충분하다. 플래그가 늘면 clap 으로 교체.
 
-- [ ] **Step 1: 실패하는 테스트 작성** — 시나리오 10개
+- [x] **Step 1: 실패하는 테스트 작성** — 시나리오 10개
   - `build_는_정상_프로젝트에서_종료코드_0_이다`
   - `build_는_에러가_있으면_종료코드_1_이다`
   - `에러가_있으면_list_가_아무것도_출력하지_않는다`
@@ -613,11 +719,14 @@ fn compile() -> Result<(Project, SymbolTable), Vec<Diagnostic>>;
   - `inspect_는_v2_안내와_함께_종료코드_3_이다`
   - `help_이_명령과_인자_형식과_종료코드를_전부_보여준다`
   - `git_저장소가_아니면_help_대신_git_init_지시만_출력한다`
-- [ ] **Step 2: `cargo test` — 실패 확인**
-- [ ] **Step 3: 서브커맨드 디스패치와 `compile()` 구현**
-- [ ] **Step 4: `build` / `list` / `keywords` / `refs` 출력 구현**
-- [ ] **Step 5: `cargo test` 통과 확인**
-- [ ] **Step 6: 커밋** — `feat: CLI 골격과 build/list/keywords/refs`
+- [x] **Step 2: `cargo test` — 실패 확인**
+- [x] **Step 3: 서브커맨드 디스패치와 `compile()` 구현**
+- [x] **Step 4: `build` / `list` / `keywords` / `refs` 출력 구현**
+- [x] **Step 5: `cargo test` 통과 확인**
+- [x] **Step 6: 커밋** — `feat: CLI 골격과 build/list/keywords/refs`
+  - 4270cf8~05ea6e9 (4커밋) / 테스트 230
+
+**수행 내역** — 4270cf8~05ea6e9 (4커밋) / 테스트 230. **바이너리가 처음 동작.** EPIPE·비UTF-8 인자 패닉과 `refs` DP 불일치를 리뷰가 실행으로 잡음 → `check::이름_분할` 추출
 
 ---
 
@@ -681,7 +790,7 @@ pub fn show(
 
 `ponytail:` YAML 이미터를 직접 쓴다. 이미터 API 는 선언형 `seq`/`map` 만 노출하고 수동 들여쓰기 커서를 주지 않는다 — 짝 맞추기 실수가 구조적으로 불가능해야 한다. 한계는 인용 규칙이고, 한글 description 에 `: ` 가 들어가는 경우가 위험 지점이며 `scalar()` 테스트가 그걸 막는다. 스키마가 늘어나면 serde 기반 크레이트로 교체.
 
-- [ ] **Step 1: 실패하는 테스트 작성** — 시나리오 7개
+- [x] **Step 1: 실패하는 테스트 작성** — 시나리오 7개
   - `콜론이_포함된_설명은_인용된다`
   - `따옴표가_이스케이프된다`
   - `멀티라인_본문이_literal_scalar_로_나온다`
@@ -689,12 +798,15 @@ pub fn show(
   - `show_가_예외와_커버_본문을_임베드한다`
   - `show_가_참조_topic_을_재귀적으로_임베드한다`
   - `다이아몬드_의존에서_같은_topic_이_한_번만_전개된다`
-- [ ] **Step 2: `cargo test` — 실패 확인**
-- [ ] **Step 3: `yaml.rs` 이미터와 `scalar()` 구현**
-- [ ] **Step 4: `show.rs` 구현 (재귀 임베드 + 방문 집합)**
-- [ ] **Step 5: `main.rs` 에 `show` 서브커맨드 연결**
-- [ ] **Step 6: `cargo test` 통과 확인**
-- [ ] **Step 7: 커밋** — `feat: YAML 이미터와 kang show`
+- [x] **Step 2: `cargo test` — 실패 확인**
+- [x] **Step 3: `yaml.rs` 이미터와 `scalar()` 구현**
+- [x] **Step 4: `show.rs` 구현 (재귀 임베드 + 방문 집합)**
+- [x] **Step 5: `main.rs` 에 `show` 서브커맨드 연결**
+- [x] **Step 6: `cargo test` 통과 확인**
+- [x] **Step 7: 커밋** — `feat: YAML 이미터와 kang show`
+  - cf4c171·103b852 / 테스트 255
+
+**수행 내역** — cf4c171·103b852 / 테스트 255. **리뷰가 유효하지 않은 YAML 을 내는 입력 3종을 두 파서로 재현**(제어문자·U+2028·`=`). 251 passed 상태에서 나왔다
 
 ---
 
@@ -739,7 +851,7 @@ pub fn bless(
 - 그 문서에 해당 import 가 없으면 에러로 거부한다.
 - 일괄 해제 수단을 만들지 않는다. 심볼 이름만 주고 전체 참조처를 갱신하는 경로가 있으면 안 된다.
 
-- [ ] **Step 1: 실패하는 테스트 작성** — 시나리오 7개
+- [x] **Step 1: 실패하는 테스트 작성** — 시나리오 7개
   - `rev_핀을_현재_해시로_갱신한다`
   - `핀이_없으면_삽입한다`
   - `문서를_고쳐_줄이_밀려도_올바른_import_를_찾는다`
@@ -749,11 +861,14 @@ pub fn bless(
   - `백틱_없는_심볼_주소를_파싱한다`
   - `진단이_있는_상태에서도_bless_가_실행된다`
   - `파싱이_실패하면_bless_도_실패한다`
-- [ ] **Step 2: `cargo test` — 실패 확인**
-- [ ] **Step 3: `ImportAddress::parse` 와 `bless` 구현**
-- [ ] **Step 4: `main.rs` 에 `bless` 서브커맨드 연결**
-- [ ] **Step 5: `cargo test` 통과 확인**
-- [ ] **Step 6: 커밋** — `feat: kang bless`
+- [x] **Step 2: `cargo test` — 실패 확인**
+- [x] **Step 3: `ImportAddress::parse` 와 `bless` 구현**
+- [x] **Step 4: `main.rs` 에 `bless` 서브커맨드 연결**
+- [x] **Step 5: `cargo test` 통과 확인**
+- [x] **Step 6: 커밋** — `feat: kang bless`
+  - 48a2c47·1e23eeb / 테스트 275
+
+**수행 내역** — 48a2c47·1e23eeb / 테스트 275. **rev 핀 벽이 열림.** TOCTOU 가드가 좌표를 안 봐 산문에 핀이 박히던 것을 재파싱으로 닫음. pid 수정 제안은 리뷰가 빌드해 측정하고 반박(조용한 유실 0/12→12/12)
 
 ---
 
@@ -768,21 +883,43 @@ pub fn bless(
 **구현 요점**
 스펙 V0001 의 예제(`docs/A`, `docs/B`, `docs/C` — 결제·카드결제·무료결제)를 fixture 로 만들고, 전 명령을 실제로 돌린다.
 
-- [ ] **Step 1: fixture 프로젝트 작성** — 결제·카드결제·무료결제 3개 문서. git 저장소여야 루트 탐색이 동작하므로 fixture 도 저장소로 만든다
-- [ ] **Step 2: 통합 테스트 작성** — 시나리오 9개
-  - `fixture_프로젝트가_build_를_통과한다`
-  - `상위_문서_수정_후_모든_참조처가_깨진다`
-  - `build_출력을_bless_에_그대로_넘기면_전부_해제된다`
-  - `참조처를_먼저_고친_뒤_bless_해도_올바른_핀이_갱신된다`
-  - `exception_선언_topic_을_바꾸면_커버_문서가_깨진다`
-  - `순환_import_를_만들면_체인이_출력된다`
-  - `show_출력이_유효한_YAML_이다`
-  - `error_상태에서는_어떤_조회도_출력되지_않는다`
-  - `git_init_후_kang_init_과_build_세_명령으로_통과한다`
-  - `진단_3종의_구조가_스펙_5_1_1_과_일치한다`
-- [ ] **Step 3: `cargo test` 통과 확인**
-- [ ] **Step 4: `cargo clippy -- -D warnings` 통과 확인**
-- [ ] **Step 5: 커밋** — `test: 통합 검증과 fixture 프로젝트`
+- [x] **Step 1: fixture 프로젝트 작성** — 결제·카드결제·무료결제 3개 문서. git 저장소여야 루트 탐색이 동작하므로 fixture 도 저장소로 만든다
+  - `tests/cli.rs` 의 `예제_프로젝트` / `예제_프로젝트_통과`. 핀 없이 쓰고 `kang bless` 가 넣게 한다 (스펙 4.8 3단계). 임시 디렉토리에 만든다 — `tests/` 안에 두면 이 저장소 워크트리에 중첩 저장소가 생긴다
+- [x] **Step 2: 통합 테스트 작성** — 시나리오 9개 중 8개 (하나는 Task 14 로 이월)
+  - [x] `fixture_프로젝트가_build_를_통과한다`
+  - [x] `상위_문서_수정_후_모든_참조처가_깨진다`
+  - [x] `build_출력을_bless_에_그대로_넘기면_전부_해제된다` — C1 의 회귀 테스트
+  - [x] `참조처를_먼저_고친_뒤_bless_해도_올바른_핀이_갱신된다`
+  - [x] `exception_선언_topic_을_바꾸면_커버_문서가_깨진다`
+  - [x] `순환_import_를_만들면_체인이_출력된다`
+  - [x] `show_출력이_유효한_yaml_이다` — python3+pyyaml 게이트, 없으면 건너뜀
+  - [x] `error_상태에서는_어떤_조회도_출력되지_않는다`
+  - [ ] `git_init_후_kang_init_과_build_세_명령으로_통과한다` — **Task 14 로 이월.** `kang init` 이 아직 종료 코드 3 이라 지금 만들 수 없다
+  - [x] `진단_3종의_구조가_스펙_5_1_1_과_일치한다`
+**컨트롤러 이월 (Task 8 리뷰에서 나옴 — 저장소 전역 일괄 처리)**
+
+- **`[shell]` fix 의 `action` 이 한글 산문 접두사로 시작해 렌더된 줄을 그대로 실행할 수 없다.** `report()` 가 `[shell] {action}` 으로 찍는데 action 이 `이 import 에 rev 핀을 붙이세요: kang bless 'docs/b' --import 'docs/a#결제의 방법'` 이라, 통째로 복사하면 `command not found: 이` 다.
+
+  스펙 5.1.1(V0001:261 "그대로 적용 가능한 fix", :306 예시 `[shell] kang bless ...`)과 6.1(:417 "인용까지 포함되어 출력되므로 복사해 실행하면 된다")이 요구하는 것은 **명령만 있는 줄**이다.
+
+  **한 태스크의 문제가 아니다** — `K001`·`K020`·`K021`·`K050` 등 저장소의 모든 Shell fix 가 같은 모양이다. 산문은 `message` 나 `note` 로 옮기고 `action` 에는 명령만 남긴다. **일괄로 고치고 렌더 결과를 셸에 그대로 넣어 보는 테스트를 붙여라.**
+
+- **fix 규약이 형제 사이에서 갈린다.** `K030`·`K031`·`K034` 의 fix 는 핀 없는 import 줄만 만들어 적용하면 `K020` 이 새로 뜬다(스펙 4.8 의 3단계 레시피 1단계라 결함은 아니다). 그런데 **`K001` 은 bless 를 짝지어 낸다** — 같은 상황에서 한쪽은 1왕복, 한쪽은 2왕복이다. 에이전트가 소비자이므로 왕복 수가 곧 비용이다. 실제 흐름을 돌려 보고 통일 여부를 정하라.
+
+- **같은 topic 이 같은 예외를 두 번 cover 하는 것이 error 인가.** 스펙 5.2(V0001:335)는 "둘 이상의 **topic** 이" 인데 `K033` 은 cover **선언 개수**로 센다. 구현이 문면보다 넓다. 스펙 문면을 고칠지 판정을 topic 단위로 접을지 정하라.
+
+- **참조 병합 천장의 실제 빈도를 측정하라.** Task 6 절의 "알려진 한계" 참조 — 두 이름을 따로 언급한 본문이 병합되면 뒤 조각의 import 가 `K003` 으로 오인된다. 도그푸딩 코퍼스에서 얼마나 자주 발생하는지 재고 승급 여부를 정하라.
+
+- [x] **Step 3: `cargo test` 통과 확인** — 293 passed (275 → 290 → 293)
+- [x] **Step 4: `cargo clippy -- -D warnings` 통과 확인** — `--all-targets` 로 clean, `cargo fmt --check` 도 clean
+- [x] **Step 5: 커밋** — 판정 J1~J4 와 이월 검증 결과는 `.superpowers/sdd/V0002-kang-v1-implementation/task-12-report.md`
+  - C1(렌더된 `[shell]` fix 를 그대로 실행할 수 없음) — 저장소의 **아홉 자리를 전부** 고쳤다. `check.rs` 3자리(`K020`·`K021`·`K001`) + `resolve.rs` 6자리(`K050`·`K051`×5). `K050` 의 `action` 은 `git init`, 대안은 `note` 로
+  - **`utf8_아님` 의 둘째 fix 는 삭제했다** — `-f` 인자가 첫 fix 실행 뒤에야 정해지므로 명령으로 낼 수 없다. 변환 레시피는 `message` 로. **명령이 아닌 것을 `Shell` 로 낸 것이 C1 의 근본 원인이다**
+  - M8(주소 파싱 통합) 은 `참조들` 이 `ImportAddress::parse` 를 쓰게 하고 `조회` 를 같은 분할 순서로 맞췄다. `main.rs` 606 → 597 줄. **통합하니 셋 중 `show` 하나가 정본에서 벗어나 있던 것이 드러났다**
+  - J1 의 결론대로 `K034` 에 `bless` 를 짝지어 **1왕복**으로 닫았다. `K030`·`K031` 은 핀을 붙일 문서를 몰라 2왕복이 정본이다
+  - **스펙 6.0 주소 제약을 재작성했다** (3라운드 리뷰). "마지막 조각 안의 구분자는 하나" 는 **틀렸다** — 스펙 `:68`·`:91` 의 계층 keyword 와 이 태스크 자신의 픽스처(`docs/B.결제수단.카드`)를 불법으로 만들었다. 금지는 셋뿐이다: 문서 파일 이름의 `.`·`#`·`!`(`K113`), 심볼 이름의 `/`(빌드 영구 봉쇄 — 우선순위 최상), keyword 이름 한 조각의 `.`
+
+**수행 내역** — f3080b9~06a6921 (4커밋) / 테스트 293. **저장소 전역 fix 계약 성립** — 진단이 시킨 명령을 복사해 실행하면 실제로 낫는다. 주소 파싱 3벌→1벌 통합이 `show` 의 숨은 divergence 를 드러냄
 
 ---
 
@@ -803,11 +940,14 @@ kang 의 소비자는 다른 프로젝트의 LLM 에이전트다. 그 프로젝�
 - 아티팩트 이름에 타깃 트리플을 넣어 설치 스크립트가 `uname` 으로 고를 수 있게 한다.
 - `README.md` 에 curl 한 줄 설치 예시를 넣는다.
 
-- [ ] **Step 1: `release.yml` 작성** — 태그 트리거, 4 타깃 매트릭스 빌드, Releases 업로드
-- [ ] **Step 2: 로컬에서 `cargo build --release --target aarch64-apple-darwin` 성공 확인**
-- [ ] **Step 3: 테스트 태그를 푸시해 워크플로가 4개 아티팩트를 만드는지 확인**
-- [ ] **Step 4: `README.md` 설치 절 작성**
-- [ ] **Step 5: 커밋** — `ci: 크로스 플랫폼 릴리즈 워크플로`
+- [x] **Step 1: `release.yml` 작성** — 태그 트리거, 4 타깃 매트릭스 빌드, Releases 업로드
+- [x] **Step 2: 로컬에서 `cargo build --release --target aarch64-apple-darwin` 성공 확인**
+- [x] **Step 3: 테스트 태그를 푸시해 워크플로가 4개 아티팩트를 만드는지 확인**
+- [x] **Step 4: `README.md` 설치 절 작성**
+- [x] **Step 5: 커밋** — `ci: 크로스 플랫폼 릴리즈 워크플로`
+  - 172cc5e / 테스트 293
+
+**수행 내역** — 172cc5e / 테스트 293. release.yml 4타깃 + README + `KANG_REQUIRE_YAML`. curl↔아티팩트 이름 네 조합 일치 실측. **태그 푸시는 remote 없어 미검증**
 
 ---
 
@@ -858,7 +998,7 @@ kang 의 주 사용자는 다른 프로젝트에서 일하는 LLM 에이전트�
 
 **스킬 내용** — **스펙 6.1 의 다섯 케이스를 그대로 쓴다.** 여기 복제하지 않는다. 두 곳에 두면 갈라진다.
 
-- [ ] **Step 1: 실패하는 테스트 작성** — 시나리오 6개
+- [x] **Step 1: 실패하는 테스트 작성** — 시나리오 6개
   - `네_파일을_생성한다`
   - `기존_CLAUDE_md_를_덮어쓰지_않고_섹션만_덧붙인다`
   - `이미_kang_섹션이_있으면_건너뛴다`
@@ -867,24 +1007,43 @@ kang 의 주 사용자는 다른 프로젝트에서 일하는 LLM 에이전트�
   - `생성된_SKILL_md_가_비어있지_않다`
   - `git_저장소가_아니어도_init_이_성공하고_git_init_을_안내한다`
   - `다른_도구_섹션이_있는_CLAUDE_md_에_kang_섹션만_덧붙인다`
-- [ ] **Step 2: `cargo test` — 실패 확인**
-- [ ] **Step 3: `src/skill.md` 작성** — 위 다섯 케이스 전부
-- [ ] **Step 4: `init.rs` 구현 (섹션 덧붙임, 멱등성)**
-- [ ] **Step 5: `main.rs` 에 `init` 서브커맨드 연결**
-- [ ] **Step 6: `cargo test` 통과 확인**
-- [ ] **Step 7: 커밋** — `feat: kang init 과 에이전트 스킬`
+- [x] **Step 2: `cargo test` — 실패 확인**
+- [x] **Step 3: `src/skill.md` 작성** — 위 다섯 케이스 전부
+- [x] **Step 4: `init.rs` 구현 (섹션 덧붙임, 멱등성)**
+- [x] **Step 5: `main.rs` 에 `init` 서브커맨드 연결**
+- [x] **Step 6: `cargo test` 통과 확인**
+- [x] **Step 7: 커밋** — `feat: kang init 과 에이전트 스킬`
+  - 9a5410c / 테스트 302
+
+**수행 내역** — 9a5410c / 테스트 302. **TTHW 성립** — `git init`→`init`→`build` 세 명령 exit 0. `--help` 양방향 게이트를 런타임으로 올림
 
 ---
 
 ## 완료 조건
 
-- [ ] `cargo test` 전부 통과
-- [ ] `cargo clippy -- -D warnings` 통과
-- [ ] fixture 프로젝트에서 `kang build` 종료 코드 0
-- [ ] 스펙 V0001 의 3~6절 전 항목이 구현됨 (7절은 v2 `V0003` 로 분리, 8절은 비목표, 9절은 미결정 사항이라 구현 대상이 아님)
-- [ ] 태그 푸시 시 릴리즈 워크플로가 4개 타깃 바이너리를 산출
-- [ ] **빈 디렉토리에서 `git init` → `kang init` → `kang build` 가 세 명령으로 통과한다** — TTHW 측정 기준. `kang init` 은 git 을 요구하지 않지만 `build` 는 요구하므로(스펙 3절) `git init` 이 반드시 낀다
-- [ ] **`kang` 이 자기 저장소에서 동작한다** — 도그푸딩 착수 조건. `plans/`·`docs/adr/`·`CONTEXT.md` 이관은 별도 플랜
+- [x] `cargo test` 전부 통과
+  - 309 passed / 0 failed (check 121, cli 60+, parse 77+, yaml 14, hash 3)
+- [x] `cargo clippy -- -D warnings` 통과
+  - `--all-targets` 로 exit 0. `cargo fmt --check` 도 exit 0. `#[allow(...)]` 전역 0건
+- [x] fixture 프로젝트에서 `kang build` 종료 코드 0
+  - `tests/cli.rs:2146` `fixture_프로젝트가_build_를_통과한다`. 스펙 예제 3문서를 `tests/cli.rs` 안 인라인 픽스처로 두었다 (별도 `tests/fixtures/` 디렉토리를 만들지 않음 — 중첩 git 저장소를 피하려 각 테스트가 임시 디렉토리에 만든다)
+- [x] 스펙 V0001 의 3~6절 전 항목이 구현됨 (7절은 v2 `V0003` 로 분리, 8절은 비목표, 9절은 미결정 사항이라 구현 대상이 아님)
+  - **V0004 가 닫았다.** 미달이던 둘 — 심볼 이름의 `/` 금지는 `K115`(`parse.rs`, 선언·참조
+    양쪽), keyword 조각의 `.` 금지는 스펙에서 삭제(V0001 6.0). V0004 완료 조건 참조.
+  - **부분 달성.** 최종 리뷰가 절 단위로 대조한 결과 미구현은 **6.0 의 세 금지 중 둘**뿐이다 — 심볼 이름의 `/` 금지(`K105` 형제 판정, **셋 중 빌드를 봉쇄하는 쪽**)와 keyword 이름 한 조각의 `.` 금지. 문서 파일 이름의 `.`·`#`·`!` 는 `K113` 으로 구현됐다. 그 밖의 3~6절 항목은 전부 구현되었고, 코드에 있고 스펙에 없는 진단 번호 0건, 9절(미결정)이 슬쩍 구현된 자리 0건. **`/` 금지는 V0004 우선순위 2** — 코드 심볼 이름이 `crate::mod::fn` 을 담으므로 proc-macro 착수 전에 닫아야 한다
+- [x] 태그 푸시 시 릴리즈 워크플로가 4개 타깃 바이너리를 산출
+  - **완료 (V0004 이후, remote 를 붙이고 실증).** 버림 태그 `v0.0.1-rc1` 로 `release.yml`
+    을 돌려 4타깃 전부 초록, 아티팩트 이름이 README 의 curl 네 조합과 일치, 그 curl 을
+    그대로 실행해 바이너리를 받고 `--help` 가 도는 것까지 확인했다. 근거는 V0004 의 완료
+    조건에 적었다.
+  - **미검증 (사용자 승인된 결정 D3).** git remote 가 없고 `act` 도 없어 런타임을 확인할 수단이 없다. 검증한 것: `release.yml` 이 유효한 YAML 이고 트리거가 `{'push': {'tags': ['v*']}}`, `actionlint` exit 0(오염판으로 red-green 확인), 호스트·`x86_64-apple-darwin` 크로스 빌드 성공, **README 의 curl 이 만드는 이름 = 워크플로 아티팩트 이름 네 조합 일치**. Linux 두 타깃은 rustc 통과·링크만 실패(macOS 에 링커 없음) → CI 전용. README 의 `OWNER` 는 플레이스홀더라 remote 가 붙는 순간 한 단어를 고쳐야 404 를 피한다
+- [x] **빈 디렉토리에서 `git init` → `kang init` → `kang build` 가 세 명령으로 통과한다** — TTHW 측정 기준. `kang init` 은 git 을 요구하지 않지만 `build` 는 요구하므로(스펙 3절) `git init` 이 반드시 낀다
+  - 릴리즈 바이너리로 실측. `init` 이 네 파일을 만들고 exit 0, `build` 가 **exit 0 이며 stdout·stderr 가 완전히 빈다**. `init` 산출물만으로 `list`·`keywords`·`refs`·`show`·`--help` 8개 명령이 전부 통과하고, 문서를 하나 더해 `bless` 왕복까지 확인했다. git 없이 `init` 만 돌려도 exit 0 + `git init` 안내(T0 벽이 되지 않는다). 재실행은 바이트 동일이며 "건너뜁니다" 의 이유를 구분해 말한다
+- [x] **`kang` 이 자기 저장소에서 동작한다** — 도그푸딩 착수 조건. `plans/`·`docs/adr/`·`CONTEXT.md` 이관은 별도 플랜
+  - **V0004 가 닫았다.** `CONTEXT.kang`(keyword 16, topic 2) + ADR 셋. `kang build` exit 0.
+    이후 원본 `.md` 넷이 사본으로 남아 있던 것도 지웠다 — CI 가 이제 `kang build`·`list`·
+    `keywords`·`show` 를 실제 코퍼스에 돌린다.
+  - **미달.** 저장소에서 `kang build`·`kang list` 가 exit 0 이지만 `.kang` 문서가 **Task 14 개발 중 흘러든 `docs/example.kang` 템플릿 하나뿐**이라 의미 있는 도그푸딩이 아니다. 루트에 추적되지 않는 `kang init` 산출물 넷(`.claude/`, `AGENTS.md`, `CLAUDE.md`, `docs/example.kang`)이 있고 랜딩 diff 에는 들어가지 않는다. **V0004 우선순위 5** — 이 이관이 참조 병합 천장(`check::이름_분할`)의 승급 조건을 재측정할 유일한 수단이다(현재 "충돌 0건" 은 마크다운 코퍼스에서 잰 값)
 
 ---
 
@@ -1014,10 +1173,15 @@ Lane F: Task 9 → 12   (Lane C 의 Task 14 도 끝나야 시작 가능)
 
 ### 다음 작업
 
-- [ ] **T10 (P1)** — 갱신된 스펙에 맞춰 Task 1~13 의 시그니처와 테스트 시나리오를 재점검
+- [x] **T10 (P1)** — 갱신된 스펙에 맞춰 Task 1~13 의 시그니처와 테스트 시나리오를 재점검
+  - **다른 방식으로 닫혔다.** 태스크를 스펙에 맞추는 대신 **스펙을 구현에 맞춰 개정**했다
+    (`1c4a9a5`, V0001 5.1.1·6절). 구현이 이미 실측으로 검증된 상태였으므로 그쪽이 진실에
+    가깝다. 이후 `K116`·`K117`·`K118` 도 스펙에 함께 기록했다.
   - 특히 Task 3(`iknow` 파싱), Task 8(exception rev), Task 11(`bless` 심볼 주소), Task 9(CLI 인자)
   - 검증: 스펙 4·5·6 절의 모든 규칙이 어느 태스크에 대응하는지 대조
-- [ ] **T11 (P2)** — 도그푸딩 계획. `plans/`·`docs/adr/`·`CONTEXT.md` 를 `.kang` 으로 옮기는 순서와 성공 기준
+- [x] **T11 (P2)** — 도그푸딩 계획. `plans/`·`docs/adr/`·`CONTEXT.md` 를 `.kang` 으로 옮기는 순서와 성공 기준
+  - **V0004 가 그 계획이다.** `CONTEXT` → ADR 순으로 옮겼고(용어집이 뿌리, ADR 이 소비자인
+    한 방향), `plans/` 는 `- [ ]` 가 topic 밖 내용이라 `K112` 로 옮기지 않기로 결정했다.
   - 여기서 T8(백틱 비용)과 T7(깊이 임계)의 실측값이 나온다
 
 ## DX 리뷰 결과 (2026-08-05)

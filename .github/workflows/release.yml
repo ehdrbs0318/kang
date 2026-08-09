@@ -1,0 +1,92 @@
+name: release
+
+# v* 태그 푸시에서만 돈다. 브랜치 푸시에서는 돌지 않는다.
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    # 이 잡은 서드파티 build script 와 proc-macro 를 실행한다 (`cargo test`·`cargo build`).
+    # 토큰을 줄 이유가 없고, 아무것도 주지 않으면 그 코드가 저장소에 쓸 수 있는 것이 없다.
+    # 릴리즈를 만드는 잡만 `contents: write` 를 갖는다.
+    permissions: {}
+    strategy:
+      matrix:
+        include:
+          - { target: aarch64-apple-darwin, os: macos-14 }
+          - { target: x86_64-apple-darwin, os: macos-14 }
+          - { target: x86_64-unknown-linux-gnu, os: ubuntu-24.04 }
+          # ponytail: arm 러너로 네이티브 빌드한다. 이 러너를 쓸 수 없는 플랜이면
+          # ubuntu-24.04 에 gcc-aarch64-linux-gnu 를 깔고 크로스 링크로 바꾼다.
+          - { target: aarch64-unknown-linux-gnu, os: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # tests/cli.rs 의 show YAML 게이트는 파서가 없으면 건너뛴다. CI 에서는 파서를
+      # 깔고 KANG_REQUIRE_YAML 로 "건너뛰기" 자체를 실패로 만든다.
+      #
+      # 버전을 고정한다 — 이 잡은 공개 바이너리를 빌드해 업로드하므로, 고정하지 않으면
+      # 태그를 미는 시점의 PyPI 최신판이 그 빌드에 들어온다. 같은 태그를 다시 밀면 다른
+      # 것이 들어올 수도 있다.
+      - run: python3 -m pip install --break-system-packages --quiet 'pyyaml==6.0.2'
+
+      # 커밋된 인덱스가 문서와 어긋난 채로 릴리즈가 나가면, 배포된 바이너리는 낡은 문서에
+      # 대해 검증된 것이다. CI 와 같은 게이트를 여기도 둔다.
+      - run: make index-check
+
+      # KANG_REQUIRE_INDEX 는 ci.yml 과 같은 이유로 여기도 온다 (V0004 B3). 인덱스가
+      # 없으면 매크로가 경고만 내고 통과하는데, 그렇게 만들어진 바이너리는 문서-코드
+      # 결속이 검증되지 않은 채 릴리즈로 나간다. 없으면 컴파일 에러로 올린다.
+      - run: cargo test
+        env:
+          KANG_REQUIRE_YAML: '1'
+          KANG_REQUIRE_INDEX: '1'
+
+      - run: rustup target add ${{ matrix.target }}
+      - run: cargo build --release --target ${{ matrix.target }} -p kang
+        env:
+          KANG_REQUIRE_INDEX: '1'
+
+      # 만든 바이너리로 이 저장소의 문서를 실제로 컴파일한다. 네 타깃 중 러너에서 돌 수
+      # 있는 것만 잰다 — 크로스 빌드한 바이너리는 여기서 실행되지 않는다. 그래도 이 한
+      # 줄이 "빌드는 됐지만 돌지 않는 바이너리" 를 릴리즈로 내보내는 것을 막는다.
+      - if: matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'aarch64-unknown-linux-gnu'
+        run: ./target/${{ matrix.target }}/release/kang build
+
+      # 설치 스크립트가 uname 으로 고를 수 있도록 이름에 타깃 트리플을 넣는다.
+      # README 의 curl 한 줄이 만드는 이름이 바로 이것이다.
+      - run: mv target/${{ matrix.target }}/release/kang kang-${{ matrix.target }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kang-${{ matrix.target }}
+          path: kang-${{ matrix.target }}
+
+  # 네 빌드가 모두 끝난 뒤에만 릴리즈를 만든다. 하나라도 실패하면 태그에 반쪽
+  # 릴리즈가 남지 않는다.
+  release:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      # 멱등하게 만든다. 네 빌드 중 하나가 인프라 문제로 죽어 워크플로를 다시 돌리는 것은
+      # 정상 복구 경로인데, `create` 만 두면 두 번째 실행이 "release already exists" 로
+      # 죽어 아티팩트가 영영 붙지 않는다. 있으면 덮어 올린다.
+      - run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/kang-* --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" --generate-notes dist/kang-*
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}

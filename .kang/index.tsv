@@ -1,0 +1,26 @@
+keyword	44bd6a	CONTEXT.문서
+keyword	1c69c0	CONTEXT.keyword
+keyword	29c42f	CONTEXT.계층 keyword
+keyword	76e164	CONTEXT.topic
+keyword	1c36b8	CONTEXT.exception
+keyword	b1dbca	CONTEXT.cover
+keyword	6c37e8	CONTEXT.심볼
+keyword	302ee0	CONTEXT.owner
+keyword	c1e37f	CONTEXT.정본 이름
+keyword	648752	CONTEXT.alias
+keyword	3d8392	CONTEXT.iknow
+keyword	29c60b	CONTEXT.rev 핀
+keyword	a1dd59	CONTEXT.bless
+keyword	379bad	CONTEXT.pending
+keyword	ad2adc	CONTEXT.uncoded
+keyword	20162e	CONTEXT.묘비
+topic	10b2ae	CONTEXT#무엇을 keyword 로 선언하나
+topic	54b81d	CONTEXT#Negative Boundaries
+topic	aff253	docs/adr/0001-no-tombstones-for-retired-terms#폐기된 용어에 묘비를 남기지 않는다
+topic	622fe2	docs/adr/0002-flatten-on-read-import-on-write#읽을 때는 평탄화, 쓸 때는 import
+topic	229423	docs/adr/0003-symbolic-addressing-not-line-numbers#지속되는 주소는 심볼로 지정한다
+keyword	bf0c9d	examples/ts-consumer/docs/proration.일할 계산
+topic	970bc8	examples/ts-consumer/docs/proration#부분 환불의 계산
+keyword	97af92	examples/ts-consumer/docs/refunds.환불
+keyword	6ff81b	examples/ts-consumer/docs/refunds.정산
+topic	cdd44d	examples/ts-consumer/docs/refunds#환불 가능 기간
