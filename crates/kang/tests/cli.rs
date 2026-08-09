@@ -800,6 +800,7 @@ fn help_이_명령과_인자_형식과_종료코드를_전부_보여준다() {
         "kang show",
         "kang index",
         "kang types",
+        "kang --version",
         "kang inspect",
     ] {
         assert!(stdout.contains(명령), "{명령} 이 없다: {stdout}");
@@ -849,6 +850,47 @@ fn help_이_명령과_인자_형식과_종료코드를_전부_보여준다() {
         let (_, stderr, 코드) = 실행(&root, &[명령]);
         assert_eq!(코드, 3, "kang {명령} 이 3 이 아니다: {stderr}");
     }
+    정리(&root);
+}
+
+/// `--version` 은 저장소 밖에서도 답해야 한다.
+///
+/// 릴리즈 바이너리를 curl 로 받은 소비자가 가장 먼저 치는 것이 이것이고, 그 순간 그는
+/// kang 프로젝트 안에 있지 않다. 다른 명령처럼 git 루트를 찾으려 들면 종료 코드 2 로
+/// 죽는다 — 계약 버전을 묻는 유일한 통로가 계약을 쓰는 곳에서만 열리는 셈이다.
+#[test]
+fn version_이_저장소_밖에서도_버전을_낸다() {
+    // 일부러 `git_저장소로` 를 부르지 않는다. git 저장소가 아닌 것이 이 테스트의 조건이다.
+    let root = 임시_루트("version");
+
+    let (stdout, stderr, 코드) = 실행(&root, &["--version"]);
+
+    assert_eq!(코드, 0, "저장소 밖에서도 0 이어야 한다: {stderr}");
+    assert_eq!(stderr, "", "버전은 오류가 아니다");
+    // 소비자는 이 줄을 파싱한다. 형식은 `kang <버전>` 한 줄이다.
+    assert_eq!(stdout, format!("kang {}\n", env!("CARGO_PKG_VERSION")));
+    // 빈 버전이나 `kang 0.0.0` 이 새어 나가지 않게 모양을 본다.
+    let 버전 = env!("CARGO_PKG_VERSION");
+    assert_eq!(
+        버전.split('.').count(),
+        3,
+        "semver 세 칸이어야 한다: {버전}"
+    );
+    assert!(
+        버전.split('.').all(|칸| !칸.is_empty()),
+        "빈 칸이 있다: {버전}"
+    );
+
+    // `--help` 와 같은 자리 규칙이다. 단독 인자가 아니면 사용법 오류이고, 그래야
+    // `kang index --version` 이 `--version` 이라는 이름의 파일을 만들지 않는다.
+    let (붙은_stdout, _, 붙은_코드) = 실행(&root, &["index", "--version"]);
+    assert_eq!(붙은_코드, 2, "제자리가 아닌 --version 은 사용법 오류다");
+    assert_eq!(붙은_stdout, "", "사용법은 stderr 로 나간다");
+    assert!(
+        !root.join("--version").exists(),
+        "플래그 이름의 파일이 생겼다"
+    );
+
     정리(&root);
 }
 

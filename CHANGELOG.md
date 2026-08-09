@@ -4,6 +4,19 @@
 여기 적힌 번호는 그것을 따른다. 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/),
 버전은 [Semantic Versioning](https://semver.org/lang/ko/) 을 따른다.
 
+## [0.1.1] - 2026-08-09
+
+### Added
+
+- `kang --version` — 버전을 낸다. 릴리즈 바이너리를 curl 로 받은 소비자에게는 이것이
+  자기가 쥔 계약이 무엇인지 아는 유일한 통로다. 저장소 바깥에서도 답한다 — 갓 받은
+  바이너리를 치는 곳은 kang 프로젝트 안이 아니기 때문이다.
+
+  0.1.0 이 이것 없이 나갔다. 아래 「소비자 계약」은 0.x 동안 계약이 바뀔 수 있다고
+  적었는데, 정작 어느 계약인지 물을 방법이 그 릴리즈에 없었다.
+
+  출력 형식 `kang <버전>` 한 줄은 아래 계약 표면에 더해진다 — 소비자가 파싱한다.
+
 ## [0.1.0] - 2026-08-09
 
 첫 릴리즈. 문서 컴파일러 kang 의 v1 전부다.
@@ -75,4 +88,5 @@
 `kang inspect` 는 v2 기능이라 아직 없다. 부르면 exit 3 과 함께 그렇다고 말한다 —
 없는 것을 있는 척하지 않는다.
 
+[0.1.1]: https://github.com/ehdrbs0318/kang/releases/tag/v0.1.1
 [0.1.0]: https://github.com/ehdrbs0318/kang/releases/tag/v0.1.0

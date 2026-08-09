@@ -23,6 +23,7 @@ kang refs     <키워드>                  키워드를 참조하는 topic
 kang show     <문서|토픽>               문서/토픽 조회 (YAML)
 kang index    <경로>                    심볼 인덱스 산출 (탭 구분)
 kang types    <경로>                    TypeScript 타입 산출 (topic)
+kang --version                          버전 (쥔 계약이 무엇인지)
 ```
 
 인자에 백틱을 쓰지 않는다. 경로는 `/`, 키워드는 `.`, topic 은 `#`, exception 은 `!` 로
