@@ -4,7 +4,7 @@
 여기 적힌 번호는 그것을 따른다. 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/),
 버전은 [Semantic Versioning](https://semver.org/lang/ko/) 을 따른다.
 
-## [0.1.0] - 2026-08-07
+## [0.1.0] - 2026-08-09
 
 첫 릴리즈. 문서 컴파일러 kang 의 v1 전부다.
 
