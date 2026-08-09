@@ -41,6 +41,7 @@ kang — 문서 컴파일러
   kang index <경로>                    심볼 인덱스 산출 (탭 구분)
   kang types <경로>                    TypeScript 타입 산출 (topic)
   kang --help                          이 도움말
+  kang --version                       버전
 
 아직 구현되지 않은 명령 (부르면 종료 코드 3 이며, 다른 방법이 없습니다):
   kang inspect                         코드 대조 (v2)
