@@ -96,13 +96,20 @@ export function lookupRef(scope: ScopeEntry[], ref: string): ScopeEntry | undefi
 **Interfaces:**
 - Produces: `pub fn doc_hash(text: &str) -> String` (hash.rs, 64 hex), `pub fn write_graph(project: &Project, table: &SymbolTable, sources: &HashMap<DocPath, String>, out: &mut impl Write) -> io::Result<()>`, `pub fn is_graph_format(content: &str) -> bool` (graph.rs), `pub fn kind(&self, id: SymbolId) -> SymbolKind`, `pub fn name(&self, id: SymbolId) -> &str` (resolve.rs `SymbolTable`, `scope` 의 주소를 만드는 데 쓴다)
 
-- [ ] **Step 1: 실패하는 테스트를 쓴다.** `tests/graph.rs` 에 세 테스트를 둔다. `writes_sorted_docs_keywords_edges` 는 문서 두 개(B 가 A 의 keyword 를 import)의 출력 전체를 기대 문자열과 비교한다. `escapes_quotes_backslash_and_control` 은 description 의 `"`, `\`, 탭이 `\"`, `\\`, `\u0009` 로 나오는지 본다. `doc_hash_matches_normalize_sha256` 은 `"a  \r\n\n\n b\n"` 의 결과가 `normalize` 뒤 SHA-256 hex 와 같고 길이가 64 인지 본다.
-- [ ] **Step 2:** `cargo test -p kang --test graph` 가 컴파일 실패로 끝나는지 확인한다.
-- [ ] **Step 3:** `doc_hash`, `write_graph`, `is_graph_format` 을 구현한다. `sources` 는 문서 경로에서 파일 원문으로 가는 맵이다.
-- [ ] **Step 4:** `cli.rs` 에 `build_writes_graph_index` (성공하면 `.kang/graph.kang.json` 이 생기고 첫 줄이 `{"kang":"graph/1",`), `build_does_not_write_graph_on_error`, `build_refuses_to_overwrite_foreign_graph_file` 를 더한다.
-- [ ] **Step 5:** `build` 분기를 구현한다. `compile()` 이 `(PathBuf, Project, SymbolTable)` 을 돌려주게 바꾸고, 다른 호출처는 루트를 버린다. 원문은 `root.join(path + ".kang")` 에서 다시 읽는다. 쓰기는 `bless::write_atomically` 와 덮어쓰기 방어를 쓰는 `generate` 의 쓰기 부분을 함수로 나눠 함께 쓴다.
-- [ ] **Step 6:** `cargo test -p kang` 와 `cargo clippy -p kang -- -D warnings` 가 통과하는지 확인한다.
-- [ ] **Step 7:** 저장소에서 `cargo run -q -p kang -- build` 를 실행하고 `.kang/graph.kang.json` 을 커밋한다.
+- [x] **Step 1: 실패하는 테스트를 쓴다.** `tests/graph.rs` 에 세 테스트를 둔다. `writes_sorted_docs_keywords_edges` 는 문서 두 개(B 가 A 의 keyword 를 import)의 출력 전체를 기대 문자열과 비교한다. `escapes_quotes_backslash_and_control` 은 description 의 `"`, `\`, 탭이 `\"`, `\\`, `\u0009` 로 나오는지 본다. `doc_hash_matches_normalize_sha256` 은 `"a  \r\n\n\n b\n"` 의 결과가 `normalize` 뒤 SHA-256 hex 와 같고 길이가 64 인지 본다.
+  - 확인: `tests/graph.rs` 에 세 테스트가 있다 (커밋 352dc6f). BOM 테스트는 23f5f61 에서 더했다.
+- [x] **Step 2:** `cargo test -p kang --test graph` 가 컴파일 실패로 끝나는지 확인한다.
+  - 확인: 첫 실행은 `graph` 모듈과 `doc_hash` 가 없어서 컴파일 실패로 끝났다.
+- [x] **Step 3:** `doc_hash`, `write_graph`, `is_graph_format` 을 구현한다. `sources` 는 문서 경로에서 파일 원문으로 가는 맵이다.
+  - 확인: 구현했다 (352dc6f). 23f5f61 에서 `doc_hash` 가 맨 앞 BOM 을 떼고, 문서마다 `scope` 를 쓴다.
+- [x] **Step 4:** `cli.rs` 에 `build_writes_graph_index` (성공하면 `.kang/graph.kang.json` 이 생기고 첫 줄이 `{"kang":"graph/1",`), `build_does_not_write_graph_on_error`, `build_refuses_to_overwrite_foreign_graph_file` 를 더한다.
+  - 확인: 세 CLI 테스트가 통과한다. 하위 디렉토리에서 실행해도 루트의 `.kang/graph.kang.json` 에 쓴다.
+- [x] **Step 5:** `build` 분기를 구현한다. `compile()` 이 `(PathBuf, Project, SymbolTable)` 을 돌려주게 바꾸고, 다른 호출처는 루트를 버린다. 원문은 `root.join(path + ".kang")` 에서 다시 읽는다. 쓰기는 `bless::write_atomically` 와 덮어쓰기 방어를 쓰는 `generate` 의 쓰기 부분을 함수로 나눠 함께 쓴다.
+  - 확인: `run_build` 와 `generate` 가 같은 쓰기 함수를 쓴다.
+- [x] **Step 6:** `cargo test -p kang` 와 `cargo clippy -p kang -- -D warnings` 가 통과하는지 확인한다.
+  - 확인: 2026-11-09 `cargo test` 382개 통과, `cargo clippy --workspace --all-targets -- -D warnings` 통과, `make index-check` 통과 (final-fix-report).
+- [x] **Step 7:** 저장소에서 `cargo run -q -p kang -- build` 를 실행하고 `.kang/graph.kang.json` 을 커밋한다.
+  - 확인: `kang build` 를 다시 실행하면 커밋된 `.kang/graph.kang.json` 과 바이트가 같다 (/review 1회차가 확인).
 
 ### Task 2: 플러그인 골격과 worker
 
@@ -114,10 +121,14 @@ export function lookupRef(scope: ScopeEntry[], ref: string): ScopeEntry | undefi
 - Consumes: Task 1 의 그래프 인덱스 형식
 - Produces: `normalize(text: string): string`, `docHash(text: string): string`, `pickWorkspace(candidates: Candidate[], focused: { branch: string; displayName: string } | null): Candidate | 'ambiguous'`, `locate(text, workspaces, focused, fs): Locate` (locate.ts). `fs` 는 `{ read(path: string): string | null }` 이고 테스트에서 가짜로 바꾼다.
 
-- [ ] **Step 1:** 실패하는 테스트를 쓴다. `normalize` 는 줄 끝 공백 제거, 연속 빈 줄 합치기, 앞뒤 공백 제거를 하고, U+FEFF 는 공백으로 보지 않는다(Rust `char::is_whitespace` 와 같음). `hash-parity.test.ts` 는 Task 1 이 쓴 저장소의 `.kang/graph.kang.json` 에 있는 모든 문서의 hash 가 그 파일 원문의 `docHash` 와 같은지 본다. `locate` 테스트는 다섯 경우다. 하나만 맞음, 이름과 branch 로 고름, 같은 git 저장소의 worktree 둘 (정의를 주고 첫 번째를 고름), 다른 저장소 둘 (`ambiguous`), 원격만 남음 (`remoteOnly`). 그 밖에 `stale` 계산과 정의 제외를 하나씩 본다.
-- [ ] **Step 2:** `orca plugin test orca-plugin --json` 이 실패하는지 확인한다.
-- [ ] **Step 3:** `locate.ts` 와 `worker.ts` 를 구현한다. worker 는 `workspace.list`, `workspace.readContext`, `editor.open` 을 부르고, `node:fs`, `node:crypto`, `node:path` 를 쓴다. 같은 git 저장소인지는 `.git` 이 디렉토리이면 그 경로, 파일이면 `gitdir:` 값의 `/worktrees/<이름>` 앞부분으로 비교한다.
-- [ ] **Step 4:** `orca plugin test orca-plugin --json` 와 `npx tsc -p orca-plugin` 가 통과하는지 확인한다.
+- [x] **Step 1:** 실패하는 테스트를 쓴다. `normalize` 는 줄 끝 공백 제거, 연속 빈 줄 합치기, 앞뒤 공백 제거를 하고, U+FEFF 는 공백으로 보지 않는다(Rust `char::is_whitespace` 와 같음). `hash-parity.test.ts` 는 Task 1 이 쓴 저장소의 `.kang/graph.kang.json` 에 있는 모든 문서의 hash 가 그 파일 원문의 `docHash` 와 같은지 본다. `locate` 테스트는 다섯 경우다. 하나만 맞음, 이름과 branch 로 고름, 같은 git 저장소의 worktree 둘 (정의를 주고 첫 번째를 고름), 다른 저장소 둘 (`ambiguous`), 원격만 남음 (`remoteOnly`). 그 밖에 `stale` 계산과 정의 제외를 하나씩 본다.
+  - 확인: CRLF, BOM, 인덱스 없음, 깨진 JSON, 깨진 항목, 같은 문서 둘, 원격 focus 경우까지 테스트가 있다.
+- [x] **Step 2:** `orca plugin test orca-plugin --json` 이 실패하는지 확인한다.
+  - 확인: 구현 전 실행이 실패했다 (task-2-report).
+- [x] **Step 3:** `locate.ts` 와 `worker.ts` 를 구현한다. worker 는 `workspace.list`, `workspace.readContext`, `editor.open` 을 부르고, `node:fs`, `node:crypto`, `node:path` 를 쓴다. 같은 git 저장소인지는 `.git` 이 디렉토리이면 그 경로, 파일이면 `gitdir:` 값의 `/worktrees/<이름>` 앞부분으로 비교한다.
+  - 확인: 구현했다 (ef1894a). Orca 는 로컬 workspace 의 `hostId` 를 `"local"` 로 준다. 그래서 로컬 판단은 `null` 또는 `'local'` 이다 (1d82868).
+- [x] **Step 4:** `orca plugin test orca-plugin --json` 와 `npx tsc -p orca-plugin` 가 통과하는지 확인한다.
+  - 확인: `orca plugin test` 38개 통과, `tsc --noEmit` 오류 0 (9e0b443).
 
 ### Task 3: 렌더링 화면
 
@@ -128,10 +139,14 @@ export function lookupRef(scope: ScopeEntry[], ref: string): ScopeEntry | undefi
 **Interfaces:**
 - Consumes: `kang.locate`, `kang.open` (Task 2), `parseKang`, `renderBody`, `lookupRef`
 
-- [ ] **Step 1:** 실패하는 테스트를 쓴다. `parseKang` 이 저장소의 `docs/adr/0002-flatten-on-read-import-on-write.kang` 원문에서 description, import 3개(`CONTEXT.topic`, `CONTEXT.owner`, `CONTEXT.문서`), 본문 링크를 만드는지 본다. `CONTEXT.kang` 에서 keyword 블록과 줄 끝 `#`무엇을 keyword 로 선언하나`` 링크를 만드는지 본다. 코드 펜스 안의 백틱은 링크가 되지 않는다. `\`` 는 백틱 문자로 남는다. `// uncoded`, `// iknow …`, `exception`, `cover`, `pending` 의 원본 기호가 출력에 남지 않는다. `lookupRef` 는 참조 문자열을 `scope` 의 `local` 로 찾고, 맨 앞 `#` 나 `!` 하나는 떼고 찾는다. `scope` 에 없는 참조는 찾지 못한다.
-- [ ] **Step 2:** 테스트가 실패하는지 확인한다.
-- [ ] **Step 3:** `parse.ts` 와 `main.ts` 를 구현한다. `main.ts` 는 `orca.document.onDidChange` 로 원문을 받고, `kang.locate` 를 부르고, `marked` 로 렌더링한다. 마우스를 올리면 정의를 보여 주고, 클릭하면 `kang.open` 을 부른다. 상태가 `ok` 가 아니면 안내 문구를 보여 준다. 테마는 `--orca-*` 변수를 쓴다.
-- [ ] **Step 4:** `orca plugin test`, `orca plugin check`, `npx tsc -p orca-plugin` 가 통과하는지 확인한다.
+- [x] **Step 1:** 실패하는 테스트를 쓴다. `parseKang` 이 저장소의 `docs/adr/0002-flatten-on-read-import-on-write.kang` 원문에서 description, import 3개(`CONTEXT.topic`, `CONTEXT.owner`, `CONTEXT.문서`), 본문 링크를 만드는지 본다. `CONTEXT.kang` 에서 keyword 블록과 줄 끝 `#`무엇을 keyword 로 선언하나`` 링크를 만드는지 본다. 코드 펜스 안의 백틱은 링크가 되지 않는다. `\`` 는 백틱 문자로 남는다. `// uncoded`, `// iknow …`, `exception`, `cover`, `pending` 의 원본 기호가 출력에 남지 않는다. `lookupRef` 는 참조 문자열을 `scope` 의 `local` 로 찾고, 맨 앞 `#` 나 `!` 하나는 떼고 찾는다. `scope` 에 없는 참조는 찾지 못한다.
+  - 확인: 파서 테스트와 `lookupRef` 테스트가 통과한다. 들여 쓴 코드와 `~~~` 펜스 안에는 링크가 생기지 않는다.
+- [x] **Step 2:** 테스트가 실패하는지 확인한다.
+  - 확인: 구현 전 실행이 실패했다 (task-3-report).
+- [x] **Step 3:** `parse.ts` 와 `main.ts` 를 구현한다. `main.ts` 는 `orca.document.onDidChange` 로 원문을 받고, `kang.locate` 를 부르고, `marked` 로 렌더링한다. 마우스를 올리면 정의를 보여 주고, 클릭하면 `kang.open` 을 부른다. 상태가 `ok` 가 아니면 안내 문구를 보여 준다. 테마는 `--orca-*` 변수를 쓴다.
+  - 확인: 구현했다 (77bd423, 1d82868, 9e0b443). kang 문법은 marked 확장으로 처리한다.
+- [x] **Step 4:** `orca plugin test`, `orca plugin check`, `npx tsc -p orca-plugin` 가 통과하는지 확인한다.
+  - 확인: `orca plugin test`, `orca plugin check`, `orca plugin validate`, `tsc` 가 통과한다. check 경고는 vendor cytoscape 의 `editor_eval` 하나다.
 
 ### Task 4: 그래프 화면
 
@@ -143,18 +158,27 @@ export function lookupRef(scope: ScopeEntry[], ref: string): ScopeEntry | undefi
 - Consumes: `kang.locate`, `kang.open`
 - Produces: `toElements(docs: GraphDoc[], edges: GraphEdge[]): ElementDefinition[]` (model.ts). 점 크기는 들어오는 연결 수로 정한다.
 
-- [ ] **Step 1:** 실패하는 테스트를 쓴다. `toElements` 가 문서마다 점 하나, 연결마다 화살표 하나를 만들고, 점의 `weight` 가 들어오는 연결 수인지 본다.
-- [ ] **Step 2:** 테스트가 실패하는지 확인한다.
-- [ ] **Step 3:** `model.ts` 와 `main.ts` 를 구현한다. `cose` 레이아웃을 쓴다. 점을 클릭하면 `kang.open`, 화살표에 마우스를 올리면 심볼 목록, `stale` 이 비어 있지 않으면 "인덱스가 오래되었습니다" 안내를 보여 준다.
-- [ ] **Step 4:** `orca plugin test`, `orca plugin check`, `npx tsc -p orca-plugin` 가 통과하는지 확인한다.
+- [x] **Step 1:** 실패하는 테스트를 쓴다. `toElements` 가 문서마다 점 하나, 연결마다 화살표 하나를 만들고, 점의 `weight` 가 들어오는 연결 수인지 본다.
+  - 확인: `model.test.ts` 가 통과한다.
+- [x] **Step 2:** 테스트가 실패하는지 확인한다.
+  - 확인: 구현 전 실행이 실패했다 (task-4-report).
+- [x] **Step 3:** `model.ts` 와 `main.ts` 를 구현한다. `cose` 레이아웃을 쓴다. 점을 클릭하면 `kang.open`, 화살표에 마우스를 올리면 심볼 목록, `stale` 이 비어 있지 않으면 "인덱스가 오래되었습니다" 안내를 보여 준다.
+  - 확인: 구현했다 (21c1e75). 실제 Orca 에서 빈 화면이 나와서 cose 애니메이션을 껐다 (ab63a44).
+- [x] **Step 4:** `orca plugin test`, `orca plugin check`, `npx tsc -p orca-plugin` 가 통과하는지 확인한다.
+  - 확인: 네 검사가 통과한다.
 
 ### Task 5: Orca 에 설치하고 화면으로 확인한다
 
-- [ ] **Step 1:** `orca plugin install ./orca-plugin --json` 을 실행한다. `approval_required` 가 나오면 Orca 가 준 fingerprint 로 다시 실행한다.
-- [ ] **Step 2:** `orca file open docs/adr/0002-flatten-on-read-import-on-write.kang --focus` 를 실행하고 화면을 캡처한다. 칩 3개, 용어 링크, 마크다운 제목이 보여야 한다.
-- [ ] **Step 3:** 링크에 마우스를 올려 정의가 보이는지, 클릭해서 `CONTEXT.kang` 이 열리는지 화면으로 확인한다.
-- [ ] **Step 4:** `.kang/graph.kang.json` 을 열고 그래프 화면을 캡처한다. `CONTEXT` 로 화살표 3개가 들어와야 한다. 점을 클릭해 문서가 열리는지 확인한다.
-- [ ] **Step 5:** 문서 하나를 고친 뒤 `kang build` 전에 그래프 화면을 다시 열어 "인덱스가 오래되었습니다" 안내를 확인하고, 고친 내용을 되돌린다.
+- [x] **Step 1:** `orca plugin install ./orca-plugin --json` 을 실행한다. `approval_required` 가 나오면 Orca 가 준 fingerprint 로 다시 실행한다.
+  - 확인: `orca plugin install` 대신 `orca plugin dev load ./orca-plugin --approve <fingerprint>` 로 등록했다. 이 worktree 를 고치면 Orca 가 바로 다시 읽는다. 플러그인 key 는 `local.kang`, 상태는 running 이다. Orca 의 kang 저장소 설정에서 "Orca 밖에서 만든 worktree 보이기" 를 켰다.
+- [x] **Step 2:** `orca file open docs/adr/0002-flatten-on-read-import-on-write.kang --focus` 를 실행하고 화면을 캡처한다. 칩 3개, 용어 링크, 마크다운 제목이 보여야 한다.
+  - 확인: `orca plugin shot local.kang --editor …0002….kang` 캡처에서 description 인용 블록, 칩 3개(topic, owner, 문서), 점선 밑줄 링크, 마크다운 제목과 목록이 보인다. ADR-0003 은 칩 5개가 보인다.
+- [x] **Step 3:** 링크에 마우스를 올려 정의가 보이는지, 클릭해서 `CONTEXT.kang` 이 열리는지 화면으로 확인한다.
+  - 확인: `kang.locate` 가 `ok`, 정의 19개, 문서별 scope 를 돌려준다. `kang.open` 이 `CONTEXT.kang` 을 새 탭으로 열고, 창 전체 캡처에서 그 탭이 용어 카드로 렌더링된 것을 보았다. 실제 마우스 hover 와 클릭은 macOS 접근성 권한이 막혀 넣지 못했다.
+- [x] **Step 4:** `.kang/graph.kang.json` 을 열고 그래프 화면을 캡처한다. `CONTEXT` 로 화살표 3개가 들어와야 한다. 점을 클릭해 문서가 열리는지 확인한다.
+  - 확인: 그래프 캡처에서 점 6개, `CONTEXT` 로 들어가는 화살표 3개가 보이고 `CONTEXT` 점이 가장 크다. 점 클릭이 부르는 `kang.open` 은 Step 3 에서 확인했다.
+- [x] **Step 5:** 문서 하나를 고친 뒤 `kang build` 전에 그래프 화면을 다시 열어 "인덱스가 오래되었습니다" 안내를 확인하고, 고친 내용을 되돌린다.
+  - 확인: `examples/ts-consumer/docs/proration.kang` 에 한 줄을 더한 뒤 그래프 화면 위에 "인덱스가 오래되었습니다. `kang build` 를 실행하세요." 가 보였다. 같은 문서의 렌더링 화면은 링크를 빼고 "`kang build` 를 실행하세요." 를 보였다. 파일은 원래대로 되돌렸다.
 
 ## Review Focus
 
