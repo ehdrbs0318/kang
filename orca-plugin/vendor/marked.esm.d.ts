@@ -1,7 +1,63 @@
 // marked.esm.js 에서 이 플러그인이 쓰는 export 만 적은 타입이다.
 
-/** marked 의 동기 파서다. */
-export const marked: {
+/** lexer 가 만든 token 하나다. 확장 token 은 자기 필드를 더 가진다. */
+export type Token = { type: string; raw: string; text?: string; tokens?: Token[]; [key: string]: unknown }
+
+/** 확장 tokenizer 안의 `this` 다. */
+export type TokenizerThis = {
+	lexer: {
+		/**
+		 * 인라인 원문을 나중에 token 으로 바꾸도록 줄을 세운다.
+		 * @param src 인라인 원문
+		 * @param tokens 결과 token 을 넣을 배열
+		 * @returns 같은 배열
+		 */
+		inline(src: string, tokens: Token[]): Token[]
+	}
+}
+
+/** 확장 renderer 안의 `this` 다. */
+export type RendererThis = {
+	parser: {
+		/**
+		 * 인라인 token 들을 HTML 로 바꾼다.
+		 * @param tokens 인라인 token 배열
+		 * @returns HTML 문자열
+		 */
+		parseInline(tokens: Token[]): string
+	}
+}
+
+/** 문법 확장 하나다. */
+export type TokenizerExtension = {
+	name: string
+	level: 'block' | 'inline'
+	/** 원문에서 이 문법이 처음 나올 수 있는 위치다. 없으면 -1 또는 undefined 다. */
+	start?(src: string): number | undefined
+	tokenizer(this: TokenizerThis, src: string, tokens: Token[]): Token | undefined
+	renderer(this: RendererThis, token: Token): string
+}
+
+/** `use` 에 넘기는 설정이다. */
+export type MarkedExtension = {
+	extensions?: TokenizerExtension[]
+	/** 기본 renderer 의 메소드를 바꾼다. 여기서는 `html` 만 쓴다. */
+	renderer?: { html?(token: { text: string }): string }
+}
+
+/** 설정을 따로 갖는 marked 인스턴스다. */
+export class Marked {
+	/**
+	 * 인스턴스를 만든다.
+	 * @param extensions 처음부터 쓸 설정들
+	 */
+	constructor(...extensions: MarkedExtension[])
+	/**
+	 * 원문을 token 으로 나눈다.
+	 * @param src 마크다운 원문
+	 * @returns 최상위 token 배열
+	 */
+	lexer(src: string): Token[]
 	/**
 	 * 마크다운 블록을 HTML 로 바꾼다.
 	 * @param src 마크다운 원문
@@ -9,11 +65,4 @@ export const marked: {
 	 * @returns HTML 문자열
 	 */
 	parse(src: string, options: { async: false }): string
-	/**
-	 * 마크다운 한 줄을 문단 태그 없이 HTML 로 바꾼다.
-	 * @param src 마크다운 원문
-	 * @param options `async: false` 이면 문자열을 돌려준다
-	 * @returns HTML 문자열
-	 */
-	parseInline(src: string, options: { async: false }): string
 }

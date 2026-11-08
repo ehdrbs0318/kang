@@ -2,7 +2,7 @@
 // Orca 가 이 파일을 Node 프로세스로 실행하므로 실제 파일 시스템을 읽을 수 있다.
 import { readFileSync } from 'node:fs'
 import type { OrcaWorkerApi } from 'orca/worker'
-import { locate, readIndex, type FileReader } from './locate'
+import { isLocal, locate, readIndex, type FileReader } from './locate'
 
 /** 실제 파일 시스템이다. 파일이 없거나 디렉토리이면 null 을 돌려준다. */
 const realFs: FileReader = {
@@ -29,7 +29,7 @@ export default function activate(orca: OrcaWorkerApi): void {
 
 	orca.panels.handle('kang.open', async ({ workspaceId, path }) => {
 		const { workspaces } = await orca.host.call('workspace.list')
-		const workspace = workspaces.find((w) => w.id === workspaceId && w.hostId === null)
+		const workspace = workspaces.find((w) => w.id === workspaceId && isLocal(w))
 		const index = workspace ? readIndex(workspace.path, realFs) : null
 		// 인덱스에 있는 문서만 연다. 그래서 요청이 workspace 밖의 파일을 열 수 없다.
 		if (!index || !index.docs.some((d) => d.path === path)) return { opened: false }

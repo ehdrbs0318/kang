@@ -10,8 +10,8 @@
 - `src/locate.ts`: 문서 해시 계산과 workspace 찾기다. 해시 규칙은 `crates/kang/src/hash.rs` 와 같다.
 - `src/protocol.ts`: worker 와 custom editor 가 함께 쓰는 요청 타입이다.
 - `src/render/`: `.kang` 파일의 읽기 전용 렌더링 화면이다. Orca 가 `.kang` 파일을 이 custom editor 로 연다.
-  - `parse.ts`: kang 문법을 화면용 블록으로 나누고, 본문 참조를 kang 주소로 푼다.
-  - `main.ts`: `kang.locate` 답으로 참조에 링크를 달고, `marked` 로 마크다운을 그린다.
+  - `parse.ts`: kang 문법을 marked 확장으로 그리고, 본문 참조를 kang 주소로 푼다.
+  - `main.ts`: 본문을 그리고 `kang.locate` 답으로 참조에 링크를 단다.
   - `style.css`: Orca 테마의 `--orca-*` 변수로 색을 정한다.
 
 원격 workspace 는 지원하지 않는다. worker 는 로컬 파일만 읽는다.

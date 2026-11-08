@@ -1,6 +1,6 @@
 // locate.ts 의 정규화, 해시, workspace 찾기를 가짜 파일 시스템으로 검사한다.
 import { assert, test } from 'orca/testing'
-import { docHash, locate, normalize, pickWorkspace, type Workspace } from './locate'
+import { docHash, isLocal, locate, normalize, pickWorkspace, type Workspace } from './locate'
 
 /**
  * 경로와 내용의 표로 가짜 파일 시스템을 만든다.
@@ -136,6 +136,19 @@ test('git 저장소가 아닌 workspace 둘이 맞으면 ambiguous 다', () => {
 test('원격 workspace 만 있으면 remoteOnly 다', () => {
 	const remote = { ...ws('w1', '/r/a'), hostId: 'ssh-1' }
 	assert.deepEqual(locate(DOC_A, [remote], null, fakeFs({})), { status: 'remoteOnly' })
+})
+
+test('hostId 가 null 이나 local 이면 로컬이고, 그 밖은 원격이다', () => {
+	assert.equal(isLocal(ws('w1', '/r/a')), true)
+	assert.equal(isLocal({ ...ws('w1', '/r/a'), hostId: 'local' }), true)
+	assert.equal(isLocal({ ...ws('w1', '/r/a'), hostId: 'ssh-1' }), false)
+})
+
+test('hostId 가 local 인 workspace 의 문서를 찾는다', () => {
+	const fs = fakeFs({ '/r/a/.kang/graph.kang.json': graph({ A: DOC_A }), '/r/a/A.kang': DOC_A })
+	const found = locate(DOC_A, [{ ...ws('w1', '/r/a'), hostId: 'local' }], null, fs)
+	assert.equal(found.status, 'ok')
+	assert.equal(found.status === 'ok' && found.path, 'A')
 })
 
 test('로컬 workspace 가 맞지 않으면 원격 workspace 가 있어도 notIndexed 다', () => {

@@ -17,6 +17,15 @@ export type Workspace = {
 /** `workspace.readContext` 가 돌려주는 focus 된 workspace 정보 중 비교에 쓰는 부분이다. */
 export type Focused = { branch: string; displayName: string }
 
+/**
+ * workspace 가 이 Orca host 의 로컬 workspace 인지 본다. Orca 는 로컬 workspace 의 `hostId` 를 null 이나 'local' 로 준다.
+ * @param workspace `workspace.list` 의 한 항목
+ * @returns 로컬이면 true, 원격(ssh 등)이면 false
+ */
+export function isLocal(workspace: Workspace): boolean {
+	return workspace.hostId === null || workspace.hostId === 'local'
+}
+
 /** 파일 읽기 인터페이스다. 파일이 없거나 읽을 수 없으면 null 을 돌려준다. */
 export type FileReader = { read(path: string): string | null }
 
@@ -136,7 +145,7 @@ export function pickWorkspace(candidates: Candidate[], focused: Focused | null):
  *   하나를 고를 수 없으면 `ambiguous`
  */
 export function locate(text: string, workspaces: Workspace[], focused: Focused | null, fs: FileReader): Locate {
-	const local = workspaces.filter((w) => w.hostId === null)
+	const local = workspaces.filter(isLocal)
 	// 로컬 workspace 가 하나도 없고 원격만 있으면 지원하지 않는 경우다.
 	if (local.length === 0 && workspaces.length > 0) return { status: 'remoteOnly' }
 

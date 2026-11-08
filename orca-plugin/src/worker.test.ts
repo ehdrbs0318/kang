@@ -15,7 +15,7 @@ function host() {
 	return mockHost({
 		capabilities: ['workspace:read', 'workspace:write'],
 		results: {
-			'workspace.list': { workspaces: [{ id: 'w1', kind: 'worktree', name: 'kang', path: ROOT, branch: 'main', hostId: null }], truncated: false },
+			'workspace.list': { workspaces: [{ id: 'w1', kind: 'worktree', name: 'kang', path: ROOT, branch: 'main', hostId: 'local' }], truncated: false },
 			'workspace.readContext': null,
 			'editor.open': { opened: true },
 		},
