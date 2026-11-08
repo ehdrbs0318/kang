@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { assert, test } from 'orca/testing'
+import type { ScopeEntry } from '../protocol'
 import { lookupRef, parseKang, renderBody } from './parse'
 
 /** 이 파일에서 세 단계 위가 저장소 루트다. */
@@ -20,10 +21,20 @@ function source(path: string): string {
 /**
  * frontmatter 를 붙인 원문의 본문을 그린다.
  * @param body frontmatter 뒤에 올 본문
+ * @param scope 점으로 이은 참조를 나눌 때 쓰는 scope. 기본값은 빈 목록이다
  * @returns 본문 HTML
  */
-function render(body: string): string {
-	return renderBody(parseKang(`---\ndescription: d\n---\n\n${body}`).body)
+function render(body: string, scope: ScopeEntry[] = []): string {
+	return renderBody(parseKang(`---\ndescription: d\n---\n\n${body}`).body, scope)
+}
+
+/**
+ * local 이름들로 scope 를 만든다. address 와 doc 은 나누기에 쓰지 않으므로 아무 값이다.
+ * @param locals scope 의 local 이름들
+ * @returns scope 목록
+ */
+function scopeOf(...locals: string[]): ScopeEntry[] {
+	return locals.map((local) => ({ local, address: `A.${local}`, doc: 'A' }))
 }
 
 test('ADR-0002 에서 description, import 3개, 본문 링크를 만든다', () => {
@@ -34,7 +45,7 @@ test('ADR-0002 에서 description, import 3개, 본문 링크를 만든다', () 
 		{ target: 'CONTEXT.owner', local: 'owner' },
 		{ target: 'CONTEXT.문서', local: '문서' },
 	])
-	const html = renderBody(view.body)
+	const html = renderBody(view.body, [])
 	assert.ok(html.includes('<a class="kang-ref" data-ref="문서">문서</a>'))
 	assert.ok(html.includes('<a class="kang-ref" data-ref="owner">owner</a>'))
 	// frontmatter 와 import 줄은 본문에 남지 않는다.
@@ -45,7 +56,7 @@ test('ADR-0002 에서 description, import 3개, 본문 링크를 만든다', () 
 
 test('CONTEXT 에서 keyword 카드와 줄 끝 #topic 링크를 만든다', () => {
 	const view = parseKang(source('CONTEXT'))
-	const html = renderBody(view.body)
+	const html = renderBody(view.body, [])
 	assert.ok(
 		html.includes(
 			'<div class="kang-term"><strong>keyword</strong><span>그 프로젝트의 도메인에서만 쓰는 특수 용어. 반드시 한 줄 정의가 있고, 계층을 가질 수 있다</span> <a class="kang-ref" data-ref="무엇을 keyword 로 선언하나">무엇을 keyword 로 선언하나</a></div>',
@@ -58,7 +69,7 @@ test('CONTEXT 에서 keyword 카드와 줄 끝 #topic 링크를 만든다', () =
 test('코드 펜스 안의 백틱은 링크가 되지 않고, 코드 펜스 안의 import 와 keyword 는 모으지 않는다', () => {
 	const view = parseKang('---\ndescription: d\n---\n\n## t\n\n```\nimport `x`.`y` rev "1"\nkeyword `z`: 정의\n```\n')
 	assert.deepEqual(view.imports, [])
-	const html = renderBody(view.body)
+	const html = renderBody(view.body, [])
 	assert.ok(html.includes('<code>import `x`.`y` rev &quot;1&quot;\nkeyword `z`: 정의\n</code>'))
 	assert.ok(!html.includes('kang-ref'))
 })
@@ -272,7 +283,7 @@ test('## 뒤에 공백이 없거나 4칸 넘게 들여 쓴 ## 줄도 컴파일�
 test('닫히지 않은 펜스는 컴파일러처럼 끝까지 코드이고, 그 안의 제목, 참조, 선언을 읽지 않는다', () => {
 	const view = parseKang('---\ndescription: d\n---\n\n## t\n\n앞\n\n```\n`결제`\n## 아님\nimport `a`.`b`\nkeyword `x`: y\n')
 	assert.deepEqual(view.imports, [])
-	const html = renderBody(view.body)
+	const html = renderBody(view.body, [])
 	assert.ok(html.includes('<p>앞</p>'), html)
 	assert.ok(html.includes('<pre><code>`결제`\n## 아님\nimport `a`.`b`\nkeyword `x`: y\n</code></pre>'), html)
 	assert.ok(!html.includes('kang-ref'), html)
@@ -290,7 +301,7 @@ test('긴 공백 줄도 100ms 안에 그린다', () => {
 test('목록과 인용 안의 제목, 선언, import 줄은 컴파일러처럼 본문 글자다', () => {
 	const view = parseKang('---\ndescription: d\n---\n\n## t\n\n- ## 목록 제목\n\n> ## 인용 제목\n\n- keyword `카드`: 목록\n\n> exception `카드`\n\n- import `A`.`b`\n\n> cover `c`\n')
 	assert.deepEqual(view.imports, [])
-	const html = renderBody(view.body)
+	const html = renderBody(view.body, [])
 	for (const bad of ['<h2>목록', '<h2>인용', 'kang-term', 'kang-decl']) assert.ok(!html.includes(bad), html)
 	assert.ok(html.includes('<li>## 목록 제목</li>'), html)
 	assert.ok(html.includes('<p>## 인용 제목</p>'), html)
@@ -320,13 +331,13 @@ test('앞에 공백이 있는 import 줄도 컴파일러처럼 import 이다', (
 		{ target: 'A.결제수단', local: '결제수단' },
 		{ target: 'docs/B.카드', local: 'C' },
 	])
-	assert.ok(!renderBody(view.body).includes('import'))
+	assert.ok(!renderBody(view.body, []).includes('import'))
 })
 
 test('keyword, exception, cover, import 낱말 뒤에는 컴파일러처럼 공백 한 칸이 와야 하고 탭이면 본문이다', () => {
 	const view = parseKang('---\ndescription: d\n---\n\nimport\t`A`.`b`\n\n## t\n\nkeyword\t`카드`: 탭\n\nexception\t`없음`\n\ncover\t`덮음`\n\nkeyword  `두칸`: 두 칸\n\n  exception  `예` pending\n')
 	assert.deepEqual(view.imports, [])
-	const html = renderBody(view.body)
+	const html = renderBody(view.body, [])
 	assert.ok(html.includes('<p>import\t<a class="kang-ref" data-ref="A.b">A.b</a></p>'), html)
 	assert.ok(html.includes('<p>keyword\t<a class="kang-ref" data-ref="카드">카드</a>: 탭</p>'), html)
 	assert.ok(html.includes('<p>exception\t<a class="kang-ref" data-ref="없음">없음</a></p>'), html)
@@ -350,4 +361,21 @@ test('topic 제목과 exception 의 수식어도 컴파일러처럼 앞에 Rust 
 	assert.ok(html.includes('<h2>붙은// uncoded</h2>'), html)
 	assert.ok(!html.includes('<span class="kang-badge">exception</span> e'), html)
 	assert.ok(html.includes('<span class="kang-badge">exception</span> f <span class="kang-badge">iknow</span> <a class="kang-ref" data-ref="B.카드">B.카드</a>'), html)
+})
+
+test('점으로 이은 참조의 이은 이름이 scope 에 없으면 컴파일러처럼 scope 의 이름으로 나눈다', () => {
+	const scope = scopeOf('B.카드', 'NB', '결제수단', '카드')
+	assert.ok(render('## t\n\n`결제수단`.`카드` 를 쓴다.\n', scope).includes('<a class="kang-ref" data-ref="결제수단">결제수단</a>.<a class="kang-ref" data-ref="카드">카드</a> 를 쓴다.'))
+})
+
+test('나누기는 컴파일러처럼 모든 조각이 scope 에 있는 나누기 중에서 왼쪽을 가장 길게 잡는다', () => {
+	const scope = scopeOf('주문', '주문.상태', '상태', '상태.전이')
+	const html = render('## t\n\n`주문`.`상태`.`전이` 와 `주문`.`상태`\n', scope)
+	assert.ok(html.includes('<a class="kang-ref" data-ref="주문">주문</a>.<a class="kang-ref" data-ref="상태.전이">상태.전이</a> 와 <a class="kang-ref" data-ref="주문.상태">주문.상태</a>'), html)
+})
+
+test('모든 조각이 scope 에 있는 나누기가 없거나 점이 아닌 구분 기호가 있으면 나누지 않는다', () => {
+	const scope = scopeOf('결제수단', '카드', 'docs')
+	const html = render('## t\n\n`결제수단`.`없음` 과 `docs`/`카드`\n', scope)
+	assert.ok(html.includes('<a class="kang-ref" data-ref="결제수단.없음">결제수단.없음</a> 과 <a class="kang-ref" data-ref="docs/카드">docs/카드</a>'), html)
 })

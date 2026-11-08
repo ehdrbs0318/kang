@@ -20,6 +20,8 @@ export type KangView = {
 /** 백틱으로 감싼 이름들을 `/ . # !` 로 이은 kang 참조 원문이다. */
 const NAMES = '`[^`\\n]*`(?:[/.#!]`[^`\\n]*`)*'
 const REF = new RegExp(`^${NAMES}`)
+// 점으로만 이은 참조다. 컴파일러처럼 scope 의 이름으로 나눌 수 있다.
+const DOTTED = /^`[^`]*`(?:\.`[^`]*`)*$/
 // 컴파일러처럼 앞의 공백 문자를 뗀 줄이 `##` 로 시작하고 그 다음이 `#` 가 아니면 topic 제목 줄이다. `###` 이하는 marked 가 그린다.
 // `import`, `keyword`, `exception`, `cover` 낱말 뒤에 공백 한 칸이 오면 선언 줄이다. 탭이면 본문이다.
 const KANG_LINE = /^(?:##(?!#)|(import|keyword|exception|cover) )/
@@ -67,6 +69,36 @@ function splitModifier(text: string): [string, string | undefined] {
  */
 function iknowOf(modifier: string | undefined): string {
 	return modifier?.startsWith('iknow') ? trim(modifier.slice('iknow'.length)) : ''
+}
+
+/**
+ * renderBody 가 그리는 동안 쓰는 scope 의 local 이름들과, 그 이름의 가장 많은 조각 수다.
+ * marked 의 그리기는 한 번에 끝나므로 renderBody 가 그리기 바로 앞에 바꾼다.
+ */
+let inScope = { locals: new Set<string>(), depth: 1 }
+
+/**
+ * 점으로 이은 참조의 조각들을 scope 의 이름으로 나눈다. 컴파일러의 `split_names`(`crates/kang/src/check.rs`)와 같은 순서로 찾는다.
+ * 모든 조각이 scope 에 있는 나누기 중에서 왼쪽을 가장 길게 잡는 것을 고른다. 한 이름의 조각 수는 scope 의 가장 많은 조각 수까지만 본다.
+ * @param parts 백틱 이름 조각들. 두 개 이상이다
+ * @returns 나눈 이름들. 모든 조각이 scope 에 있는 나누기가 없으면 조각을 모두 이은 이름 하나다
+ */
+function splitNames(parts: string[]): string[] {
+	const join = (at: number, count: number) => parts.slice(at, at + count).join('.')
+	// fit[at] 은 at 번째 조각부터 끝까지를 모두 scope 의 이름으로 나눌 때 at 자리에서 잡을 조각 수다. 뒤를 먼저 알아야 하므로 끝에서부터 채운다.
+	const fit: (number | undefined)[] = []
+	fit[parts.length] = 0
+	for (let at = parts.length - 1; at >= 0; at--) {
+		// 긴 이름부터 보고, 나머지도 나눌 수 있는 첫 길이를 잡는다.
+		for (let count = Math.min(parts.length - at, inScope.depth); count > 0 && fit[at] === undefined; count--) {
+			if (fit[at + count] !== undefined && inScope.locals.has(join(at, count))) fit[at] = count
+		}
+	}
+	// 모두 나눌 수 없으면 컴파일러가 이 참조를 받지 않는다. 나누지 않고 글자로 둔다.
+	if (fit[0] === undefined) return [parts.join('.')]
+	const pieces: string[] = []
+	for (let at = 0; at < parts.length; at += fit[at]!) pieces.push(join(at, fit[at]!))
+	return pieces
 }
 
 /**
@@ -139,16 +171,20 @@ const refExtension: TokenizerExtension = {
 		const match = REF.exec(src)
 		// 참조가 아니면 marked 의 다른 tokenizer 에 넘긴다.
 		if (!match) return undefined
-		return { type: 'kangRef', raw: match[0], local: toLocal(match[0]) }
+		// 점으로만 이은 참조는 그릴 때 나눌 수 있게 조각을 남긴다. 이름에는 백틱이 없으므로 `` `.` `` 로 자른다.
+		const parts = DOTTED.test(match[0]) ? match[0].slice(1, -1).split('`.`') : []
+		return { type: 'kangRef', raw: match[0], local: toLocal(match[0]), parts }
 	},
 	/**
-	 * token 을 HTML 로 그린다.
+	 * token 을 HTML 로 그린다. 점으로 이은 참조는 컴파일러처럼 scope 의 이름으로 나누어 이름마다 링크를 만든다.
 	 * @param token 이 확장의 tokenizer 가 만든 token
-	 * @returns `<a class="kang-ref">` 링크 HTML
+	 * @returns `<a class="kang-ref">` 링크 HTML. 나누었으면 링크 사이에 `.` 를 둔다
 	 */
 	renderer(token) {
-		const local = token.local as string
-		return `<a class="kang-ref" data-ref="${escape(local)}">${escape(local)}</a>`
+		const parts = token.parts as string[]
+		// 조각이 둘 이상인 참조만 나눈다.
+		const pieces = parts.length > 1 ? splitNames(parts) : [token.local as string]
+		return pieces.map((local) => `<a class="kang-ref" data-ref="${escape(local)}">${escape(local)}</a>`).join('.')
 	},
 }
 
@@ -409,10 +445,14 @@ export function parseKang(text: string): KangView {
 
 /**
  * 본문을 HTML 로 그린다. 백틱 참조는 `<a class="kang-ref" data-ref="…">` 링크가 되고, 선언 줄과 수식어는 배지가 된다.
+ * 점으로 이은 참조의 이은 이름이 scope 에 없으면, 컴파일러처럼 scope 의 이름으로 나누어 이름마다 링크를 만든다.
  * @param body parseKang 의 `body`
+ * @param scope `kang.locate` 답의 `scope`. 답이 없으면 빈 목록이다
  * @returns HTML 문자열. 링크에는 아직 동작이 없다
  */
-export function renderBody(body: string): string {
+export function renderBody(body: string, scope: ScopeEntry[]): string {
+	const locals = new Set(scope.map((e) => e.local))
+	inScope = { locals, depth: [...locals].reduce((depth, local) => Math.max(depth, local.split('.').length), 1) }
 	return kang.parser(lex(body))
 }
 

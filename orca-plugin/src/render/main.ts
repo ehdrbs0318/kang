@@ -73,7 +73,7 @@ function draw(view: KangView, located: Locate | null): void {
 	}
 	// 본문은 keyword 카드, 배지, 참조 링크까지 renderBody 가 그린다.
 	const body = document.createElement('div')
-	body.innerHTML = renderBody(view.body)
+	body.innerHTML = renderBody(view.body, scope)
 	root.append(body)
 	// 문서로 찾았을 때만 링크를 단다. 그래프 인덱스 파일이나 찾지 못한 문서는 링크가 없다.
 	if (located?.status === 'ok' && located.kind === 'doc') link(located)
