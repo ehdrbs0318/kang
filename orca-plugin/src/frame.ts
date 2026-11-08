@@ -64,7 +64,49 @@ export function notice(html: string): HTMLElement {
 export function createTooltip(): HTMLElement {
 	const el = document.createElement('pre')
 	el.className = 'kang-tooltip'
+	el.id = 'kang-tooltip'
+	el.setAttribute('role', 'tooltip')
 	el.hidden = true
 	document.body.append(el)
 	return el
+}
+
+/** tooltip 과 viewport 가장자리 사이에 남기는 최소 간격(px)이다. */
+const EDGE = 8
+
+/** tooltip 과 기준 사각형 사이의 간격(px)이다. */
+const GAP = 4
+
+/**
+ * tooltip 을 놓을 viewport 좌표를 계산한다. 기본은 기준 사각형 아래이고, 아래에 자리가 모자라면 위에 놓는다.
+ * 네 방향 모두 viewport 안으로 제한한다. 순수 함수이므로 DOM 을 읽지 않는다.
+ * @param anchor 기준 사각형(viewport 좌표). 점이면 left 와 right, top 과 bottom 을 같게 준다
+ * @param size tooltip 의 너비와 높이
+ * @param viewport viewport 의 너비와 높이
+ * @returns `position: fixed` 에 넣을 left 와 top. tooltip 이 viewport 보다 크면 위쪽과 왼쪽 가장자리를 우선한다
+ */
+export function placeTooltip(
+	anchor: { left: number; top: number; right: number; bottom: number },
+	size: { width: number; height: number },
+	viewport: { width: number; height: number },
+): { left: number; top: number } {
+	const maxLeft = viewport.width - size.width - EDGE
+	const maxTop = viewport.height - size.height - EDGE
+	const below = anchor.bottom + GAP
+	const above = anchor.top - GAP - size.height
+	// 아래에 들어가면 아래, 아니고 위에 들어가면 위, 둘 다 아니면 아래 값을 viewport 안으로 당긴다.
+	const top = below <= maxTop ? below : above >= EDGE ? above : Math.min(below, maxTop)
+	return { left: Math.max(EDGE, Math.min(anchor.left, maxLeft)), top: Math.max(EDGE, top) }
+}
+
+/**
+ * tooltip 을 기준 사각형 가까이에 놓는다. 먼저 보이게 해서 크기를 잰 뒤 `placeTooltip` 으로 위치를 정한다.
+ * @param tooltip `createTooltip` 이 만든 요소
+ * @param anchor 기준 사각형(viewport 좌표)
+ */
+export function positionTooltip(tooltip: HTMLElement, anchor: { left: number; top: number; right: number; bottom: number }): void {
+	tooltip.hidden = false
+	const pos = placeTooltip(anchor, { width: tooltip.offsetWidth, height: tooltip.offsetHeight }, { width: window.innerWidth, height: window.innerHeight })
+	tooltip.style.left = `${pos.left}px`
+	tooltip.style.top = `${pos.top}px`
 }

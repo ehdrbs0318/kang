@@ -2,7 +2,7 @@
 // 원문을 받으면 worker 에 `kang.locate` 를 묻고, parse.ts 의 marked 확장으로 본문을 그린다.
 // 참조 링크는 마우스를 올리면 정의를 보여 주고, 누르면 `kang.open` 으로 그 문서를 연다. 문서에는 아무것도 쓰지 않는다.
 import type { Locate } from '../protocol'
-import { addStyles, createTooltip, locateNotice } from '../frame'
+import { addStyles, createTooltip, locateNotice, positionTooltip } from '../frame'
 import { lookupRef, parseKang, renderBody, type KangView } from './parse'
 
 void addStyles(new URL('./style.css', import.meta.url).href)
@@ -41,6 +41,7 @@ async function show(text: string): Promise<void> {
  * @param located `kang.locate` 답. 요청이 실패했으면 null
  */
 function draw(view: KangView, located: Locate | null): void {
+	hideTooltip()
 	root.replaceChildren()
 	// 상태가 ok 가 아니면 안내 문구를 맨 위에 둔다.
 	const notice = locateNotice(located)
@@ -103,27 +104,41 @@ function link(located: Extract<Locate, { status: 'ok' }>): void {
 	}
 }
 
+/** 지금 tooltip 을 보여 주고 있는 링크와 그 정의다. 숨겨져 있으면 null 이다. */
+let shown: { el: HTMLElement; definition: string } | null = null
+
 /**
- * 링크 바로 아래에 정의 tooltip 을 보여 준다. 오른쪽 끝을 넘으면 화면 안으로 당긴다.
+ * 링크 가까이에 정의 tooltip 을 보여 준다. 아래에 자리가 모자라면 위에 놓고, 화면 가장자리 안으로 제한한다.
+ * 링크에 `aria-describedby` 를 달아 보조 기술이 정의를 읽게 한다.
  * @param el 정의를 가진 참조 링크
  * @param definition 보여 줄 정의 글자. textContent 로만 넣는다
  */
 function showTooltip(el: HTMLElement, definition: string): void {
+	// 다른 링크에 달려 있던 연결은 먼저 푼다.
+	if (shown && shown.el !== el) shown.el.removeAttribute('aria-describedby')
+	shown = { el, definition }
 	tooltip.textContent = definition
-	tooltip.hidden = false
-	const rect = el.getBoundingClientRect()
-	// 오른쪽 끝을 넘지 않게 left 를 제한한다. 왼쪽 끝은 넘지 않는다.
-	const left = Math.max(8, Math.min(rect.left, window.innerWidth - tooltip.offsetWidth - 8))
-	tooltip.style.left = `${left}px`
-	tooltip.style.top = `${rect.bottom + 4}px`
+	el.setAttribute('aria-describedby', tooltip.id)
+	positionTooltip(tooltip, el.getBoundingClientRect())
 }
 
-/** 정의 tooltip 을 숨긴다. */
+/** 정의 tooltip 을 숨기고 링크의 `aria-describedby` 를 지운다. */
 function hideTooltip(): void {
+	shown?.el.removeAttribute('aria-describedby')
+	shown = null
 	tooltip.hidden = true
 }
 
-window.addEventListener('scroll', hideTooltip, true)
+// 스크롤하면 닫지 않고 링크를 따라 위치를 다시 잡는다. 포커스가 일으킨 스크롤에도 tooltip 이 남는다.
+window.addEventListener('scroll', () => {
+	// 보여 주는 링크가 없으면 할 일이 없다.
+	if (shown) positionTooltip(tooltip, shown.el.getBoundingClientRect())
+}, true)
+
+// Escape 키로 tooltip 을 닫는다.
+window.addEventListener('keydown', (event) => {
+	if (event.key === 'Escape') hideTooltip()
+})
 
 /**
  * 참조 링크를 누르면 그 심볼을 선언한 문서를 연다. topic 참조도 그 topic 이 있는 문서를 연다.

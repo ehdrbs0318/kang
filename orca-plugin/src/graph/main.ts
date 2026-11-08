@@ -2,7 +2,7 @@
 // 원문을 받으면 worker 에 `kang.locate` 를 묻고, 답의 문서와 import 관계를 cytoscape 로 그린다. JSON 은 worker 가 읽는다.
 // 점을 누르면 `kang.open` 으로 그 문서를 열고, 화살표에 마우스를 올리면 심볼 목록을 보여 준다. 파일에는 아무것도 쓰지 않는다.
 import cytoscape, { type Core, type StylesheetJson } from '../../vendor/cytoscape.esm.min.mjs'
-import { addStyles, createTooltip, locateNotice, notice, STALE_NOTICE } from '../frame'
+import { addStyles, createTooltip, locateNotice, notice, positionTooltip, STALE_NOTICE } from '../frame'
 import type { Locate } from '../protocol'
 import { toElements } from './model'
 
@@ -141,9 +141,11 @@ function draw(located: Locate | null): void {
 	 */
 	cy.on('mouseover', 'edge', (event) => {
 		tooltip.textContent = String(event.target.data('symbols'))
-		tooltip.style.left = `${canvas.offsetLeft + event.renderedPosition.x + 12}px`
-		tooltip.style.top = `${canvas.offsetTop + event.renderedPosition.y + 12}px`
-		tooltip.hidden = false
+		// 마우스 위치를 viewport 좌표의 점으로 바꿔 가장자리 안쪽에 놓는다.
+		const box = canvas.getBoundingClientRect()
+		const x = box.left + event.renderedPosition.x
+		const y = box.top + event.renderedPosition.y
+		positionTooltip(tooltip, { left: x, top: y, right: x, bottom: y })
 	})
 	/** 화살표에서 마우스가 나가면 심볼 목록을 숨긴다. */
 	cy.on('mouseout', 'edge', () => {
