@@ -72,6 +72,7 @@ type Locate =
 - 인덱스의 항목 하나라도 필드 타입이 틀리면 worker 는 그 인덱스 전체를 없는 것으로 본다. 다른 workspace 는 그대로 찾는다.
 - 인덱스는 커밋된 파일이라 어느 저장소에서든 올 수 있다. 그래서 worker 는 다음 인덱스도 없는 것으로 본다. `docs[].path`, `scope[].doc`, `keywords[].path`, `edges[].from`, `edges[].to` 중 하나라도 비었거나, 절대 경로이거나, 역슬래시가 있거나, `.` 나 `..` 조각이 있는 인덱스다. `docs[].path` 가 겹치는 인덱스와 `edges` 에 같은 `(from, to)` 쌍이 둘 이상인 인덱스도 없는 것으로 본다.
 - worker 는 workspace 안의 보통 파일만 읽는다. symlink 는 따라간 뒤의 실제 경로를 본다. 실제 경로가 workspace 루트의 실제 경로 밖이면 없는 파일로 본다. 디렉토리, FIFO, 장치 파일, 32 MiB 보다 큰 파일도 없는 파일로 본다.
+- 문서가 10 000 개를 넘는 인덱스는 없는 것으로 본다. `kang.locate` 요청 하나가 읽는 파일 크기의 합이 64 MiB 를 넘으면 `notIndexed` 로 답한다.
 - 한 workspace 안에서 해시가 같은 문서가 둘 이상이면 `ambiguous` 다.
 - 로컬 후보가 없을 때 focus 된 workspace(`workspace.list` 에서 이름과 branch 가 같은 것)가 원격이면 `remoteOnly` 다. 그 밖에는 `notIndexed` 다.
 - `kang.open` 은 `path` 가 그 workspace 의 인덱스에 있고 `<path>.kang` 을 위 규칙으로 읽을 수 있을 때만 그 파일을 연다. 그 밖에는 `{ opened: false }` 다.
@@ -81,19 +82,23 @@ type Locate =
 ```ts
 export type KangView = { description: string; imports: { target: string; local: string }[]; body: string }
 export function parseKang(text: string): KangView
-export function renderBody(body: string): string      // 참조는 <a class="kang-ref" data-ref="참조 문자열">…</a> 로 그린다
+export function renderBody(body: string, scope: ScopeEntry[]): string      // 참조는 <a class="kang-ref" data-ref="참조 문자열">…</a> 로 그린다
 export function lookupRef(scope: ScopeEntry[], ref: string): ScopeEntry | undefined
 ```
 
 - 이름 풀이는 컴파일러가 한다. 화면은 `lookupRef` 로 `scope` 에서 찾기만 한다. 참조 문자열을 그대로 `local` 과 비교한다. 없으면 링크 없이 글자로 둔다.
+- 점으로만 이은 참조는 `renderBody` 가 `scope` 의 `local` 로 나눈다. 컴파일러의 `split_names` 처럼, 모든 조각이 `local` 에 있는 나누기 중에서 왼쪽을 가장 길게 잡는다. 나눈 이름마다 링크를 만들고 사이에 `.` 를 둔다. 그런 나누기가 없으면 나누지 않는다.
 - 참조 바로 앞의 `#` 와 `!` 는 참조에 넣지 않고 글자로 둔다. 컴파일러는 본문에서 백틱 쌍만 참조로 본다. 참조 앞의 `#` 가 문법인 자리는 keyword 줄 끝의 topic 뿐이다. 그 `#` 는 떼고 참조만 그린다.
 - frontmatter 는 컴파일러와 같은 규칙으로 찾는다. 맨 앞 BOM 하나와 빈 줄을 건너뛴 첫 줄이 앞뒤 공백을 뗀 `---` 이면 열리고, 다음에 앞뒤 공백을 뗀 `---` 줄에서 닫힌다.
 - `description` 은 앞뒤 공백을 뗀 줄이 `description:` 로 시작하는 첫 줄의 값이다. 값은 앞뒤 공백만 떼고 따옴표는 그대로 둔다.
 - 코드 영역은 marked 가 아니라 컴파일러와 같은 줄 규칙으로 먼저 정한다. 앞 공백을 뗀 줄이 백틱 3개 이상으로 시작하면 펜스가 열린다. 여는 줄보다 적지 않은 백틱으로 시작하는 줄이 펜스를 닫는다. 그 줄에 글자가 더 있어도 닫는다. 목록이나 인용 안의 백틱 줄은 펜스가 아니다. 문단 바로 다음 줄이나 4칸 넘게 들여 쓴 줄도 같은 규칙을 따른다.
 - 펜스 사이의 글은 marked 가 그린다. `~~~` 펜스, 들여 쓴 코드, HTML 블록, setext 제목(문단 아래의 `---` 나 `===`), 링크 정의는 없다. `<div>` 나 `<!--` 로 시작하는 줄도 글자이고, 그 안의 참조와 topic 제목은 그대로 그린다. `[참고]: …` 로 시작하는 줄도 글자이고, 그 줄의 참조는 링크다.
 - keyword 줄 끝의 topic 표시 `#` 는 앞에 공백이 있을 때만 topic 표시다.
-- 컴파일러처럼 앞 공백과 탭을 뗀 줄이 `##` 로 시작하고 그 다음이 `#` 가 아니면 topic 제목이다. `##` 뒤의 공백은 없어도 된다. 4칸 넘게 들여 써도 topic 제목이다. `// uncoded` 와 `// iknow …` 배지는 이 topic 제목에만 붙는다. `###` 이하 제목의 같은 글자는 그대로 글자다.
-- 앞에 공백이나 탭이 있는 `keyword`, `exception`, `cover` 줄도 선언으로 그린다.
+- 줄 앞의 공백은 컴파일러처럼 Rust `char::is_whitespace` 의 문자를 뗀다. U+FEFF 는 공백이 아니다.
+- 컴파일러처럼 앞 공백을 뗀 줄이 `##` 로 시작하고 그 다음이 `#` 가 아니면 topic 제목이다. `##` 뒤의 공백은 없어도 된다. 4칸 넘게 들여 써도 topic 제목이다. `// uncoded` 와 `// iknow …` 배지는 이 topic 제목에만 붙는다. `###` 이하 제목의 같은 글자는 그대로 글자다.
+- 앞 공백을 뗀 줄이 `import `, `keyword `, `exception `, `cover ` 로 시작하면 선언 줄이다. 낱말 뒤에는 공백 한 칸이 와야 한다. 탭이면 본문이다. 앞에 공백이 있는 import 줄도 칩이 된다.
+- 선언 줄과 topic 제목 줄은 한 줄씩 떼어 읽는다. 컴파일러는 목록과 인용을 모르므로 `- ## 이름`, `> keyword …` 같은 줄은 본문 글자다.
+- 수식어 `//` 는 컴파일러의 `split_modifier` 처럼 백틱 밖에 있고 바로 앞이 공백 문자이고 뒤에 `uncoded` 나 `iknow` 가 올 때만 수식어다.
 - 이미지는 주소와 상관없이 escape 한 alt 글자로 그린다. 상대 주소는 문서가 아니라 플러그인 화면을 기준으로 풀리기 때문이다.
 - import 칩은 `target` 과 `address` 가 같은 `scope` 항목으로 찾는다. 칩의 문서 경로는 그 항목의 `doc` 이다. 찾지 못하면 `target` 을 보여 준다.
 - 정의가 `definitions` 에 없는 참조에는 tooltip 을 달지 않는다.
