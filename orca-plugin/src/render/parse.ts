@@ -1,9 +1,11 @@
 // kang 원문을 렌더링 화면용으로 나누고 HTML 로 그린다. 본문 참조는 `kang build` 가 쓴 scope 에서 찾는다.
 // kang 문법(import, keyword, 백틱 참조, 선언 줄, topic 수식어)은 marked 의 확장으로 다룬다.
-// 코드 영역은 marked 가 아니라 컴파일러와 같은 줄 규칙으로 먼저 정한다. 백틱 3개 이상으로 시작하는 줄만 펜스이고, 그 안에서는 kang 문법을 해석하지 않는다.
+// 코드 영역과 kang 줄은 marked 가 아니라 컴파일러와 같은 줄 규칙으로 먼저 정한다. 백틱 3개 이상으로 시작하는 줄만 펜스이고, 그 안에서는 kang 문법을 해석하지 않는다.
+// 컴파일러는 목록과 인용을 모른다. 그래서 `- ## 이름` 이나 `> keyword …` 는 kang 줄이 아니라 본문 글자다.
 // 화면과 Orca 에 의존하지 않는 순수 함수이므로 Node 테스트에서 그대로 부른다.
 import type { ScopeEntry } from '../protocol'
-import { Marked, type RendererThis, type Token, type TokenizerExtension, type TokenizerThis } from '../../vendor/marked.esm.js'
+import { Marked, type MarkedExtension, type RendererThis, type Token, type TokenizerExtension, type TokenizerThis } from '../../vendor/marked.esm.js'
+import { isSpace, trim, trimStart, WS } from '../ws'
 
 /** 문서 한 개를 화면용으로 나눈 결과다. */
 export type KangView = {
@@ -18,30 +20,53 @@ export type KangView = {
 /** 백틱으로 감싼 이름들을 `/ . # !` 로 이은 kang 참조 원문이다. */
 const NAMES = '`[^`\\n]*`(?:[/.#!]`[^`\\n]*`)*'
 const REF = new RegExp(`^${NAMES}`)
-const IMPORT = new RegExp(`^import[ \\t]+(${NAMES})(?:[ \\t]+as[ \\t]+\`([^\`\\n]*)\`)?(?:[ \\t]+rev[ \\t]+"[^"\\n]*")?[ \\t]*(?:\\n|$)`)
-// 컴파일러처럼 선언 줄과 topic 제목 줄은 앞 공백과 탭을 떼고 읽는다.
-const KEYWORD = /^[ \t]*keyword[ \t]+(`[^`\n]*`(?:\.`[^`\n]*`)*)[ \t]*:[ \t]*(.*)(?:\n|$)/
-// iknow 대상은 줄 끝까지 받고 나중에 앞뒤 공백을 뗀다. `(.*?)[ \t]*` 로 쓰면 긴 공백 줄에서 느려진다.
-const DECL = /^[ \t]*(exception|cover)[ \t]+`([^`\n]*)`([ \t]+pending)?(?:[ \t]*\/\/[ \t]*iknow[ \t]+([^\n]*)|[ \t]*)(?:\n|$)/
-// 컴파일러처럼 `#` 두 개 다음이 `#` 가 아니면 topic 제목이다. 뒤의 공백은 없어도 된다. `###` 이하는 marked 가 그린다.
-const HEADING = /^[ \t]*##(?!#)([^\n]*)(?:\n|$)/
-// 컴파일러처럼 수식어 `//` 앞에는 공백이 있어야 한다. 앞의 공백을 반복으로 찾지 않아야 긴 공백 줄에서 느려지지 않는다.
-const MODIFIER = /[ \t]\/\/[ \t]*(?:(uncoded)[ \t]*|iknow[ \t]+(.*))$/
-const IKNOW = /\/\/[ \t]*iknow[ \t]+(.*)$/
+// 컴파일러처럼 앞의 공백 문자를 뗀 줄이 `##` 로 시작하고 그 다음이 `#` 가 아니면 topic 제목 줄이다. `###` 이하는 marked 가 그린다.
+// `import`, `keyword`, `exception`, `cover` 낱말 뒤에 공백 한 칸이 오면 선언 줄이다. 탭이면 본문이다.
+const KANG_LINE = /^(?:##(?!#)|(import|keyword|exception|cover) )/
+// 아래 정규식은 lex 가 고친 kang 줄 한 줄에 쓴다. 앞의 공백 문자와 낱말 뒤의 공백 문자는 lex 가 이미 뗐다.
+const IMPORT = new RegExp(`^import (${NAMES})(?:[ \\t]+as[ \\t]+\`([^\`\\n]*)\`)?(?:[ \\t]+rev[ \\t]+"[^"\\n]*")?[ \\t]*$`)
+const KEYWORD = /^keyword (`[^`\n]*`(?:\.`[^`\n]*`)*)[ \t]*:(.*)$/
+const DECL = /^(exception|cover) (.*)$/
+// 컴파일러처럼 수식어를 뗀 exception, cover 선언부는 백틱 이름 하나이고, 뒤에 ` pending` 이 올 수 있다.
+const DECL_NAME = /^`([^`]*)`( pending)?$/
+// `##` 뒤의 공백은 없어도 된다.
+const HEADING = /^##([^\n]*)$/
+// 컴파일러의 `is_modifier_word` 처럼 `//` 뒤에 `uncoded` 나 `iknow` 낱말이 오고, 낱말 뒤는 끝이거나 공백 문자다. lastIndex 자리에서만 찾는다.
+const MODIFIER_WORD = new RegExp(`[${WS}]*(?:uncoded|iknow)(?:[${WS}]|$)`, 'y')
 // 컴파일러처럼 topic 표시의 `#` 앞에는 공백이 있어야 한다. `C#\`lang\`` 의 `#` 는 글자다.
 const TOPIC = new RegExp(` (#${NAMES})[ \\t]*$`)
 
 /**
- * 확장 tokenizer 의 `start` 로 쓴다. marked 는 첫 글자를 뗀 원문을 주므로 줄 맨 앞은 줄바꿈 바로 다음 자리만 센다.
- * 그래야 `A keyword` 처럼 문장 중간의 낱말을 선언 줄로 읽지 않는다.
- * @param src marked 가 준 원문
- * @param line 줄바꿈 뒤에 올 줄 머리 정규식. 예: `/\n[ \t]*keyword[ \t]+`/`
- * @returns 그 줄의 첫 글자 위치. 없으면 -1
+ * 선언 줄을 선언부와 수식어로 가른다. 컴파일러의 `split_modifier` 와 같은 규칙이다.
+ * 백틱 밖의 `//` 중에서 바로 앞이 공백 문자이고 뒤에 수식어 낱말이 오는 첫 자리에서 가른다. `` \` `` 는 백틱으로 세지 않는다.
+ * @param text 선언 줄에서 낱말과 이름 또는 `##` 를 뗀 나머지
+ * @returns [선언부, 앞뒤 공백을 뗀 수식어]. 수식어가 없으면 [text, undefined]
  */
-function lineStart(src: string, line: RegExp): number {
-	const at = src.search(line)
-	// 줄을 찾으면 줄바꿈 다음 자리를 돌려준다.
-	return at < 0 ? -1 : at + 1
+function splitModifier(text: string): [string, string | undefined] {
+	let tick = false
+	// 한 글자씩 보며 백틱 안팎을 따라간다.
+	for (let i = 0; i < text.length; i++) {
+		// `` \` `` 는 글자이므로 두 글자를 건너뛴다.
+		if (text[i] === '\\' && text[i + 1] === '`') i++
+		// 백틱은 안팎을 바꾼다.
+		else if (text[i] === '`') tick = !tick
+		// 백틱 밖의 `//` 이다. 앞이 공백 문자이고 수식어 낱말이 따라오면 여기서 가른다. 아니면 두 번째 `/` 를 건너뛴다.
+		else if (!tick && text.startsWith('//', i)) {
+			MODIFIER_WORD.lastIndex = i + 2
+			if (isSpace(text[i - 1]) && MODIFIER_WORD.test(text)) return [text.slice(0, i), trim(text.slice(i + 2))]
+			i++
+		}
+	}
+	return [text, undefined]
+}
+
+/**
+ * 수식어에서 iknow 대상 원문을 꺼낸다. 컴파일러의 `parse_modifier` 처럼 `iknow` 낱말 뒤를 앞뒤 공백을 떼고 읽는다.
+ * @param modifier splitModifier 가 뗀 수식어. 없으면 undefined
+ * @returns iknow 대상 원문. iknow 수식어가 아니면 ''
+ */
+function iknowOf(modifier: string | undefined): string {
+	return modifier?.startsWith('iknow') ? trim(modifier.slice('iknow'.length)) : ''
 }
 
 /**
@@ -132,12 +157,6 @@ const importExtension: TokenizerExtension = {
 	name: 'kangImport',
 	level: 'block',
 	/**
-	 * marked 가 이 확장을 시도할 위치를 찾는다.
-	 * @param src 남은 원문
-	 * @returns import 줄의 첫 시작 위치. 없으면 -1
-	 */
-	start: (src) => src.search(/^import[ \t]+`/m),
-	/**
 	 * 원문 맨 앞을 import 줄 token 으로 바꾼다.
 	 * @param src 남은 원문
 	 * @returns token. 문법이 맞지 않으면 undefined 이고 marked 의 다른 tokenizer 가 받는다
@@ -161,12 +180,6 @@ const keywordExtension: TokenizerExtension = {
 	name: 'kangKeyword',
 	level: 'block',
 	/**
-	 * marked 가 이 확장을 시도할 위치를 찾는다.
-	 * @param src 남은 원문
-	 * @returns keyword 줄의 첫 시작 위치. 없으면 -1
-	 */
-	start: (src) => lineStart(src, /\n[ \t]*keyword[ \t]+`/),
-	/**
 	 * 원문 맨 앞을 keyword 줄 token 으로 바꾼다.
 	 * @param src 남은 원문
 	 * @returns token. 문법이 맞지 않으면 undefined 이고 marked 의 다른 tokenizer 가 받는다
@@ -175,11 +188,9 @@ const keywordExtension: TokenizerExtension = {
 		const match = KEYWORD.exec(src)
 		// keyword 문법이 아니면 일반 문단으로 둔다.
 		if (!match) return undefined
-		const iknow = IKNOW.exec(match[2])
-		// TOPIC 이 줄 끝 공백을 받으므로 iknow 앞의 공백은 남겨도 된다.
-		const rest = iknow ? match[2].slice(0, iknow.index) : match[2]
+		const [rest, modifier] = splitModifier(match[2])
 		const topic = TOPIC.exec(rest)
-		const definition = (topic ? rest.slice(0, topic.index) : rest).trim()
+		const definition = trim(topic ? rest.slice(0, topic.index) : rest)
 		return {
 			type: 'kangKeyword',
 			raw: match[0],
@@ -187,7 +198,7 @@ const keywordExtension: TokenizerExtension = {
 			definition: inline(this, definition),
 			// 줄 끝 topic 의 `#` 는 문법 기호이므로 떼고 참조만 남긴다.
 			topic: inline(this, topic ? topic[1].slice(1) : ''),
-			iknow: inline(this, iknow ? iknow[1] : ''),
+			iknow: inline(this, iknowOf(modifier)),
 		}
 	},
 	/**
@@ -211,21 +222,18 @@ const declExtension: TokenizerExtension = {
 	name: 'kangDecl',
 	level: 'block',
 	/**
-	 * marked 가 이 확장을 시도할 위치를 찾는다.
-	 * @param src 남은 원문
-	 * @returns exception, cover 줄의 첫 시작 위치. 없으면 -1
-	 */
-	start: (src) => lineStart(src, /\n[ \t]*(?:exception|cover)[ \t]+`/),
-	/**
 	 * 원문 맨 앞을 exception, cover 줄 token 으로 바꾼다.
 	 * @param src 남은 원문
 	 * @returns token. 문법이 맞지 않으면 undefined 이고 marked 의 다른 tokenizer 가 받는다
 	 */
 	tokenizer(src) {
 		const match = DECL.exec(src)
+		const [declaration, modifier] = splitModifier(match?.[2] ?? '')
+		const parts = DECL_NAME.exec(trim(declaration))
 		// 선언 문법이 아니면 일반 문단으로 둔다.
-		if (!match) return undefined
-		const [raw, kind, name, pending, iknow] = match
+		if (!match || !parts) return undefined
+		const [raw, kind] = match
+		const [, name, pending] = parts
 		return {
 			type: 'kangDecl',
 			raw,
@@ -234,7 +242,7 @@ const declExtension: TokenizerExtension = {
 			// cover 의 대상은 import 한 exception 이므로 참조로 해석한다. exception 의 이름은 선언이므로 글자다.
 			target: kind === 'cover' ? inline(this, `\`${name}\``) : [],
 			name,
-			iknow: inline(this, iknow?.trim() ?? ''),
+			iknow: inline(this, iknowOf(modifier)),
 		}
 	},
 	/**
@@ -250,18 +258,12 @@ const declExtension: TokenizerExtension = {
 }
 
 /**
- * topic 제목 줄(`##`)이다. 컴파일러처럼 앞 공백의 길이와 `##` 뒤 공백의 유무를 따지지 않는다.
+ * topic 제목 줄(`##`)이다. 컴파일러처럼 `##` 뒤 공백의 유무를 따지지 않는다.
  * `// uncoded` 나 `// iknow …` 수식어는 이 자리에서만 배지로 그린다. `###` 이하는 marked 가 글자 그대로 그린다.
  */
 const headingExtension: TokenizerExtension = {
 	name: 'kangHeading',
 	level: 'block',
-	/**
-	 * marked 가 이 확장을 시도할 위치를 찾는다.
-	 * @param src 남은 원문
-	 * @returns topic 제목 줄의 첫 시작 위치. 없으면 -1
-	 */
-	start: (src) => lineStart(src, /\n[ \t]*##(?!#)/),
 	/**
 	 * 원문 맨 앞을 topic 제목 token 으로 바꾼다.
 	 * @param src 남은 원문
@@ -271,16 +273,16 @@ const headingExtension: TokenizerExtension = {
 		const match = HEADING.exec(src)
 		// topic 제목 줄이 아니면 marked 의 다른 tokenizer 에 넘긴다.
 		if (!match) return undefined
-		const modifier = MODIFIER.exec(match[1])
 		// 수식어가 있으면 제목 글자에서 뗀다.
-		const text = (modifier ? match[1].slice(0, modifier.index) : match[1]).trim()
+		const [title, modifier] = splitModifier(match[1])
+		const text = trim(title)
 		return {
 			type: 'kangHeading',
 			raw: match[0],
 			text,
 			tokens: inline(this, text),
-			uncoded: Boolean(modifier?.[1]),
-			iknow: inline(this, modifier?.[2]?.trim() ?? ''),
+			uncoded: modifier === 'uncoded',
+			iknow: inline(this, iknowOf(modifier)),
 		}
 	},
 	/**
@@ -294,25 +296,45 @@ const headingExtension: TokenizerExtension = {
 	},
 }
 
-/** kang 확장을 단 marked 인스턴스다. 문서에 쓴 HTML 은 태그가 아니라 글자로 그린다. */
-const kang = new Marked({
-	extensions: [refExtension, importExtension, keywordExtension, declExtension, headingExtension],
-	// 코드 영역은 lex 가 컴파일러 규칙으로 먼저 떼어 낸다. 컴파일러는 들여 쓴 코드, HTML 블록, setext 제목, 링크 정의(`[이름]: 주소`)를 모른다. 그래서 다섯 tokenizer 를 끈다.
+/** 두 marked 인스턴스가 함께 쓰는 설정이다. 문서에 쓴 HTML 은 태그가 아니라 글자로 그린다. */
+const common: MarkedExtension = {
+	// 코드 영역과 kang 줄은 lex 가 컴파일러 규칙으로 먼저 떼어 낸다. 컴파일러는 들여 쓴 코드, HTML 블록, setext 제목, 링크 정의(`[이름]: 주소`)를 모른다. 그래서 다섯 tokenizer 를 끈다.
 	// undefined 를 돌려주면 그 tokenizer 가 꺼진다. false 를 돌려주면 marked 의 기본 tokenizer 가 대신 읽는다.
-	tokenizer: { fences: () => undefined, code: () => undefined, html: () => undefined, lheading: () => undefined, def: () => undefined },
+	tokenizer: {
+		fences: () => undefined,
+		code: () => undefined,
+		html: () => undefined,
+		lheading: () => undefined,
+		def: () => undefined,
+		/**
+		 * 목록과 인용 안의 `## 이름` 을 제목으로 읽지 않는다. 컴파일러에서 그 줄은 topic 제목이 아니라 본문 글자다.
+		 * 맨 바깥의 `##` 줄은 lex 가 먼저 떼어 내므로 여기에 오지 않는다.
+		 * @param src 남은 원문
+		 * @returns `##` 제목이면 undefined 로 끄고, 그 밖의 제목은 false 로 기본 tokenizer 에 넘긴다
+		 */
+		heading: (src) => (/^ {0,3}##(?!#)/.test(src) ? undefined : false),
+	},
 	renderer: {
 		/** 문서에 쓴 HTML 을 태그가 아니라 글자로 그린다. `token.text` 는 HTML 원문이고, 돌려주는 값은 escape 한 글자다. */
 		html: (token) => escape(token.text),
 		/** 이미지는 escape 한 alt 글자로 그린다. 상대 주소는 문서가 아니라 플러그인 화면을 기준으로 풀리므로 그릴 이미지가 없다. 밖으로 요청도 보내지 않는다. */
 		image: (token) => escape(token.text),
 	},
-})
+}
+
+/** kang 줄 사이의 글을 읽는 marked 인스턴스다. 선언 줄 확장이 없으므로 목록과 인용 안의 선언 줄도 글자다. */
+const prose = new Marked(common, { extensions: [refExtension] })
+
+/** kang 줄 한 줄을 읽고, 모든 token 을 HTML 로 그리는 marked 인스턴스다. */
+const kang = new Marked(common, { extensions: [refExtension, importExtension, keywordExtension, declExtension, headingExtension] })
 
 /**
- * 본문을 최상위 token 으로 나눈다. 코드 영역은 컴파일러(`crates/kang/src/parse.rs`)와 같은 줄 규칙으로 먼저 정한다.
- * 앞 공백을 뗀 줄이 백틱 3개 이상으로 시작하면 펜스가 열린다. 목록이나 인용 안이어도, 문단 바로 다음 줄이어도 같다.
+ * 본문을 최상위 token 으로 나눈다. 코드 영역과 kang 줄은 컴파일러(`crates/kang/src/parse.rs`)와 같은 줄 규칙으로 먼저 정한다.
+ * 줄 앞의 공백 문자는 컴파일러처럼 Rust `char::is_whitespace` 의 문자를 뗀다.
+ * 앞 공백을 뗀 줄이 백틱 3개 이상으로 시작하면 펜스가 열린다. 문단 바로 다음 줄이어도 같다. `- ` 나 `> ` 로 시작하는 줄은 펜스가 아니다.
  * 그 뒤에서 여는 줄보다 적지 않은 백틱으로 시작하는 줄이 펜스를 닫는다. 닫는 줄에 글자가 더 있어도 닫는다.
- * `~~~` 는 펜스가 아니다. 닫히지 않으면 끝까지 펜스다. 펜스 사이의 글은 marked 가 읽는다.
+ * `~~~` 는 펜스가 아니다. 닫히지 않으면 끝까지 펜스다.
+ * 펜스 밖에서 앞 공백을 뗀 줄이 KANG_LINE 이면 그 한 줄만 kang 확장으로 읽는다. 나머지 글은 prose 가 읽는다.
  * @param body parseKang 의 `body`
  * @returns 최상위 token 배열. 펜스 한 개는 code token 한 개다
  */
@@ -321,7 +343,8 @@ function lex(body: string): Token[] {
 	let text: string[] = []
 	let fence: { run: number; lang: string; lines: string[] } | undefined
 	for (const line of body.split('\n')) {
-		const run = /^`*/.exec(line.trimStart())![0].length
+		const trimmed = trimStart(line)
+		const run = /^`*/.exec(trimmed)![0].length
 		// 열린 펜스 안이다. 여는 줄보다 적지 않은 백틱 줄이 닫고, 나머지 줄은 코드다.
 		if (fence) {
 			if (run < fence.run) fence.lines.push(line)
@@ -331,19 +354,27 @@ function lex(body: string): Token[] {
 			}
 			continue
 		}
-		// 펜스 밖의 보통 줄은 모아 두었다가 marked 에 넘긴다.
-		if (run < 3) {
+		const kangLine = run < 3 ? KANG_LINE.exec(trimmed) : null
+		// 펜스도 kang 줄도 아닌 보통 줄은 모아 두었다가 prose 에 넘긴다.
+		if (run < 3 && !kangLine) {
 			text.push(line)
 			continue
 		}
-		// 펜스가 열린다. 앞에 모은 글을 먼저 token 으로 바꾼다.
-		tokens.push(...kang.lexer(text.join('\n')))
+		// 펜스나 kang 줄이다. 앞에 모은 글을 먼저 token 으로 바꾼다.
+		tokens.push(...prose.lexer(text.join('\n')))
 		text = []
-		fence = { run, lang: line.trimStart().slice(run).trim(), lines: [] }
+		// 펜스가 열린다.
+		if (!kangLine) {
+			fence = { run, lang: trimmed.slice(run).trim(), lines: [] }
+			continue
+		}
+		// 선언 낱말 뒤의 공백 문자는 컴파일러처럼 몇 개여도 되므로 한 칸만 남긴다. `##` 줄은 수식어의 앞 공백이 필요하므로 그대로 둔다.
+		const word = kangLine[1]
+		tokens.push(...kang.lexer(word ? `${word} ${trimStart(trimmed.slice(word.length + 1))}` : trimmed))
 	}
 	// 닫히지 않은 펜스는 끝까지 코드다.
 	if (fence) tokens.push({ type: 'code', raw: '', lang: fence.lang, text: fence.lines.join('\n') })
-	tokens.push(...kang.lexer(text.join('\n')))
+	tokens.push(...prose.lexer(text.join('\n')))
 	return tokens
 }
 

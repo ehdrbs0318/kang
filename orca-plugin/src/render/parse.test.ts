@@ -286,3 +286,68 @@ test('긴 공백 줄도 100ms 안에 그린다', () => {
 	const elapsed = performance.now() - started
 	assert.ok(elapsed < 100, `${elapsed}ms`)
 })
+
+test('목록과 인용 안의 제목, 선언, import 줄은 컴파일러처럼 본문 글자다', () => {
+	const view = parseKang('---\ndescription: d\n---\n\n## t\n\n- ## 목록 제목\n\n> ## 인용 제목\n\n- keyword `카드`: 목록\n\n> exception `카드`\n\n- import `A`.`b`\n\n> cover `c`\n')
+	assert.deepEqual(view.imports, [])
+	const html = renderBody(view.body)
+	for (const bad of ['<h2>목록', '<h2>인용', 'kang-term', 'kang-decl']) assert.ok(!html.includes(bad), html)
+	assert.ok(html.includes('<li>## 목록 제목</li>'), html)
+	assert.ok(html.includes('<p>## 인용 제목</p>'), html)
+	assert.ok(html.includes('<li>keyword <a class="kang-ref" data-ref="카드">카드</a>: 목록</li>'), html)
+	assert.ok(html.includes('<p>exception <a class="kang-ref" data-ref="카드">카드</a></p>'), html)
+	assert.ok(html.includes('<li>import <a class="kang-ref" data-ref="A.b">A.b</a></li>'), html)
+})
+
+test('목록 바로 다음 줄의 keyword 줄은 컴파일러처럼 선언이다', () => {
+	const html = render('## t\n\n- 항목\nkeyword `카드`: 정의\n')
+	assert.ok(html.includes('<li>항목</li>'), html)
+	assert.ok(html.includes('<div class="kang-term"><strong>카드</strong><span>정의</span></div>'), html)
+})
+
+test('컴파일러처럼 Rust 의 모든 공백 문자를 떼고 제목과 선언을 찾고, BOM 은 공백이 아니다', () => {
+	const html = render('## t\n\n　## 전각 제목\n\n\u0085## 넬 제목\n\n﻿## 비오엠 제목\n\n keyword `NB`: nbsp 정의\n\n　exception `예` pending\n')
+	assert.ok(html.includes('<h2>전각 제목</h2>'), html)
+	assert.ok(html.includes('<h2>넬 제목</h2>'), html)
+	assert.ok(!html.includes('<h2>비오엠'), html)
+	assert.ok(html.includes('<div class="kang-term"><strong>NB</strong><span>nbsp 정의</span></div>'), html)
+	assert.ok(html.includes('<span class="kang-badge">exception</span> 예 <span class="kang-badge">pending</span>'), html)
+})
+
+test('앞에 공백이 있는 import 줄도 컴파일러처럼 import 이다', () => {
+	const view = parseKang('---\ndescription: d\n---\n\n　 import `A`.`결제수단`\n  import `docs`/`B`.`카드` as `C`\n\n## t\n')
+	assert.deepEqual(view.imports, [
+		{ target: 'A.결제수단', local: '결제수단' },
+		{ target: 'docs/B.카드', local: 'C' },
+	])
+	assert.ok(!renderBody(view.body).includes('import'))
+})
+
+test('keyword, exception, cover, import 낱말 뒤에는 컴파일러처럼 공백 한 칸이 와야 하고 탭이면 본문이다', () => {
+	const view = parseKang('---\ndescription: d\n---\n\nimport\t`A`.`b`\n\n## t\n\nkeyword\t`카드`: 탭\n\nexception\t`없음`\n\ncover\t`덮음`\n\nkeyword  `두칸`: 두 칸\n\n  exception  `예` pending\n')
+	assert.deepEqual(view.imports, [])
+	const html = renderBody(view.body)
+	assert.ok(html.includes('<p>import\t<a class="kang-ref" data-ref="A.b">A.b</a></p>'), html)
+	assert.ok(html.includes('<p>keyword\t<a class="kang-ref" data-ref="카드">카드</a>: 탭</p>'), html)
+	assert.ok(html.includes('<p>exception\t<a class="kang-ref" data-ref="없음">없음</a></p>'), html)
+	assert.ok(html.includes('<p>cover\t<a class="kang-ref" data-ref="덮음">덮음</a></p>'), html)
+	assert.ok(html.includes('<div class="kang-term"><strong>두칸</strong><span>두 칸</span></div>'), html)
+	assert.ok(html.includes('<span class="kang-badge">exception</span> 예 <span class="kang-badge">pending</span>'), html)
+})
+
+test('keyword 정의 안의 // 는 컴파일러처럼 앞에 공백이 있고 백틱 밖일 때만 수식어다', () => {
+	const html = render('keyword `카드`: 플라스틱 a//b 와 x// iknow 끝 // iknow `B`.`카드`\nkeyword `값`: 이름 `a // iknow b` 끝\n\n## t\n')
+	assert.ok(
+		html.includes('<strong>카드</strong><span>플라스틱 a//b 와 x// iknow 끝</span> <span class="kang-badge">iknow</span> <a class="kang-ref" data-ref="B.카드">B.카드</a></div>'),
+		html,
+	)
+	assert.ok(html.includes('<strong>값</strong><span>이름 <a class="kang-ref" data-ref="a // iknow b">a // iknow b</a> 끝</span></div>'), html)
+})
+
+test('topic 제목과 exception 의 수식어도 컴파일러처럼 앞에 Rust 공백 문자가 있어야 한다', () => {
+	const html = render('## 제목　// uncoded\n\n## 붙은// uncoded\n\nexception `e`// iknow `B`.`카드`\nexception `f`　// iknow `B`.`카드`\n')
+	assert.ok(html.includes('<h2>제목 <span class="kang-badge">uncoded</span></h2>'), html)
+	assert.ok(html.includes('<h2>붙은// uncoded</h2>'), html)
+	assert.ok(!html.includes('<span class="kang-badge">exception</span> e'), html)
+	assert.ok(html.includes('<span class="kang-badge">exception</span> f <span class="kang-badge">iknow</span> <a class="kang-ref" data-ref="B.카드">B.카드</a>'), html)
+})
