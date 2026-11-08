@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as main from './worker'
 import { realFs } from './worker'
+import { docHash } from './locate'
 
 /** 이 파일에서 두 단계 위가 저장소 루트다. */
 const ROOT = fileURLToPath(new URL('../../', import.meta.url))
@@ -51,10 +52,11 @@ test('realFs 는 보통 파일이 아니거나 32 MiB 보다 큰 파일을 읽�
 		writeFileSync(join(dir, 'big.kang'), '')
 		// 디스크를 쓰지 않는 sparse 파일로 크기만 키운다.
 		truncateSync(join(dir, 'big.kang'), 32 * 1024 * 1024 + 1)
-		assert.equal(realFs.read(ROOT, ''), null)
-		assert.equal(realFs.read('/dev', 'null'), null)
-		assert.equal(realFs.read(dir, 'big.kang'), null)
-		assert.ok(realFs.read(ROOT, 'CONTEXT.kang'))
+		const fs = realFs()
+		assert.equal(fs.read(ROOT, ''), null)
+		assert.equal(fs.read('/dev', 'null'), null)
+		assert.equal(fs.read(dir, 'big.kang'), null)
+		assert.ok(fs.read(ROOT, 'CONTEXT.kang'))
 	} finally {
 		rmSync(dir, { recursive: true })
 	}
@@ -72,8 +74,8 @@ test('workspace 밖을 가리키는 symlink 는 읽지 않고 열지 않는다',
 		symlinkSync(join(root, 'real.kang'), join(root, 'y.kang'))
 		const doc = (path: string) => ({ path, description: '', hash: '0'.repeat(64), scope: [] })
 		writeFileSync(join(root, '.kang/graph.kang.json'), JSON.stringify({ kang: 'graph/1', docs: [doc('x'), doc('y')], keywords: [], edges: [] }))
-		assert.equal(realFs.read(root, 'x.kang'), null)
-		assert.equal(realFs.read(root, 'y.kang'), 'real')
+		assert.equal(realFs().read(root, 'x.kang'), null)
+		assert.equal(realFs().read(root, 'y.kang'), 'real')
 		const h = host(root)
 		worker = await mountWorker(main, { host: h })
 		assert.deepEqual(await worker.request('kang.open', { workspaceId: 'w1', path: 'x' }), { opened: false })
@@ -83,6 +85,34 @@ test('workspace 밖을 가리키는 symlink 는 읽지 않고 열지 않는다',
 		// 검사가 실패해도 worker 를 내리고 임시 폴더를 지운다.
 		await worker?.deactivate()
 		rmSync(outside, { recursive: true })
+		rmSync(root, { recursive: true })
+	}
+})
+
+test('요청 하나가 읽는 파일 크기의 합이 64 MiB 를 넘으면 kang.locate 는 인덱스가 없는 것으로 답한다', async () => {
+	const root = mkdtempSync(join(tmpdir(), 'kang-worker-budget-'))
+	let worker: Awaited<ReturnType<typeof mountWorker>> | undefined
+	try {
+		const text = '---\ndescription: d\n---\n\n## t\n'
+		writeFileSync(join(root, 'A.kang'), text)
+		const doc = (path: string, hash: string) => ({ path, description: '', hash, scope: [] })
+		const big = ['b1', 'b2', 'b3', 'b4']
+		// 디스크를 쓰지 않는 sparse 파일로 20 MiB 문서 네 개를 만든다. 넷을 다 읽으면 64 MiB 를 넘는다.
+		for (const path of big) {
+			writeFileSync(join(root, `${path}.kang`), '')
+			truncateSync(join(root, `${path}.kang`), 20 * 1024 * 1024)
+		}
+		mkdirSync(join(root, '.kang'))
+		const index = { kang: 'graph/1', docs: [doc('A', docHash(text)), ...big.map((p) => doc(p, '0'.repeat(64)))], keywords: [], edges: [] }
+		writeFileSync(join(root, '.kang/graph.kang.json'), JSON.stringify(index))
+		worker = await mountWorker(main, { host: host(root) })
+		assert.deepEqual(await worker.request('kang.locate', { text }), { status: 'notIndexed' })
+		// 문서가 64 MiB 안이면 같은 인덱스로 찾는다.
+		truncateSync(join(root, 'b4.kang'), 0)
+		assert.equal((await worker.request('kang.locate', { text })).status, 'ok')
+	} finally {
+		// 검사가 실패해도 worker 를 내리고 임시 폴더를 지운다.
+		await worker?.deactivate()
 		rmSync(root, { recursive: true })
 	}
 })

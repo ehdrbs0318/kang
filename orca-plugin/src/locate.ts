@@ -27,7 +27,7 @@ export function isLocal(workspace: Workspace): boolean {
 	return workspace.hostId === null || workspace.hostId === 'local'
 }
 
-/** 파일 읽기 인터페이스다. workspace 루트와 그 안의 상대 경로를 받는다. 파일이 없거나 읽을 수 없으면 null 을 돌려준다. */
+/** 파일 읽기 인터페이스다. workspace 루트와 그 안의 상대 경로를 받는다. 파일이 없거나 읽을 수 없으면 null 을 돌려준다. 읽을 양의 한도를 넘으면 오류를 던질 수 있다. */
 export type FileReader = { read(root: string, path: string): string | null }
 
 /** 읽어서 검사를 통과한 그래프 인덱스다. `text` 는 파일 원문이다. */
@@ -38,6 +38,9 @@ export type Candidate = { workspace: Workspace; path: string | null; gitCommonDi
 
 /** 그래프 인덱스 파일의 workspace 루트 기준 경로다. */
 const INDEX_PATH = '.kang/graph.kang.json'
+
+/** 인덱스 하나가 가질 수 있는 문서 수의 최대값이다. 문서마다 파일을 읽어 해시를 계산하므로 수를 제한한다. */
+const MAX_DOCS = 10_000
 
 /**
  * 해시 입력 텍스트를 `crates/kang/src/hash.rs` 의 `normalize` 와 같은 규칙으로 정규화한다.
@@ -121,7 +124,7 @@ function insidePath(path: string): boolean {
  * @param root workspace 루트 절대 경로
  * @param fs 파일 읽기
  * @returns 인덱스. 파일이 없거나, JSON 이 깨졌거나, `kang` 표지가 `graph/1` 이 아니거나, 항목 하나라도 타입이 틀리면 null.
- *   문서 경로 하나라도 workspace 밖을 가리키거나, `docs` 에 같은 경로가 둘 이상이거나, `edges` 에 같은 (from, to) 쌍이 둘 이상이어도 null
+ *   문서가 10 000 개를 넘거나, 문서 경로 하나라도 workspace 밖을 가리키거나, `docs` 에 같은 경로가 둘 이상이거나, `edges` 에 같은 (from, to) 쌍이 둘 이상이어도 null
  */
 export function readIndex(root: string, fs: FileReader): GraphIndex | null {
 	const text = fs.read(root, INDEX_PATH)
@@ -138,6 +141,8 @@ export function readIndex(root: string, fs: FileReader): GraphIndex | null {
 	// kang 이 만든 파일이 아니거나 항목 하나라도 타입이 틀리면 인덱스가 없는 것으로 본다. 그래야 깨진 인덱스 하나가 다른 workspace 를 막지 않는다.
 	if (!index || index.kang !== 'graph/1' || !validLists(index.docs, index.keywords, index.edges)) return null
 	const docs = index.docs as GraphDoc[]
+	// 문서가 너무 많으면 stale 검사가 파일을 너무 많이 읽으므로 인덱스가 없는 것으로 본다.
+	if (docs.length > MAX_DOCS) return null
 	const keywords = index.keywords as GraphKeyword[]
 	const edges = index.edges as GraphEdge[]
 	const paths = [...docs.flatMap((d) => [d.path, ...d.scope.map((e) => e.doc)]), ...keywords.map((k) => k.path), ...edges.flatMap((e) => [e.from, e.to])]

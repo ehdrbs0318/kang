@@ -146,6 +146,17 @@ test('같은 (from, to) 쌍의 관계가 두 번 나오는 인덱스는 없는 �
 	assert.deepEqual(locate(DOC_A, [ws('w1', '/r/a')], null, fs), { status: 'notIndexed' })
 })
 
+test('문서가 10 000 개를 넘는 인덱스는 없는 것으로 본다', () => {
+	const docs = (count: number) => [
+		{ path: 'A', description: '', hash: docHash(DOC_A), scope: [] },
+		...Array.from({ length: count - 1 }, (_, i) => ({ path: `d${i}`, description: '', hash: '0'.repeat(64), scope: [] })),
+	]
+	for (const [count, status] of [[10000, 'ok'], [10001, 'notIndexed']] as const) {
+		const fs = fakeFs({ '/r/a/.kang/graph.kang.json': JSON.stringify({ kang: 'graph/1', docs: docs(count), keywords: [], edges: [] }), '/r/a/A.kang': DOC_A })
+		assert.equal(locate(DOC_A, [ws('w1', '/r/a')], null, fs).status, status, String(count))
+	}
+})
+
 test('로컬 후보가 없고 focus 된 workspace 가 원격이면 remoteOnly 다', () => {
 	const remote = { ...ws('w2', '/r/b', 'b', 'dev'), hostId: 'ssh-1' }
 	assert.deepEqual(locate(DOC_A, [ws('w1', '/r/a'), remote], { displayName: 'b', branch: 'dev' }, fakeFs({})), { status: 'remoteOnly' })
