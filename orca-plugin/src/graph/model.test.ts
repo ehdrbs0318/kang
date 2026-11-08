@@ -24,9 +24,9 @@ test('문서마다 점 하나, 연결마다 화살표 하나를 만들고 weight
 		{ group: 'nodes', data: { id: 'A', label: 'A', weight: 1 } },
 		{ group: 'nodes', data: { id: 'B', label: 'B', weight: 0 } },
 		{ group: 'nodes', data: { id: 'C', label: 'C', weight: 2 } },
-		{ group: 'edges', data: { id: 'A->C', source: 'A', target: 'C', symbols: 'C.결제' } },
-		{ group: 'edges', data: { id: 'B->C', source: 'B', target: 'C', symbols: 'C.결제\nC#topic' } },
-		{ group: 'edges', data: { id: 'C->A', source: 'C', target: 'A', symbols: 'A.주문' } },
+		{ group: 'edges', data: { source: 'A', target: 'C', symbols: 'C.결제' } },
+		{ group: 'edges', data: { source: 'B', target: 'C', symbols: 'C.결제\nC#topic' } },
+		{ group: 'edges', data: { source: 'C', target: 'A', symbols: 'A.주문' } },
 	])
 })
 

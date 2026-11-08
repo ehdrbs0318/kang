@@ -39,11 +39,39 @@ declare module 'node:fs' {
 	 */
 	export function truncateSync(path: string, length: number): void
 	/**
-	 * 파일을 지운다.
-	 * @param path 지울 파일 경로
-	 * @throws 파일이 없거나 지울 수 없으면 던진다
+	 * 파일이나 디렉토리를 지운다.
+	 * @param path 지울 경로
+	 * @param options `recursive` 가 true 이면 디렉토리 안까지 지운다
+	 * @throws 경로가 없거나 지울 수 없으면 던진다
 	 */
-	export function rmSync(path: string): void
+	export function rmSync(path: string, options?: { recursive: boolean }): void
+	/**
+	 * symlink 를 모두 따라간 실제 절대 경로를 돌려준다.
+	 * @param path 볼 경로
+	 * @returns 실제 경로
+	 * @throws 경로가 없거나 볼 권한이 없으면 던진다
+	 */
+	export function realpathSync(path: string): string
+	/**
+	 * 디렉토리를 만든다.
+	 * @param path 만들 경로
+	 * @throws 이미 있거나 만들 수 없으면 던진다
+	 */
+	export function mkdirSync(path: string): void
+	/**
+	 * 이름이 겹치지 않는 임시 디렉토리를 만든다.
+	 * @param prefix 경로 앞부분. 뒤에 임의의 글자 6 개가 붙는다
+	 * @returns 만든 디렉토리 경로
+	 * @throws 만들 수 없으면 던진다
+	 */
+	export function mkdtempSync(prefix: string): string
+	/**
+	 * symlink 를 만든다.
+	 * @param target symlink 가 가리킬 경로
+	 * @param path 만들 symlink 경로
+	 * @throws 이미 있거나 만들 수 없으면 던진다
+	 */
+	export function symlinkSync(target: string, path: string): void
 }
 
 declare module 'node:os' {
@@ -74,6 +102,8 @@ declare module 'node:path' {
 	export function isAbsolute(path: string): boolean
 	/** 경로를 절대 경로로 만든다. 상대 경로는 앞의 인자를 기준으로 푼다. */
 	export function resolve(...parts: string[]): string
+	/** 운영 체제의 경로 구분 문자다 (예: '/'). */
+	export const sep: string
 }
 
 declare module 'node:url' {

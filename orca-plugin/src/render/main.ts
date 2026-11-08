@@ -90,9 +90,8 @@ function link(located: Extract<Locate, { status: 'ok' }>): void {
 		// 항목이 없거나 그 문서가 인덱스에 없으면 글자로 둔다.
 		if (!entry || !located.docs.some((d) => d.path === entry.doc)) continue
 		el.href = '#'
-		const definition = located.definitions[entry.address]
-		// 정의가 없으면 tooltip 을 달지 않는다. stale 문서의 정의는 worker 가 이미 뺐다.
-		if (definition !== undefined) el.title = definition
+		// 정의가 없으면 tooltip 을 달지 않는다. stale 문서의 정의는 worker 가 이미 뺐다. `constructor` 같은 물려받은 key 는 정의가 아니다.
+		if (Object.hasOwn(located.definitions, entry.address)) el.title = located.definitions[entry.address]
 		el.addEventListener('click', (event) => openEntry(event, located.workspaceId, entry.doc))
 	}
 }

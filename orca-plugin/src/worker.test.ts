@@ -1,7 +1,7 @@
 // worker 를 mock host 위에서 실행한다. workspace 경로는 이 저장소 루트라서 실제 파일을 읽는다.
 import { fileURLToPath } from 'node:url'
 import { assert, mockHost, mountWorker, test } from 'orca/testing'
-import { readFileSync, rmSync, truncateSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as main from './worker'
@@ -11,14 +11,15 @@ import { realFs } from './worker'
 const ROOT = fileURLToPath(new URL('../../', import.meta.url))
 
 /**
- * 저장소 루트를 로컬 workspace 하나로 갖는 mock host 를 만든다.
+ * 로컬 workspace 하나를 갖는 mock host 를 만든다.
+ * @param path workspace 루트 경로. 기본값은 저장소 루트다
  * @returns mock host
  */
-function host() {
+function host(path = ROOT) {
 	return mockHost({
 		capabilities: ['workspace:read', 'workspace:write'],
 		results: {
-			'workspace.list': { workspaces: [{ id: 'w1', kind: 'worktree', name: 'kang', path: ROOT, branch: 'main', hostId: 'local' }], truncated: false },
+			'workspace.list': { workspaces: [{ id: 'w1', kind: 'worktree', name: 'kang', path, branch: 'main', hostId: 'local' }], truncated: false },
 			'workspace.readContext': null,
 			'editor.open': { opened: true },
 		},
@@ -45,16 +46,41 @@ test('kang.open 은 인덱스에 있는 문서만 연다', async () => {
 })
 
 test('realFs 는 보통 파일이 아니거나 32 MiB 보다 큰 파일을 읽지 않는다', () => {
-	const big = join(tmpdir(), `kang-worker-test-${Date.now()}.kang`)
-	writeFileSync(big, '')
-	// 디스크를 쓰지 않는 sparse 파일로 크기만 키운다.
-	truncateSync(big, 32 * 1024 * 1024 + 1)
+	const dir = mkdtempSync(join(tmpdir(), 'kang-worker-test-'))
 	try {
-		assert.equal(realFs.read(ROOT), null)
-		assert.equal(realFs.read('/dev/null'), null)
-		assert.equal(realFs.read(big), null)
-		assert.ok(realFs.read(`${ROOT}CONTEXT.kang`))
+		writeFileSync(join(dir, 'big.kang'), '')
+		// 디스크를 쓰지 않는 sparse 파일로 크기만 키운다.
+		truncateSync(join(dir, 'big.kang'), 32 * 1024 * 1024 + 1)
+		assert.equal(realFs.read(ROOT, ''), null)
+		assert.equal(realFs.read('/dev', 'null'), null)
+		assert.equal(realFs.read(dir, 'big.kang'), null)
+		assert.ok(realFs.read(ROOT, 'CONTEXT.kang'))
 	} finally {
-		rmSync(big)
+		rmSync(dir, { recursive: true })
+	}
+})
+
+test('workspace 밖을 가리키는 symlink 는 읽지 않고 열지 않는다', async () => {
+	const outside = mkdtempSync(join(tmpdir(), 'kang-worker-outside-'))
+	const root = mkdtempSync(join(tmpdir(), 'kang-worker-ws-'))
+	try {
+		writeFileSync(join(outside, 'secret.kang'), 'secret')
+		writeFileSync(join(root, 'real.kang'), 'real')
+		mkdirSync(join(root, '.kang'))
+		symlinkSync(join(outside, 'secret.kang'), join(root, 'x.kang'))
+		symlinkSync(join(root, 'real.kang'), join(root, 'y.kang'))
+		const doc = (path: string) => ({ path, description: '', hash: '0'.repeat(64), scope: [] })
+		writeFileSync(join(root, '.kang/graph.kang.json'), JSON.stringify({ kang: 'graph/1', docs: [doc('x'), doc('y')], keywords: [], edges: [] }))
+		assert.equal(realFs.read(root, 'x.kang'), null)
+		assert.equal(realFs.read(root, 'y.kang'), 'real')
+		const h = host(root)
+		const worker = await mountWorker(main, { host: h })
+		assert.deepEqual(await worker.request('kang.open', { workspaceId: 'w1', path: 'x' }), { opened: false })
+		assert.deepEqual(await worker.request('kang.open', { workspaceId: 'w1', path: 'y' }), { opened: true })
+		assert.deepEqual(h.callsOf('editor.open'), [{ workspaceId: 'w1', path: 'y.kang' }])
+		await worker.deactivate()
+	} finally {
+		rmSync(outside, { recursive: true })
+		rmSync(root, { recursive: true })
 	}
 })

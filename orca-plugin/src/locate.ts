@@ -1,7 +1,7 @@
 // 열린 파일의 원문으로 그 파일이 어느 workspace 의 어느 kang 문서인지 찾는다.
 // 파일 읽기는 `fs` 인자로 받으므로 이 모듈은 순수하고, 테스트에서 가짜 파일 시스템을 쓴다.
 import { createHash } from 'node:crypto'
-import { isAbsolute, join, resolve } from 'node:path'
+import { isAbsolute, resolve } from 'node:path'
 import type { GraphDoc, GraphEdge, GraphKeyword, Locate } from './protocol'
 
 /** `workspace.list` 가 돌려주는 workspace 한 개다. */
@@ -26,8 +26,8 @@ export function isLocal(workspace: Workspace): boolean {
 	return workspace.hostId === null || workspace.hostId === 'local'
 }
 
-/** 파일 읽기 인터페이스다. 파일이 없거나 읽을 수 없으면 null 을 돌려준다. */
-export type FileReader = { read(path: string): string | null }
+/** 파일 읽기 인터페이스다. workspace 루트와 그 안의 상대 경로를 받는다. 파일이 없거나 읽을 수 없으면 null 을 돌려준다. */
+export type FileReader = { read(root: string, path: string): string | null }
 
 /** 읽어서 검사를 통과한 그래프 인덱스다. `text` 는 파일 원문이다. */
 export type GraphIndex = { text: string; docs: GraphDoc[]; keywords: GraphKeyword[]; edges: GraphEdge[] }
@@ -36,7 +36,7 @@ export type GraphIndex = { text: string; docs: GraphDoc[]; keywords: GraphKeywor
 export type Candidate = { workspace: Workspace; path: string | null; gitCommonDir: string | null }
 
 /** 그래프 인덱스 파일의 workspace 루트 기준 경로다. */
-export const INDEX_PATH = '.kang/graph.kang.json'
+const INDEX_PATH = '.kang/graph.kang.json'
 
 /** Rust `char::is_whitespace` 와 같은 공백 문자 묶음이다. U+FEFF 는 넣지 않는다. */
 const WS = '\\t\\n\\v\\f\\r \\u0085\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000'
@@ -125,10 +125,10 @@ function insidePath(path: string): boolean {
  * @param root workspace 루트 절대 경로
  * @param fs 파일 읽기
  * @returns 인덱스. 파일이 없거나, JSON 이 깨졌거나, `kang` 표지가 `graph/1` 이 아니거나, 항목 하나라도 타입이 틀리면 null.
- *   문서 경로 하나라도 workspace 밖을 가리키거나 `docs` 에 같은 경로가 둘 이상이어도 null
+ *   문서 경로 하나라도 workspace 밖을 가리키거나, `docs` 에 같은 경로가 둘 이상이거나, `edges` 에 같은 (from, to) 쌍이 둘 이상이어도 null
  */
 export function readIndex(root: string, fs: FileReader): GraphIndex | null {
-	const text = fs.read(join(root, INDEX_PATH))
+	const text = fs.read(root, INDEX_PATH)
 	// 파일이 없으면 인덱스가 없다.
 	if (text === null) return null
 	let value: unknown
@@ -149,6 +149,8 @@ export function readIndex(root: string, fs: FileReader): GraphIndex | null {
 	if (!paths.every(insidePath)) return null
 	// 같은 문서 경로가 둘이면 그래프 화면의 점 id 가 겹치므로 인덱스 전체를 버린다.
 	if (new Set(docs.map((d) => d.path)).size !== docs.length) return null
+	// 같은 (from, to) 쌍이 둘이면 kang build 가 만든 인덱스가 아니므로 인덱스 전체를 버린다. JSON 배열로 이어 경로 안의 글자와 섞이지 않게 한다.
+	if (new Set(edges.map((e) => JSON.stringify([e.from, e.to]))).size !== edges.length) return null
 	return { text, docs, keywords, edges }
 }
 
@@ -160,8 +162,7 @@ export function readIndex(root: string, fs: FileReader): GraphIndex | null {
  * @returns 절대 경로. git 저장소가 아니면 null
  */
 function gitCommonDir(root: string, fs: FileReader): string | null {
-	const dotGit = join(root, '.git')
-	const file = fs.read(dotGit)
+	const file = fs.read(root, '.git')
 	// `.git` 이 파일이면 linked worktree 다. gitdir 값을 루트 기준으로 푼다.
 	if (file !== null) {
 		const match = /^gitdir:\s*(.+?)\s*$/m.exec(file)
@@ -169,7 +170,7 @@ function gitCommonDir(root: string, fs: FileReader): string | null {
 		return resolve(root, match[1]).replace(/[\\/]worktrees[\\/][^\\/]+$/, '')
 	}
 	// `.git` 디렉토리는 읽을 수 없으므로 그 안의 HEAD 로 있는지 본다.
-	return fs.read(join(dotGit, 'HEAD')) !== null ? resolve(dotGit) : null
+	return fs.read(root, '.git/HEAD') !== null ? resolve(root, '.git') : null
 }
 
 /**
@@ -227,19 +228,18 @@ export function locate(text: string, workspaces: Workspace[], focused: Focused |
 	// 고를 수 없거나, 고른 workspace 안에 내용이 같은 문서가 둘 이상이면 어느 문서인지 모른다.
 	if (picked === 'ambiguous' || candidates.filter((c) => c.workspace.id === picked.workspace.id).length > 1) return { status: 'ambiguous' }
 
-	const root = picked.workspace.path
 	const index = indexes.get(picked.workspace.id)!
 	// 지금 파일의 해시가 인덱스와 다르거나 파일이 없는 문서는 stale 이다.
-	const stale = index.docs
+	const stale = new Set(index.docs
 		.filter((d) => {
-			const current = fs.read(join(root, `${d.path}.kang`))
+			const current = fs.read(picked.workspace.path, `${d.path}.kang`)
 			return current === null || docHash(current) !== d.hash
 		})
-		.map((d) => d.path)
+		.map((d) => d.path))
 	const definitions: Record<string, string> = {}
 	// stale 문서가 선언한 keyword 는 정의가 바뀌었을 수 있으므로 뺀다.
 	for (const k of index.keywords) {
-		if (!stale.includes(k.path)) definitions[`${k.path}.${k.name}`] = k.definition
+		if (!stale.has(k.path)) definitions[`${k.path}.${k.name}`] = k.definition
 	}
 	return {
 		status: 'ok',
@@ -250,6 +250,6 @@ export function locate(text: string, workspaces: Workspace[], focused: Focused |
 		edges: index.edges,
 		definitions,
 		scope: index.docs.find((d) => d.path === picked.path)?.scope ?? [],
-		stale,
+		stale: [...stale],
 	}
 }

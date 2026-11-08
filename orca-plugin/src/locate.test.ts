@@ -1,14 +1,15 @@
 // locate.ts 의 정규화, 해시, workspace 찾기를 가짜 파일 시스템으로 검사한다.
+import { join } from 'node:path'
 import { assert, test } from 'orca/testing'
 import { docHash, isLocal, locate, normalize, pickWorkspace, type Workspace } from './locate'
 
 /**
  * 경로와 내용의 표로 가짜 파일 시스템을 만든다.
  * @param files 절대 경로를 key 로, 파일 내용을 값으로 갖는 표
- * @returns 표에 없는 경로는 null 을 돌려주는 `read`
+ * @returns 루트와 상대 경로를 이은 경로가 표에 없으면 null 을 돌려주는 `read`
  */
 function fakeFs(files: Record<string, string>) {
-	return { read: (path: string) => files[path] ?? null }
+	return { read: (root: string, path: string) => files[join(root, path)] ?? null }
 }
 
 /**
@@ -135,6 +136,13 @@ test('workspace 밖을 가리키는 경로가 하나라도 있는 인덱스는 �
 test('같은 문서 경로가 두 번 나오는 인덱스는 없는 것으로 본다', () => {
 	const doc = { path: 'A', description: '', hash: docHash(DOC_A), scope: [] }
 	const fs = fakeFs({ '/r/a/.kang/graph.kang.json': JSON.stringify({ kang: 'graph/1', docs: [doc, doc], keywords: [], edges: [] }) })
+	assert.deepEqual(locate(DOC_A, [ws('w1', '/r/a')], null, fs), { status: 'notIndexed' })
+})
+
+test('같은 (from, to) 쌍의 관계가 두 번 나오는 인덱스는 없는 것으로 본다', () => {
+	const doc = (path: string) => ({ path, description: '', hash: docHash(path === 'A' ? DOC_A : DOC_B), scope: [] })
+	const edge = { from: 'A', to: 'B', symbols: [] }
+	const fs = fakeFs({ '/r/a/.kang/graph.kang.json': JSON.stringify({ kang: 'graph/1', docs: [doc('A'), doc('B')], keywords: [], edges: [edge, edge] }) })
 	assert.deepEqual(locate(DOC_A, [ws('w1', '/r/a')], null, fs), { status: 'notIndexed' })
 })
 

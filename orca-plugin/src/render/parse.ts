@@ -11,15 +11,13 @@ export type KangView = {
 	description: string
 	/** import 줄들이다. `target` 은 kang 주소, `local` 은 칩에 보일 이름이다 (alias, 없으면 마지막 이름). */
 	imports: { target: string; local: string }[]
-	/** 이 문서가 선언한 keyword 이름들이다. 계층은 `.` 으로 잇는다. */
-	keywords: string[]
 	/** frontmatter 를 뺀 본문이다. `renderBody` 로 그린다. */
 	body: string
 }
 
 /** 백틱으로 감싼 이름들을 `/ . # !` 로 이은 kang 참조 원문이다. */
 const NAMES = '`[^`\\n]*`(?:[/.#!]`[^`\\n]*`)*'
-const REF = new RegExp(`^#?${NAMES}`)
+const REF = new RegExp(`^${NAMES}`)
 const IMPORT = new RegExp(`^import[ \\t]+(${NAMES})(?:[ \\t]+as[ \\t]+\`([^\`\\n]*)\`)?(?:[ \\t]+rev[ \\t]+"[^"\\n]*")?[ \\t]*(?:\\n|$)`)
 const KEYWORD = /^keyword[ \t]+(`[^`\n]*`(?:\.`[^`\n]*`)*)[ \t]*:[ \t]*(.*)(?:\n|$)/
 const DECL = /^(exception|cover)[ \t]+`([^`\n]*)`([ \t]+pending)?(?:[ \t]*\/\/[ \t]*iknow[ \t]+(.*?))?[ \t]*(?:\n|$)/
@@ -38,8 +36,8 @@ function escape(text: string): string {
 
 /**
  * kang 참조 원문에서 백틱을 지워 참조 문자열을 만든다. 구분 기호는 그대로 둔다.
- * @param raw 예: `` `docs`/`A`.`결제` ``, `` #`topic` ``
- * @returns 예: `docs/A.결제`, `#topic`
+ * @param raw 예: `` `docs`/`A`.`결제` ``
+ * @returns 예: `docs/A.결제`
  */
 function toLocal(raw: string): string {
 	return raw.replace(/`/g, '')
@@ -76,7 +74,8 @@ function iknowHtml(self: RendererThis, tokens: Token[]): string {
 
 /**
  * 본문의 백틱 참조다. `<a class="kang-ref" data-ref="참조 문자열">` 로 그린다. `` \` `` 는 marked 의 escape 가 먼저 가져간다.
- * 맨 앞의 `#` 는 참조에 넣는다. 맨 앞의 `!` 는 넣지 않는다. kang 문법에서 `!` 는 주소 안의 구분자일 뿐 참조 앞에 오지 않는다.
+ * 맨 앞의 `#` 와 `!` 는 참조에 넣지 않고 글자로 둔다. 컴파일러는 본문에서 백틱 쌍만 참조로 본다.
+ * 참조 앞의 `#` 가 문법인 자리는 keyword 줄 끝의 topic 하나뿐이고, keywordExtension 이 그 `#` 를 뗀다.
  */
 const refExtension: TokenizerExtension = {
 	name: 'kangRef',
@@ -86,7 +85,7 @@ const refExtension: TokenizerExtension = {
 	 * @param src 남은 원문
 	 * @returns 참조의 첫 시작 위치. 없으면 -1
 	 */
-	start: (src) => src.search(/#?`/),
+	start: (src) => src.indexOf('`'),
 	/**
 	 * 원문 맨 앞을 백틱 참조 token 으로 바꾼다.
 	 * @param src 남은 원문
@@ -105,7 +104,7 @@ const refExtension: TokenizerExtension = {
 	 */
 	renderer(token) {
 		const local = token.local as string
-		return `<a class="kang-ref" data-ref="${escape(local)}">${escape(local.replace(/^#/, ''))}</a>`
+		return `<a class="kang-ref" data-ref="${escape(local)}">${escape(local)}</a>`
 	},
 }
 
@@ -166,7 +165,8 @@ const keywordExtension: TokenizerExtension = {
 			raw: match[0],
 			name: toLocal(match[1]),
 			definition: inline(this, definition),
-			topic: inline(this, topic ? topic[1] : ''),
+			// 줄 끝 topic 의 `#` 는 문법 기호이므로 떼고 참조만 남긴다.
+			topic: inline(this, topic ? topic[1].slice(1) : ''),
 			iknow: inline(this, iknow ? iknow[1] : ''),
 		}
 	},
@@ -265,27 +265,29 @@ const kang = new Marked({
 })
 
 /**
- * kang 원문을 화면용으로 나눈다. frontmatter 에서 description 을 읽고, 최상위 import 와 keyword 선언을 모은다.
+ * kang 원문을 화면용으로 나눈다. frontmatter 에서 description 을 읽고, 최상위 import 를 모은다.
  * @param text 문서 원문
  * @returns 화면용 결과. 문법이 틀린 줄도 버리지 않고 본문에 남긴다
  */
 export function parseKang(text: string): KangView {
-	const view: KangView = { description: '', imports: [], keywords: [], body: '' }
-	const lines = text.replace(/\r\n/g, '\n').split('\n')
+	const view: KangView = { description: '', imports: [], body: '' }
+	const lines = text.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n').split('\n')
+	// 컴파일러처럼 맨 앞 빈 줄을 건너뛴다. 그 다음 줄이 앞뒤 공백을 뗀 `---` 이면 frontmatter 가 열린다.
+	const open = lines.findIndex((l) => l.trim() !== '')
 	let start = 0
-	// 첫 줄이 `---` 이면 다음 `---` 까지가 frontmatter 다. 그 안에서 description 만 읽는다.
-	if (lines[0] === '---') {
-		const end = lines.indexOf('---', 1)
-		const front = end < 0 ? lines.slice(1) : lines.slice(1, end)
+	// 열린 frontmatter 는 다음 `---` 까지다. 그 안에서 description 만 읽는다.
+	if (open >= 0 && lines[open].trim() === '---') {
+		const close = lines.findIndex((l, i) => i > open && l.trim() === '---')
+		const end = close < 0 ? lines.length : close
+		const front = lines.slice(open + 1, end)
 		const match = front.map((l) => /^description:\s*(.*)$/.exec(l)).find((m) => m)
 		if (match) view.description = match[1].replace(/^(["'])(.*)\1$/, '$2')
-		start = end < 0 ? lines.length : end + 1
+		start = close < 0 ? lines.length : close + 1
 	}
 	view.body = lines.slice(start).join('\n')
-	// 최상위 token 에서 import 와 keyword 를 모은다. 코드 영역 안의 같은 글자는 code token 이므로 걸리지 않는다.
+	// 최상위 token 에서 import 를 모은다. 코드 영역 안의 같은 글자는 code token 이므로 걸리지 않는다.
 	for (const token of kang.lexer(view.body)) {
 		if (token.type === 'kangImport') view.imports.push({ target: token.target as string, local: token.local as string })
-		if (token.type === 'kangKeyword') view.keywords.push(token.name as string)
 	}
 	return view
 }
@@ -301,12 +303,10 @@ export function renderBody(body: string): string {
 
 /**
  * 본문의 참조 문자열을 `kang build` 가 쓴 scope 에서 찾는다. 이름 풀이는 컴파일러가 이미 했으므로 여기서는 찾기만 한다.
- * 맨 앞의 `#` 하나는 떼고 찾는다. 컴파일러는 본문 참조의 기호를 보지 않고 이름만 보기 때문이다.
  * @param scope `kang.locate` 답의 `scope`
- * @param ref 참조 문자열 (예: `A 결제`, `결제수단.카드`, `#topic`, `docs/A#상품`)
+ * @param ref 참조 문자열 (예: `A 결제`, `결제수단.카드`, `docs/A#상품`)
  * @returns 맞는 항목. 없으면 undefined
  */
 export function lookupRef(scope: ScopeEntry[], ref: string): ScopeEntry | undefined {
-	const local = ref.replace(/^#/, '')
-	return scope.find((e) => e.local === local)
+	return scope.find((e) => e.local === ref)
 }
