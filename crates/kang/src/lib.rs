@@ -4,6 +4,7 @@
 pub mod ast;
 pub mod bless;
 pub mod check;
+pub mod graph;
 pub mod hash;
 pub mod index;
 pub mod init;

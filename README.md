@@ -37,7 +37,7 @@ kang — 문서 컴파일러
 
 명령:
   kang init                            에이전트 진입점과 첫 문서 생성
-  kang build                           컴파일 및 검증
+  kang build                           컴파일 및 검증, 성공하면 .kang/graph.kang.json 생성
   kang bless <문서> --import <심볼>    rev 핀 갱신·삽입
   kang list [경로]                     문서 목록과 description
   kang keywords [경로]                 키워드 목록
@@ -75,6 +75,8 @@ git init
 kang init
 kang build
 ```
+
+`kang build` 가 성공하면 `.kang/graph.kang.json` 을 쓴다. 문서 목록, keyword 정의, import 관계가 들어 있다.
 
 `git init` 을 먼저 실행한다. `kang init` 은 git 저장소가 없어도 동작하지만, `kang build` 는
 git 저장소 루트를 프로젝트 루트로 쓰기 때문이다.

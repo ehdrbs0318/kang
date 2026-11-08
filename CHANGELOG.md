@@ -4,6 +4,14 @@
 버전 번호는 그 파일을 따른다. 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/),
 버전은 [Semantic Versioning](https://semver.org/lang/ko/) 을 따른다.
 
+## [Unreleased]
+
+### Added
+
+- `kang build` 가 성공하면 저장소 루트에 `.kang/graph.kang.json` 을 쓴다. 문서 목록, keyword 정의,
+  import 관계가 들어 있다. 컴파일 error 가 있으면 쓰지 않는다. kang 이 만들지 않은 파일은
+  덮어쓰지 않고 종료 코드 2 로 끝난다.
+
 ## [0.1.1] - 2026-08-09
 
 ### Added

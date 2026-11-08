@@ -15,6 +15,7 @@
 use kang::ast::{Diagnostic, DocPath, Severity, SymbolKind};
 use kang::bless::{self, ImportAddress};
 use kang::check;
+use kang::graph;
 use kang::index;
 use kang::init;
 use kang::resolve::{self, Project, SymbolTable};
@@ -30,7 +31,7 @@ const USAGE: &str = "kang — 문서 컴파일러
 
 명령:
   kang init                            에이전트 진입점과 첫 문서 생성
-  kang build                           컴파일 및 검증
+  kang build                           컴파일 및 검증, 성공하면 .kang/graph.kang.json 생성
   kang bless <문서> --import <심볼>    rev 핀 갱신·삽입
   kang list [경로]                     문서 목록과 description
   kang keywords [경로]                 키워드 목록
@@ -112,10 +113,7 @@ fn main() {
             println!("kang {}", env!("CARGO_PKG_VERSION"));
             0
         }
-        ["build"] => match compile() {
-            Ok(_) => 0,
-            Err(diagnostics) => exit_code(&diagnostics),
-        },
+        ["build"] => run_build(),
         ["list"] => list(None),
         ["list", scope] => list(Some(scope)),
         ["keywords"] => keywords(None),
@@ -224,13 +222,13 @@ fn parse_project() -> Result<(PathBuf, Project, SymbolTable), Vec<Diagnostic>> {
 /// 출력되지 않는다 (스펙 5절).
 ///
 /// # 반환값
-/// 파싱된 프로젝트와 전역 심볼 테이블
+/// 프로젝트 루트와, 파싱된 프로젝트와 전역 심볼 테이블
 ///
 /// # 오류
 /// [`Severity::Error`] 진단이 하나라도 나오면 그때까지 모은 진단 전부
-fn compile() -> Result<(Project, SymbolTable), Vec<Diagnostic>> {
-    // 루트는 조회 명령에 쓸모가 없다. 파일을 고쳐 쓰는 `bless` 만 필요로 한다.
-    let (_root, project, table) = parse_project()?;
+fn compile() -> Result<(PathBuf, Project, SymbolTable), Vec<Diagnostic>> {
+    // 루트는 조회 명령에 쓸모가 없다. 파일을 쓰는 `build` 만 필요로 한다.
+    let (root, project, table) = parse_project()?;
 
     // 검사 **사이**의 순서는 구조 → 이름 → 상태 → 핀이다. 앞의 것이 틀리면 뒤의 것을
     // 읽을 이유가 없는 순서다 — 순환이 있으면 문서 구조부터 갈라야 하고, 이름이
@@ -243,7 +241,7 @@ fn compile() -> Result<(Project, SymbolTable), Vec<Diagnostic>> {
     diagnostics.extend(check::check_revs(&project, &table));
 
     finish_diagnostics(diagnostics)?;
-    Ok((project, table))
+    Ok((root, project, table))
 }
 
 /// 모은 진단을 찍고, error 가 있으면 실패로 마감한다.
@@ -411,7 +409,7 @@ fn generate(
     is_own_output: fn(&str) -> bool,
     temp_ext: &str,
 ) -> i32 {
-    let (project, table) = match compile() {
+    let (_, project, table) = match compile() {
         Ok(result) => result,
         Err(diagnostics) => return exit_code(&diagnostics),
     };
@@ -431,13 +429,40 @@ fn generate(
         }
     };
 
-    let file = std::path::PathBuf::from(path);
+    write_output(
+        &std::path::PathBuf::from(path),
+        &content,
+        what,
+        is_own_output,
+        temp_ext,
+    )
+}
 
+/// 산출물을 파일로 쓴다. 덮어쓰기 방어, 상위 디렉토리 생성, 원자적 쓰기를 함께 한다.
+///
+/// `generate` 와 `build` 의 그래프 인덱스 쓰기가 공유한다.
+///
+/// # 매개변수
+/// - `file`: 쓸 파일 경로
+/// - `content`: 파일 내용 전체
+/// - `what`: 오류 문구에 쓸 산출물 이름
+/// - `is_own_output`: 이미 있는 파일이 kang 산출물로 보이는지 가르는 함수
+/// - `temp_ext`: 원자적 쓰기의 임시 파일 확장자
+///
+/// # 반환값
+/// 프로세스 종료 코드. 성공 0 / 쓰기 실패 2
+fn write_output(
+    file: &std::path::Path,
+    content: &str,
+    what: &str,
+    is_own_output: fn(&str) -> bool,
+    temp_ext: &str,
+) -> i32 {
     // **이미 있는 파일이 내 산출물로 보이지 않으면 덮어쓰지 않는다.** 경로를 그대로 받아
     // 쓰므로 `kang types Cargo.toml` 이나 `kang index docs/policy.kang` 한 번이 그 파일을
     // 지운다. 산출물은 언제든 다시 만들 수 있지만 남의 파일은 그렇지 않고 되돌릴 방법이
     // 없다. 재실행은 정상 사용이므로 내가 낸 것으로 보이면 그대로 덮어쓴다.
-    if let Ok(existing) = std::fs::read_to_string(&file)
+    if let Ok(existing) = std::fs::read_to_string(file)
         && !is_own_output(&existing)
     {
         eprintln!(
@@ -466,11 +491,68 @@ fn generate(
 
     // 쓰기는 `bless` 와 같은 함수를 쓴다. 원자성 규약의 두 번째 사본을 만들면 한쪽만
     // 고쳐지는 날이 온다.
-    if let Err(reason) = bless::write_atomically(&file, &content, temp_ext) {
+    if let Err(reason) = bless::write_atomically(file, content, temp_ext) {
         eprintln!("{what}을 쓰지 못했습니다: {reason}");
         return 2;
     }
     0
+}
+
+/// 컴파일하고, 성공하면 저장소 루트의 `.kang/graph.kang.json` 에 그래프 인덱스를 쓴다.
+///
+/// error 가 있으면 쓰지 않는다. `.kang` 이 저장소 밖을 가리키는 링크여도 쓰지 않는다.
+/// 문서 원문은 파일에서 다시 읽는다.
+///
+/// # 반환값
+/// 프로세스 종료 코드. 성공 0 / 컴파일 error 1 / 환경 오류, 저장소 밖 `.kang` 또는 쓰기 실패 2
+fn run_build() -> i32 {
+    let (root, project, table) = match compile() {
+        Ok(result) => result,
+        Err(diagnostics) => return exit_code(&diagnostics),
+    };
+
+    let mut sources = std::collections::HashMap::new();
+    for path in project.paths() {
+        let file = root.join(format!("{path}.kang"));
+        match std::fs::read_to_string(&file) {
+            // 읽은 원문은 문서 해시의 입력이다.
+            Ok(text) => {
+                sources.insert(path.clone(), text);
+            }
+            // 컴파일 뒤에 파일이 사라졌거나 읽을 수 없으면 거짓 해시를 쓰지 않고 멈춘다.
+            Err(error) => {
+                eprintln!("문서를 다시 읽지 못했습니다 ({}) — {error}", file.display());
+                return 2;
+            }
+        }
+    }
+
+    let mut content = Vec::new();
+    if let Err(error) = graph::write_graph(&project, &table, &sources, &mut content) {
+        eprintln!("그래프 인덱스를 만들지 못했습니다 — {error}");
+        return 2;
+    }
+    let content = String::from_utf8(content).expect("JSON 출력은 UTF-8 이다");
+
+    // `.kang` 이 저장소 밖을 가리키는 링크면 쓰지 않는다. 커밋된 링크 하나로 남의 디렉토리에 쓰게 된다.
+    // `.kang` 이 아직 없으면 풀 경로가 없고, 아래 쓰기가 저장소 안에 새로 만든다.
+    if let (Ok(dir), Ok(real_root)) = (root.join(".kang").canonicalize(), root.canonicalize())
+        && !dir.starts_with(&real_root)
+    {
+        eprintln!(
+            ".kang 이 저장소 밖({})을 가리켜 그래프 인덱스를 쓰지 않았습니다.\n\n  fix:\n    [edit]  .kang 링크를 지우고 다시 실행하세요",
+            dir.display()
+        );
+        return 2;
+    }
+
+    write_output(
+        &root.join(".kang/graph.kang.json"),
+        &content,
+        "그래프 인덱스",
+        graph::is_graph_format,
+        "json.tmp",
+    )
 }
 
 fn run_bless(doc: &str, symbol: &str) -> i32 {
@@ -519,7 +601,7 @@ fn run_bless(doc: &str, symbol: &str) -> i32 {
 /// # 반환값
 /// 프로세스 종료 코드
 fn list(scope: Option<&str>) -> i32 {
-    let (project, _) = match compile() {
+    let (_, project, _) = match compile() {
         Ok(result) => result,
         Err(diagnostics) => return exit_code(&diagnostics),
     };
@@ -556,7 +638,7 @@ fn list(scope: Option<&str>) -> i32 {
 /// # 반환값
 /// 프로세스 종료 코드
 fn keywords(scope: Option<&str>) -> i32 {
-    let (project, _) = match compile() {
+    let (_, project, _) = match compile() {
         Ok(result) => result,
         Err(diagnostics) => return exit_code(&diagnostics),
     };
@@ -621,7 +703,7 @@ fn empty_scope_notice(scope: Option<&str>, matched_docs: usize) {
 /// # 반환값
 /// 프로세스 종료 코드
 fn refs(address: &str) -> i32 {
-    let (project, table) = match compile() {
+    let (_, project, table) = match compile() {
         Ok(result) => result,
         Err(diagnostics) => return exit_code(&diagnostics),
     };
@@ -683,7 +765,7 @@ fn refs(address: &str) -> i32 {
 /// # 반환값
 /// 프로세스 종료 코드
 fn run_show(address: &str) -> i32 {
-    let (project, table) = match compile() {
+    let (_, project, table) = match compile() {
         Ok(result) => result,
         Err(diagnostics) => return exit_code(&diagnostics),
     };

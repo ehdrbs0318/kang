@@ -1,0 +1,41 @@
+{
+  "manifestVersion": 2,
+  "id": "kang",
+  "name": "kang",
+  "version": "0.1.0",
+  "description": "kang 문서와 그래프 인덱스를 Orca 에서 읽기 전용으로 보여 준다.",
+  "engines": {
+    "orca": ">=1.4.248"
+  },
+  "execution": "trusted-worker",
+  "pluginApi": 1,
+  "main": "src/worker.ts",
+  "capabilities": [
+    { "kind": "workspace:read" },
+    { "kind": "workspace:write" }
+  ],
+  "contributes": {
+    "customEditors": [
+      {
+        "id": "kang",
+        "title": "kang",
+        "extensions": [
+          ".kang"
+        ],
+        "entry": "src/render/main.ts",
+        "priority": "default",
+        "frame": "isolated"
+      },
+      {
+        "id": "graph",
+        "title": "kang graph",
+        "extensions": [
+          ".kang.json"
+        ],
+        "entry": "src/graph/main.ts",
+        "priority": "default",
+        "frame": "isolated"
+      }
+    ]
+  }
+}
