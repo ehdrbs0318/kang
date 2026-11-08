@@ -4744,3 +4744,27 @@ fn build_refuses_to_overwrite_foreign_graph_file() {
     );
     cleanup(&root);
 }
+
+/// 저장소의 `.kang` 이 저장소 밖을 가리키는 링크면 그래프 인덱스를 쓰지 않고 종료 코드 2 로 끝난다.
+#[cfg(unix)]
+#[test]
+fn build_refuses_kang_dir_link_outside_repo() {
+    use std::os::unix::fs::symlink;
+
+    let root = temp_root("graph-link");
+    let outside = temp_root("graph-link-outside");
+    make_git_repo(&root);
+    valid_doc(&root);
+    symlink(&outside, root.join(".kang")).expect("링크를 걸 수 있어야 한다");
+
+    let (_, stderr, code) = run(&root, &["build"]);
+
+    assert_eq!(code, 2, "stderr: {stderr}");
+    assert!(stderr.contains("저장소 밖"), "{stderr}");
+    assert!(
+        !outside.join("graph.kang.json").exists(),
+        "링크를 따라 저장소 밖에 쓰면 안 된다"
+    );
+    cleanup(&root);
+    cleanup(&outside);
+}

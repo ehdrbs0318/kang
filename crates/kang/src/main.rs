@@ -500,10 +500,11 @@ fn write_output(
 
 /// 컴파일하고, 성공하면 저장소 루트의 `.kang/graph.kang.json` 에 그래프 인덱스를 쓴다.
 ///
-/// error 가 있으면 쓰지 않는다. 문서 원문은 파일에서 다시 읽는다.
+/// error 가 있으면 쓰지 않는다. `.kang` 이 저장소 밖을 가리키는 링크여도 쓰지 않는다.
+/// 문서 원문은 파일에서 다시 읽는다.
 ///
 /// # 반환값
-/// 프로세스 종료 코드. 성공 0 / 컴파일 error 1 / 환경 오류 또는 쓰기 실패 2
+/// 프로세스 종료 코드. 성공 0 / 컴파일 error 1 / 환경 오류, 저장소 밖 `.kang` 또는 쓰기 실패 2
 fn run_build() -> i32 {
     let (root, project, table) = match compile() {
         Ok(result) => result,
@@ -532,6 +533,18 @@ fn run_build() -> i32 {
         return 2;
     }
     let content = String::from_utf8(content).expect("JSON 출력은 UTF-8 이다");
+
+    // `.kang` 이 저장소 밖을 가리키는 링크면 쓰지 않는다. 커밋된 링크 하나로 남의 디렉토리에 쓰게 된다.
+    // `.kang` 이 아직 없으면 풀 경로가 없고, 아래 쓰기가 저장소 안에 새로 만든다.
+    if let (Ok(dir), Ok(real_root)) = (root.join(".kang").canonicalize(), root.canonicalize())
+        && !dir.starts_with(&real_root)
+    {
+        eprintln!(
+            ".kang 이 저장소 밖({})을 가리켜 그래프 인덱스를 쓰지 않았습니다.\n\n  fix:\n    [edit]  .kang 링크를 지우고 다시 실행하세요",
+            dir.display()
+        );
+        return 2;
+    }
 
     write_output(
         &root.join(".kang/graph.kang.json"),
