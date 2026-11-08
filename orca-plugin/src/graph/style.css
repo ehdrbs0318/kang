@@ -1,0 +1,33 @@
+/* kang 그래프 화면의 스타일이다. 그래프 영역은 안내 문구 아래의 나머지 화면을 모두 쓴다. */
+body {
+	display: flex;
+	flex-direction: column;
+	height: 100vh;
+}
+
+.kang-notices:not(:empty) {
+	padding: 16px 16px 0;
+}
+
+.kang-notices .kang-notice {
+	margin: 0;
+}
+
+.kang-graph {
+	position: relative;
+	flex: 1;
+	min-height: 0;
+}
+
+.kang-tooltip {
+	position: absolute;
+	z-index: 1;
+	margin: 0;
+	padding: 6px 10px;
+	border: 1px solid var(--orca-border);
+	border-radius: var(--orca-radius);
+	background: var(--orca-popover);
+	color: var(--orca-popover-foreground);
+	font: 12px/1.5 ui-monospace, monospace;
+	pointer-events: none;
+}

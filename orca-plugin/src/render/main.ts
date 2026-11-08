@@ -2,20 +2,10 @@
 // 원문을 받으면 worker 에 `kang.locate` 를 묻고, parse.ts 의 marked 확장으로 본문을 그린다.
 // 참조 링크는 마우스를 올리면 정의를 보여 주고, 누르면 `kang.open` 으로 그 문서를 연다. 문서에는 아무것도 쓰지 않는다.
 import type { Locate } from '../protocol'
+import { addStyles, locateNotice } from '../frame'
 import { parseKang, renderBody, resolveRef, type KangView } from './parse'
 
-/** 상태가 `ok` 가 아닐 때 보여 주는 안내 문구 HTML 이다. 고정 문자열이므로 그대로 innerHTML 에 넣는다. */
-const NOTICES: Record<Exclude<Locate['status'], 'ok'>, string> = {
-	notIndexed: '<code>kang build</code> 를 실행하세요.',
-	ambiguous: '이 문서와 같은 문서가 여러 workspace 에 있어서 하나를 고를 수 없습니다.',
-	remoteOnly: '원격 workspace 는 지원하지 않습니다.',
-}
-
-// 브라우저의 ES module 은 CSS 를 import 할 수 없으므로 link 로 넣는다. frame 의 CSP 가 플러그인 자신의 파일을 허용한다.
-const style = document.createElement('link')
-style.rel = 'stylesheet'
-style.href = new URL('./style.css', import.meta.url).href
-document.head.append(style)
+addStyles(new URL('./style.css', import.meta.url).href)
 
 const root = document.createElement('main')
 root.className = 'kang'
@@ -51,12 +41,8 @@ async function show(text: string): Promise<void> {
 function draw(view: KangView, located: Locate | null): void {
 	root.replaceChildren()
 	// 상태가 ok 가 아니면 안내 문구를 맨 위에 둔다.
-	if (located === null || located.status !== 'ok') {
-		const notice = document.createElement('p')
-		notice.className = 'kang-notice'
-		notice.innerHTML = located === null ? 'kang worker 에 연결하지 못했습니다.' : NOTICES[located.status]
-		root.append(notice)
-	}
+	const notice = locateNotice(located)
+	if (notice) root.append(notice)
 	// description 은 인용 블록처럼 맨 위에 둔다.
 	if (view.description) {
 		const quote = document.createElement('blockquote')

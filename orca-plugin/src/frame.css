@@ -1,0 +1,21 @@
+/* 렌더링 화면과 그래프 화면이 함께 쓰는 스타일이다. 색은 Orca 테마의 --orca-* 변수만 쓴다. */
+body {
+	margin: 0;
+	background: var(--orca-background);
+	color: var(--orca-foreground);
+	font: 14px/1.6 system-ui, sans-serif;
+}
+
+.kang-notice {
+	margin: 0 0 16px;
+	padding: 8px 12px;
+	border: 1px solid var(--orca-border);
+	border-radius: var(--orca-radius);
+	background: var(--orca-muted);
+	color: var(--orca-muted-foreground);
+}
+
+.kang-notice code {
+	font-family: ui-monospace, monospace;
+	font-size: 13px;
+}

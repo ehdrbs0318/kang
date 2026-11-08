@@ -25,6 +25,16 @@
         "entry": "src/render/main.ts",
         "priority": "default",
         "frame": "isolated"
+      },
+      {
+        "id": "graph",
+        "title": "kang graph",
+        "extensions": [
+          ".kang.json"
+        ],
+        "entry": "src/graph/main.ts",
+        "priority": "default",
+        "frame": "isolated"
       }
     ]
   }

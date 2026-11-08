@@ -13,6 +13,10 @@
   - `parse.ts`: kang 문법을 marked 확장으로 그리고, 본문 참조를 kang 주소로 푼다.
   - `main.ts`: 본문을 그리고 `kang.locate` 답으로 참조에 링크를 단다.
   - `style.css`: Orca 테마의 `--orca-*` 변수로 색을 정한다.
+- `src/graph/`: `.kang.json` 그래프 인덱스의 읽기 전용 그래프 화면이다. Orca 가 `.kang.json` 파일을 이 custom editor 로 연다.
+  - `model.ts`: 문서와 import 관계를 cytoscape 의 점과 화살표로 바꾼다. 점 크기는 들어오는 연결 수다.
+  - `main.ts`: `kang.locate` 답을 `cose` 레이아웃으로 그린다. 점을 누르면 그 문서를 열고, 화살표에 마우스를 올리면 심볼 목록을 보여 준다.
+- `src/frame.ts`, `src/frame.css`: 두 화면이 함께 쓰는 스타일 넣기와 안내 문구다.
 
 원격 workspace 는 지원하지 않는다. worker 는 로컬 파일만 읽는다.
 
@@ -30,3 +34,5 @@ orca plugin validate . --json
 ## 라이선스
 
 `vendor/marked.esm.js` 는 marked 15.0.12 의 ESM 빌드를 그대로 복사한 파일이다. marked 는 MIT 라이선스다 (Copyright (c) 2011-2025, Christopher Jeffrey).
+
+`vendor/cytoscape.esm.min.mjs` 는 cytoscape 3.31.0 의 ESM 빌드를 그대로 복사한 파일이다. cytoscape 는 MIT 라이선스다 (Copyright (c) The Cytoscape Consortium).
