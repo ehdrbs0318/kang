@@ -514,9 +514,11 @@ fn run_build() -> i32 {
     for path in project.paths() {
         let file = root.join(format!("{path}.kang"));
         match std::fs::read_to_string(&file) {
+            // 읽은 원문은 문서 해시의 입력이다.
             Ok(text) => {
                 sources.insert(path.clone(), text);
             }
+            // 컴파일 뒤에 파일이 사라졌거나 읽을 수 없으면 거짓 해시를 쓰지 않고 멈춘다.
             Err(error) => {
                 eprintln!("문서를 다시 읽지 못했습니다 ({}) — {error}", file.display());
                 return 2;

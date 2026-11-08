@@ -35,16 +35,29 @@ pub fn normalize(text: &str) -> String {
     normalized_lines.join("\n").trim().to_string()
 }
 
-/// 정규화된 텍스트의 SHA-256 해시 전체 hex 문자열(64자)을 반환한다.
+/// 문서 원문의 해시, 곧 정규화한 텍스트의 SHA-256 전체 hex 문자열(64자)을 반환한다.
 ///
-/// 그래프 인덱스가 문서 원문 해시로 쓴다. 앞 6자리가 [`rev`] 다.
+/// 그래프 인덱스가 문서 원문 해시로 쓴다. 맨 앞 BOM(U+FEFF) 하나는 떼고 계산한다.
+/// 컴파일러는 BOM 을 떼고 문서를 읽고, 편집기는 BOM 을 줄 수도 주지 않을 수도 있기 때문이다.
+/// [`normalize`] 와 [`rev`] 는 BOM 을 떼지 않는다. 그래야 rev 핀이 바뀌지 않는다.
+///
+/// # 매개변수
+/// - `text`: 문서 파일 원문
+///
+/// # 반환값
+/// SHA-256 해시값의 소문자 hex 문자열 64자
+pub fn doc_hash(text: &str) -> String {
+    sha256_hex(text.strip_prefix('\u{feff}').unwrap_or(text))
+}
+
+/// 정규화된 텍스트의 SHA-256 해시 전체 hex 문자열(64자)을 반환한다.
 ///
 /// # 매개변수
 /// - `text`: 해시를 계산할 원본 텍스트 (내부적으로 [`normalize`] 를 거친다)
 ///
 /// # 반환값
 /// SHA-256 해시값의 소문자 hex 문자열 64자
-pub fn doc_hash(text: &str) -> String {
+fn sha256_hex(text: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(normalize(text).as_bytes());
     hasher
@@ -64,5 +77,5 @@ pub fn doc_hash(text: &str) -> String {
 #[kang::keyword("CONTEXT.rev 핀", rev = "718dd2")]
 pub fn rev(text: &str) -> String {
     // 전체 hex 문자열 중 앞 6자리만 사용
-    doc_hash(text)[..6].to_string()
+    sha256_hex(text)[..6].to_string()
 }

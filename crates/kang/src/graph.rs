@@ -27,7 +27,7 @@ const FIRST_LINE: &str = "{\"kang\":\"graph/1\",";
 ///
 /// # 매개변수
 /// - `project`: 로드된 프로젝트
-/// - `_table`: 심볼 테이블. 다른 산출물 함수와 시그니처를 맞추려고 받는다
+/// - `table`: 심볼 테이블. 문서마다 `scope` 를 만드는 데 쓴다
 /// - `sources`: 문서 경로에서 파일 원문으로 가는 맵. 문서 해시의 입력이다
 /// - `out`: 인덱스를 받을 곳
 ///
@@ -35,7 +35,7 @@ const FIRST_LINE: &str = "{\"kang\":\"graph/1\",";
 /// 문서의 원문이 `sources` 에 없으면 `InvalidInput`. 쓰기가 실패하면 그 사정을 그대로 올린다.
 pub fn write_graph(
     project: &Project,
-    _table: &SymbolTable,
+    table: &SymbolTable,
     sources: &HashMap<DocPath, String>,
     out: &mut impl Write,
 ) -> io::Result<()> {
@@ -52,10 +52,11 @@ pub fn write_graph(
             ));
         };
         lines.push(format!(
-            "{{\"path\":{},\"description\":{},\"hash\":\"{}\"}}",
+            "{{\"path\":{},\"description\":{},\"hash\":\"{}\",\"scope\":[{}]}}",
             json_string(&path.to_string()),
             json_string(&project.docs[*path].description),
-            hash::doc_hash(source)
+            hash::doc_hash(source),
+            scope_json(project, table, path)
         ));
     }
     write_list(out, &lines)?;
@@ -100,6 +101,62 @@ pub fn write_graph(
     }
     write_list(out, &lines)?;
     writeln!(out, "}}")
+}
+
+/// 문서 하나의 `scope` 목록을 JSON 항목들로 만든다.
+///
+/// 항목은 본문 참조 문자열(`local`)에서 정식 주소(`address`)와 그 심볼을 선언한 문서(`doc`)로
+/// 가는 짝이다. 컴파일러가 받는 참조만 담는다. 하나는 [`SymbolTable::scope`] 의 로컬 이름이고,
+/// 다른 하나는 `iknow` 대상의 정식 주소다. `iknow` 대상은 스코프가 아니라 전체 주소로 풀리므로
+/// 주소 자체를 `local` 로 쓴다. 같은 `local` 이 둘이면 스코프의 것을 남긴다.
+///
+/// # 매개변수
+/// - `project`: 로드된 프로젝트
+/// - `table`: 심볼 테이블
+/// - `path`: scope 를 만들 문서
+///
+/// # 반환값
+/// `local` 순서로 정렬해 쉼표로 이은 항목들. 비면 ''
+fn scope_json(project: &Project, table: &SymbolTable, path: &DocPath) -> String {
+    let address = |id| symbol_address(table.owner(id), table.kind(id), table.name(id), false);
+    let mut entries: BTreeMap<String, (String, String)> = BTreeMap::new();
+    // 스코프의 로컬 이름마다 정식 주소와 선언 문서를 적는다.
+    for (local, &id) in table.scope(path) {
+        entries.insert(local.clone(), (address(id), table.owner(id).to_string()));
+    }
+    let document = &project.docs[path];
+    let iknow = document
+        .keywords
+        .iter()
+        .flat_map(|k| &k.iknow)
+        .chain(document.topics.iter().flat_map(|t| &t.iknow))
+        .chain(
+            document
+                .topics
+                .iter()
+                .flat_map(|t| t.exceptions.iter().flat_map(|e| &e.iknow)),
+        );
+    // iknow 대상은 전체 주소가 곧 참조 문자열이다. 풀리지 않는 대상은 컴파일이 이미 막았다.
+    for target in iknow {
+        if let Some(id) = table.resolve(target) {
+            let local = address(id);
+            entries
+                .entry(local.clone())
+                .or_insert((local, target.doc.to_string()));
+        }
+    }
+    entries
+        .iter()
+        .map(|(local, (address, doc))| {
+            format!(
+                "{{\"local\":{},\"address\":{},\"doc\":{}}}",
+                json_string(local),
+                json_string(address),
+                json_string(doc)
+            )
+        })
+        .collect::<Vec<String>>()
+        .join(",")
 }
 
 /// 항목을 한 줄씩 쓰고 `]` 로 닫는다. 마지막 항목 뒤에는 쉼표를 두지 않는다.

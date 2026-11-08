@@ -45,8 +45,13 @@ fn writes_sorted_docs_keywords_edges() {
     let (out, _) = render("sorted", &[("B.kang", b), ("A.kang", a)]);
     let expected = format!(
         "{{\"kang\":\"graph/1\",\n\"docs\":[\n\
-{{\"path\":\"A\",\"description\":\"문서 A\",\"hash\":\"{}\"}},\n\
-{{\"path\":\"B\",\"description\":\"문서 B\",\"hash\":\"{}\"}}\n\
+{{\"path\":\"A\",\"description\":\"문서 A\",\"hash\":\"{}\",\"scope\":[\
+{{\"local\":\"결제\",\"address\":\"A.결제\",\"doc\":\"A\"}},\
+{{\"local\":\"결제수단\",\"address\":\"A.결제수단\",\"doc\":\"A\"}},\
+{{\"local\":\"결제수단.카드\",\"address\":\"A.결제수단.카드\",\"doc\":\"A\"}}]}},\n\
+{{\"path\":\"B\",\"description\":\"문서 B\",\"hash\":\"{}\",\"scope\":[\
+{{\"local\":\"결제\",\"address\":\"A.결제\",\"doc\":\"A\"}},\
+{{\"local\":\"결제수단.카드\",\"address\":\"A.결제수단.카드\",\"doc\":\"A\"}}]}}\n\
 ],\n\"keywords\":[\n\
 {{\"path\":\"A\",\"name\":\"결제\",\"definition\":\"대금을 낸다\"}},\n\
 {{\"path\":\"A\",\"name\":\"결제수단\",\"definition\":\"방법\"}},\n\
@@ -58,6 +63,26 @@ fn writes_sorted_docs_keywords_edges() {
         hash::doc_hash(b)
     );
     assert_eq!(out, expected);
+}
+
+/// scope 는 alias, 자기 topic 과 exception, iknow 대상의 정식 주소를 로컬 이름 순서로 담는다.
+#[test]
+fn scope_lists_alias_own_symbols_and_iknow_targets() {
+    let a = "---\ndescription: A\n---\n\nkeyword `결제`: 낸다\n\n## 흐름\n\n본문\n";
+    let c = "---\ndescription: C\n---\n\nimport `A`.`결제` as `A 결제` rev \"000000\"\n\n## 흐름 // iknow `A`#`흐름`\n\n`A 결제` 를 쓴다.\nexception `무료`\n";
+    let (out, _) = render("scope", &[("A.kang", a), ("C.kang", c)]);
+    assert!(
+        out.contains("\"scope\":[{\"local\":\"A 결제\",\"address\":\"A.결제\",\"doc\":\"A\"},{\"local\":\"A#흐름\",\"address\":\"A#흐름\",\"doc\":\"A\"},{\"local\":\"무료\",\"address\":\"C!무료\",\"doc\":\"C\"},{\"local\":\"흐름\",\"address\":\"C#흐름\",\"doc\":\"C\"}]}"),
+        "{out}"
+    );
+}
+
+/// 문서 해시는 맨 앞 BOM 하나를 떼고 계산한다. `rev` 는 BOM 을 그대로 해시한다 (핀이 바뀌면 안 된다).
+#[test]
+fn doc_hash_strips_one_leading_bom_but_rev_does_not() {
+    assert_eq!(hash::doc_hash("\u{feff}a\n"), hash::doc_hash("a\n"));
+    assert_ne!(hash::doc_hash("\u{feff}\u{feff}a"), hash::doc_hash("a"));
+    assert_ne!(hash::rev("\u{feff}a"), hash::rev("a"));
 }
 
 /// `"`, `\`, 탭이 JSON 규칙대로 나온다.

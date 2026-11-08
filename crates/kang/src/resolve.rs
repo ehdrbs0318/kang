@@ -442,6 +442,28 @@ impl SymbolTable {
         &self.symbols[id.0].doc
     }
 
+    /// 심볼의 종류를 돌려준다.
+    ///
+    /// # 매개변수
+    /// - `id`: 심볼 식별자
+    ///
+    /// # 반환값
+    /// keyword, topic, exception 중 하나
+    pub fn kind(&self, id: SymbolId) -> SymbolKind {
+        self.symbols[id.0].kind
+    }
+
+    /// 심볼의 전체 이름을 돌려준다. keyword 계층은 `.` 로 잇는다.
+    ///
+    /// # 매개변수
+    /// - `id`: 심볼 식별자
+    ///
+    /// # 반환값
+    /// 전체 이름
+    pub fn name(&self, id: SymbolId) -> &str {
+        &self.symbols[id.0].name
+    }
+
     /// rev 핀이 해시할 텍스트를 돌려준다 (스펙 4.8).
     ///
     /// keyword 는 한 줄 정의, topic 은 본문, exception 은 그것을 선언한 topic 의 본문이다.
