@@ -54,15 +54,15 @@
 type Locate =
 	| { status: 'ok'; kind: 'doc' | 'graph'; workspaceId: string; path: string | null; docs: GraphDoc[]; edges: GraphEdge[]; definitions: Record<string, string>; stale: string[] }
 	| { status: 'notIndexed' | 'ambiguous' | 'remoteOnly' }
-'kang/locate': { input: { text: string }; output: Locate }
-'kang/open': { input: { workspaceId: string; path: string }; output: { opened: boolean } }
+'kang.locate': { input: { text: string }; output: Locate }
+'kang.open': { input: { workspaceId: string; path: string }; output: { opened: boolean } }
 ```
 
 - `kind` 는 받은 원문이 그래프 인덱스 파일과 같으면 `'graph'`, 문서 해시가 맞으면 `'doc'` 이다.
 - `path` 는 `kind: 'doc'` 일 때 그 문서의 경로다. `kind: 'graph'` 이면 null 이다.
 - `definitions` 의 key 는 keyword 주소 (`CONTEXT.문서`)이고 값은 정의다. 선언한 문서의 지금 해시가 인덱스와 다른 keyword 는 뺀다.
 - `stale` 은 지금 해시가 인덱스와 다른 문서 경로들이다.
-- `kang/open` 은 `path` 가 그 workspace 의 인덱스에 있을 때만 `<path>.kang` 을 연다. 없으면 `{ opened: false }` 다.
+- `kang.open` 은 `path` 가 그 workspace 의 인덱스에 있을 때만 `<path>.kang` 을 연다. 없으면 `{ opened: false }` 다.
 
 ### 렌더링 파서 (`orca-plugin/src/render/parse.ts`)
 
@@ -118,11 +118,11 @@ export function resolveRef(view: KangView, selfPath: string, local: string): { a
 - Modify: `orca-plugin/orca-plugin.json` (`.kang` custom editor)
 
 **Interfaces:**
-- Consumes: `kang/locate`, `kang/open` (Task 2), `parseKang`, `resolveRef`
+- Consumes: `kang.locate`, `kang.open` (Task 2), `parseKang`, `resolveRef`
 
 - [ ] **Step 1:** 실패하는 테스트를 쓴다. `parseKang` 이 저장소의 `docs/adr/0002-flatten-on-read-import-on-write.kang` 원문에서 description, import 3개(`CONTEXT.topic`, `CONTEXT.owner`, `CONTEXT.문서`), 본문 링크를 만드는지 본다. `CONTEXT.kang` 에서 keyword 블록과 줄 끝 `#`무엇을 keyword 로 선언하나`` 링크를 만드는지 본다. 코드 펜스 안의 백틱은 링크가 되지 않는다. `\`` 는 백틱 문자로 남는다. `// uncoded`, `// iknow …`, `exception`, `cover`, `pending` 의 원본 기호가 출력에 남지 않는다. `resolveRef` 는 alias, import 의 마지막 이름, 자기 keyword, 자기 topic 을 각각 주소로 바꾼다.
 - [ ] **Step 2:** 테스트가 실패하는지 확인한다.
-- [ ] **Step 3:** `parse.ts` 와 `main.ts` 를 구현한다. `main.ts` 는 `orca.document.onDidChange` 로 원문을 받고, `kang/locate` 를 부르고, `marked` 로 렌더링한다. 마우스를 올리면 정의를 보여 주고, 클릭하면 `kang/open` 을 부른다. 상태가 `ok` 가 아니면 안내 문구를 보여 준다. 테마는 `--orca-*` 변수를 쓴다.
+- [ ] **Step 3:** `parse.ts` 와 `main.ts` 를 구현한다. `main.ts` 는 `orca.document.onDidChange` 로 원문을 받고, `kang.locate` 를 부르고, `marked` 로 렌더링한다. 마우스를 올리면 정의를 보여 주고, 클릭하면 `kang.open` 을 부른다. 상태가 `ok` 가 아니면 안내 문구를 보여 준다. 테마는 `--orca-*` 변수를 쓴다.
 - [ ] **Step 4:** `orca plugin test`, `orca plugin check`, `npx tsc -p orca-plugin` 가 통과하는지 확인한다.
 
 ### Task 4: 그래프 화면
@@ -132,12 +132,12 @@ export function resolveRef(view: KangView, selfPath: string, local: string): { a
 - Modify: `orca-plugin/orca-plugin.json` (`.kang.json` custom editor)
 
 **Interfaces:**
-- Consumes: `kang/locate`, `kang/open`
+- Consumes: `kang.locate`, `kang.open`
 - Produces: `toElements(docs: GraphDoc[], edges: GraphEdge[]): ElementDefinition[]` (model.ts). 점 크기는 들어오는 연결 수로 정한다.
 
 - [ ] **Step 1:** 실패하는 테스트를 쓴다. `toElements` 가 문서마다 점 하나, 연결마다 화살표 하나를 만들고, 점의 `weight` 가 들어오는 연결 수인지 본다.
 - [ ] **Step 2:** 테스트가 실패하는지 확인한다.
-- [ ] **Step 3:** `model.ts` 와 `main.ts` 를 구현한다. `cose` 레이아웃을 쓴다. 점을 클릭하면 `kang/open`, 화살표에 마우스를 올리면 심볼 목록, `stale` 이 비어 있지 않으면 "인덱스가 오래되었습니다" 안내를 보여 준다.
+- [ ] **Step 3:** `model.ts` 와 `main.ts` 를 구현한다. `cose` 레이아웃을 쓴다. 점을 클릭하면 `kang.open`, 화살표에 마우스를 올리면 심볼 목록, `stale` 이 비어 있지 않으면 "인덱스가 오래되었습니다" 안내를 보여 준다.
 - [ ] **Step 4:** `orca plugin test`, `orca plugin check`, `npx tsc -p orca-plugin` 가 통과하는지 확인한다.
 
 ### Task 5: Orca 에 설치하고 화면으로 확인한다
