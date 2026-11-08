@@ -23,6 +23,7 @@
 - 원격 workspace 는 지원하지 않는다. `hostId` 가 null 이나 `'local'` 이면 로컬 workspace 이고, 그 밖의 값이면 원격 workspace 다.
 - 문서와 주석은 `/pstack:technical-writing` 규칙과 한국어 쉬운 문체를 따른다. 주석은 한국어다.
 - 플러그인은 `@types/node` 를 쓰지 않는다. `orca-plugin/src/node.d.ts` 에 쓰는 함수의 타입만 직접 적는다. 플러그인에는 빌드와 설치 단계가 없어서 패키지를 받을 곳이 없다. `kang` 크레이트에도 의존성을 더하지 않는다. 그래서 이 파일은 임시 방법이 아니라 정한 방법이다.
+- 플러그인은 저장소의 기존 관례를 따라 함수의 시작과 끝에 로그를 남기지 않고, 실패만 `console.debug` 로 남긴다.
 
 ## Interfaces
 
@@ -68,22 +69,24 @@ type Locate =
 - `scope` 는 `kind: 'doc'` 일 때 그 문서의 `scope` 다. `kind: 'graph'` 이면 빈 목록이다.
 - `stale` 은 지금 해시가 인덱스와 다른 문서 경로들이다.
 - 인덱스의 항목 하나라도 필드 타입이 틀리면 worker 는 그 인덱스 전체를 없는 것으로 본다. 다른 workspace 는 그대로 찾는다.
-- 인덱스는 커밋된 파일이라 어느 저장소에서든 올 수 있다. 그래서 worker 는 다음 인덱스도 없는 것으로 본다. `docs[].path`, `scope[].doc`, `keywords[].path`, `edges[].from`, `edges[].to` 중 하나라도 비었거나, 절대 경로이거나, 역슬래시가 있거나, `.` 나 `..` 조각이 있는 인덱스다. `docs[].path` 가 겹치는 인덱스도 없는 것으로 본다.
-- worker 는 보통 파일만 읽는다. symlink 는 따라간 뒤의 파일을 본다. 디렉토리, FIFO, 장치 파일, 32 MiB 보다 큰 파일은 없는 파일로 본다.
+- 인덱스는 커밋된 파일이라 어느 저장소에서든 올 수 있다. 그래서 worker 는 다음 인덱스도 없는 것으로 본다. `docs[].path`, `scope[].doc`, `keywords[].path`, `edges[].from`, `edges[].to` 중 하나라도 비었거나, 절대 경로이거나, 역슬래시가 있거나, `.` 나 `..` 조각이 있는 인덱스다. `docs[].path` 가 겹치는 인덱스와 `edges` 에 같은 `(from, to)` 쌍이 둘 이상인 인덱스도 없는 것으로 본다.
+- worker 는 workspace 안의 보통 파일만 읽는다. symlink 는 따라간 뒤의 실제 경로를 본다. 실제 경로가 workspace 루트의 실제 경로 밖이면 없는 파일로 본다. 디렉토리, FIFO, 장치 파일, 32 MiB 보다 큰 파일도 없는 파일로 본다.
 - 한 workspace 안에서 해시가 같은 문서가 둘 이상이면 `ambiguous` 다.
 - 로컬 후보가 없을 때 focus 된 workspace(`workspace.list` 에서 이름과 branch 가 같은 것)가 원격이면 `remoteOnly` 다. 그 밖에는 `notIndexed` 다.
-- `kang.open` 은 `path` 가 그 workspace 의 인덱스에 있을 때만 `<path>.kang` 을 연다. 없으면 `{ opened: false }` 다.
+- `kang.open` 은 `path` 가 그 workspace 의 인덱스에 있고 `<path>.kang` 을 위 규칙으로 읽을 수 있을 때만 그 파일을 연다. 그 밖에는 `{ opened: false }` 다.
 
 ### 렌더링 파서 (`orca-plugin/src/render/parse.ts`)
 
 ```ts
-export type KangView = { description: string; imports: { target: string; local: string }[]; keywords: string[]; body: string }
+export type KangView = { description: string; imports: { target: string; local: string }[]; body: string }
 export function parseKang(text: string): KangView
 export function renderBody(body: string): string      // 참조는 <a class="kang-ref" data-ref="참조 문자열">…</a> 로 그린다
 export function lookupRef(scope: ScopeEntry[], ref: string): ScopeEntry | undefined
 ```
 
-- 이름 풀이는 컴파일러가 한다. 화면은 `lookupRef` 로 `scope` 에서 찾기만 한다. 맨 앞 `#` 하나는 떼고 `local` 과 비교한다. 참조 바로 앞의 `!` 는 참조에 넣지 않고 글자로 둔다. kang 문법에서 `!` 는 주소 안의 구분자이고 참조 앞에 오지 않는다. 없으면 링크 없이 글자로 둔다.
+- 이름 풀이는 컴파일러가 한다. 화면은 `lookupRef` 로 `scope` 에서 찾기만 한다. 참조 문자열을 그대로 `local` 과 비교한다. 없으면 링크 없이 글자로 둔다.
+- 참조 바로 앞의 `#` 와 `!` 는 참조에 넣지 않고 글자로 둔다. 컴파일러는 본문에서 백틱 쌍만 참조로 본다. 참조 앞의 `#` 가 문법인 자리는 keyword 줄 끝의 topic 뿐이다. 그 `#` 는 떼고 참조만 그린다.
+- frontmatter 는 컴파일러와 같은 규칙으로 찾는다. 맨 앞 BOM 하나와 빈 줄을 건너뛴 첫 줄이 앞뒤 공백을 뗀 `---` 이면 열리고, 다음에 앞뒤 공백을 뗀 `---` 줄에서 닫힌다.
 - import 칩은 `target` 과 `address` 가 같은 `scope` 항목으로 찾는다. 칩의 문서 경로는 그 항목의 `doc` 이다. 찾지 못하면 `target` 을 보여 준다.
 - 정의가 `definitions` 에 없는 참조에는 tooltip 을 달지 않는다.
 
@@ -122,7 +125,7 @@ export function lookupRef(scope: ScopeEntry[], ref: string): ScopeEntry | undefi
 
 **Interfaces:**
 - Consumes: Task 1 의 그래프 인덱스 형식
-- Produces: `normalize(text: string): string`, `docHash(text: string): string`, `pickWorkspace(candidates: Candidate[], focused: { branch: string; displayName: string } | null): Candidate | 'ambiguous'`, `locate(text, workspaces, focused, fs): Locate` (locate.ts). `fs` 는 `{ read(path: string): string | null }` 이고 테스트에서 가짜로 바꾼다.
+- Produces: `normalize(text: string): string`, `docHash(text: string): string`, `pickWorkspace(candidates: Candidate[], focused: { branch: string; displayName: string } | null): Candidate | 'ambiguous'`, `locate(text, workspaces, focused, fs): Locate` (locate.ts). `fs` 는 `{ read(root: string, path: string): string | null }` 이고 테스트에서 가짜로 바꾼다. `root` 는 workspace 루트, `path` 는 그 안의 상대 경로다.
 
 - [x] **Step 1:** 실패하는 테스트를 쓴다. `normalize` 는 줄 끝 공백 제거, 연속 빈 줄 합치기, 앞뒤 공백 제거를 하고, U+FEFF 는 공백으로 보지 않는다(Rust `char::is_whitespace` 와 같음). `hash-parity.test.ts` 는 Task 1 이 쓴 저장소의 `.kang/graph.kang.json` 에 있는 모든 문서의 hash 가 그 파일 원문의 `docHash` 와 같은지 본다. `locate` 테스트는 다섯 경우다. 하나만 맞음, 이름과 branch 로 고름, 같은 git 저장소의 worktree 둘 (정의를 주고 첫 번째를 고름), 다른 저장소 둘 (`ambiguous`), 원격만 남음 (`remoteOnly`). 그 밖에 `stale` 계산과 정의 제외를 하나씩 본다.
   - 확인: CRLF, BOM, 인덱스 없음, 깨진 JSON, 깨진 항목, 같은 문서 둘, 원격 focus 경우까지 테스트가 있다.
