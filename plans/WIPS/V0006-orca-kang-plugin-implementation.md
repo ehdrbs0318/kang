@@ -19,8 +19,8 @@
 - 플러그인 id 는 `kang`, 폴더는 `orca-plugin/`, `engines.orca` 는 `>=1.4.248` 이다.
 - 플러그인은 네트워크를 쓰지 않는다. `marked` 와 `cytoscape` 의 ESM 파일을 `orca-plugin/vendor/` 에 넣는다.
 - 렌더링 화면은 읽기 전용이다. 플러그인은 `.kang` 파일을 바꾸지 않는다.
-- 문서 해시는 `crates/kang/src/hash.rs` 의 `normalize` 와 같은 규칙으로 정규화한 텍스트의 SHA-256 전체 hex 값이다. TypeScript 쪽 계산은 worker 에만 있다.
-- 원격 workspace (`hostId` 가 null 이 아닌 것)는 지원하지 않는다.
+- 문서 해시는 맨 앞 BOM(U+FEFF) 하나를 뗀 원문을 `crates/kang/src/hash.rs` 의 `normalize` 와 같은 규칙으로 정규화한 텍스트의 SHA-256 전체 hex 값이다. Rust 는 `doc_hash`, TypeScript 는 `docHash` 가 계산한다. `normalize` 와 `rev` 는 BOM 을 떼지 않는다. 그래야 rev 핀이 바뀌지 않는다. TypeScript 쪽 계산은 worker 에만 있다.
+- 원격 workspace 는 지원하지 않는다. `hostId` 가 null 이나 `'local'` 이면 로컬 workspace 이고, 그 밖의 값이면 원격 workspace 다.
 - 문서와 주석은 `/pstack:technical-writing` 규칙과 한국어 쉬운 문체를 따른다. 주석은 한국어다.
 
 ## Interfaces
@@ -32,7 +32,7 @@
 ```json
 {"kang":"graph/1",
 "docs":[
-{"path":"CONTEXT","description":"…","hash":"<64 hex>"}
+{"path":"CONTEXT","description":"…","hash":"<64 hex>","scope":[{"local":"문서","address":"CONTEXT.문서","doc":"CONTEXT"}]}
 ],
 "keywords":[
 {"path":"CONTEXT","name":"rev 핀","definition":"…"}
@@ -46,13 +46,16 @@
 - `docs` 는 문서 경로 순서다. `keywords` 는 문서 경로 순서, 그 안에서 선언 순서다. `edges` 는 `(from, to)` 순서이고, `symbols` 는 import 순서다.
 - keyword `name` 은 계층을 `.` 으로 잇는다 (예: `결제수단.카드`).
 - `symbols` 는 kang 의 정식 주소다 (`docs/A.결제`, `docs/A#topic`, `docs/A!exception`). `check::symbol_address` 로 만든다.
+- `scope` 는 그 문서 본문의 참조 문자열이 가리키는 심볼 목록이다. `local` 순서다. `local` 은 본문에 쓸 수 있는 이름, `address` 는 정식 주소, `doc` 은 그 심볼을 선언한 문서다. `SymbolTable::scope` 의 로컬 이름(자기 선언과 import 의 alias 나 정식 이름)과 `iknow` 대상을 담는다. `iknow` 대상은 정식 주소가 곧 `local` 이다. `local` 이 겹치면 스코프의 것을 남긴다.
 - 문자열 escape 는 `"`, `\`, U+0000~U+001F 만 한다. 제어 문자는 `\u00XX` 로 쓴다.
 
 ### worker 요청 (`orca-plugin/src/protocol.ts`)
 
 ```ts
+type ScopeEntry = { local: string; address: string; doc: string }
+type GraphDoc = { path: string; description: string; hash: string; scope: ScopeEntry[] }
 type Locate =
-	| { status: 'ok'; kind: 'doc' | 'graph'; workspaceId: string; path: string | null; docs: GraphDoc[]; edges: GraphEdge[]; definitions: Record<string, string>; stale: string[] }
+	| { status: 'ok'; kind: 'doc' | 'graph'; workspaceId: string; path: string | null; docs: GraphDoc[]; edges: GraphEdge[]; definitions: Record<string, string>; scope: ScopeEntry[]; stale: string[] }
 	| { status: 'notIndexed' | 'ambiguous' | 'remoteOnly' }
 'kang.locate': { input: { text: string }; output: Locate }
 'kang.open': { input: { workspaceId: string; path: string }; output: { opened: boolean } }
@@ -61,20 +64,25 @@ type Locate =
 - `kind` 는 받은 원문이 그래프 인덱스 파일과 같으면 `'graph'`, 문서 해시가 맞으면 `'doc'` 이다.
 - `path` 는 `kind: 'doc'` 일 때 그 문서의 경로다. `kind: 'graph'` 이면 null 이다.
 - `definitions` 의 key 는 keyword 주소 (`CONTEXT.문서`)이고 값은 정의다. 선언한 문서의 지금 해시가 인덱스와 다른 keyword 는 뺀다.
+- `scope` 는 `kind: 'doc'` 일 때 그 문서의 `scope` 다. `kind: 'graph'` 이면 빈 목록이다.
 - `stale` 은 지금 해시가 인덱스와 다른 문서 경로들이다.
+- 인덱스의 항목 하나라도 필드 타입이 틀리면 worker 는 그 인덱스 전체를 없는 것으로 본다. 다른 workspace 는 그대로 찾는다.
+- 한 workspace 안에서 해시가 같은 문서가 둘 이상이면 `ambiguous` 다.
+- 로컬 후보가 없을 때 focus 된 workspace(`workspace.list` 에서 이름과 branch 가 같은 것)가 원격이면 `remoteOnly` 다. 그 밖에는 `notIndexed` 다.
 - `kang.open` 은 `path` 가 그 workspace 의 인덱스에 있을 때만 `<path>.kang` 을 연다. 없으면 `{ opened: false }` 다.
 
 ### 렌더링 파서 (`orca-plugin/src/render/parse.ts`)
 
 ```ts
-type Ref = { text: string; local: string }        // text 는 화면 문구, local 은 문서 안의 참조 문자열
-type Block =
-	| { kind: 'markdown'; text: string }             // 참조는 <a class="kang-ref" data-ref="…">…</a> 로 바뀐 상태
-	| { kind: 'keyword'; name: string; definition: string; refs: string }   // refs 는 줄 끝 #topic 링크 HTML 또는 ''
-export type KangView = { description: string; imports: { target: string; doc: string; local: string }[]; keywords: string[]; blocks: Block[] }
+export type KangView = { description: string; imports: { target: string; local: string }[]; keywords: string[]; body: string }
 export function parseKang(text: string): KangView
-export function resolveRef(view: KangView, selfPath: string, local: string): { address: string; doc: string } | null
+export function renderBody(body: string): string      // 참조는 <a class="kang-ref" data-ref="참조 문자열">…</a> 로 그린다
+export function lookupRef(scope: ScopeEntry[], ref: string): ScopeEntry | undefined
 ```
+
+- 이름 풀이는 컴파일러가 한다. 화면은 `lookupRef` 로 `scope` 에서 찾기만 한다. 맨 앞 `#` 나 `!` 하나는 떼고 `local` 과 비교한다. 없으면 링크 없이 글자로 둔다.
+- import 칩은 `target` 과 `address` 가 같은 `scope` 항목으로 찾는다. 칩의 문서 경로는 그 항목의 `doc` 이다. 찾지 못하면 `target` 을 보여 준다.
+- 정의가 `definitions` 에 없는 참조에는 tooltip 을 달지 않는다.
 
 ---
 
@@ -86,7 +94,7 @@ export function resolveRef(view: KangView, selfPath: string, local: string): { a
 - Test: `crates/kang/tests/graph.rs`, `crates/kang/tests/cli.rs`
 
 **Interfaces:**
-- Produces: `pub fn doc_hash(text: &str) -> String` (hash.rs, 64 hex), `pub fn write_graph(project: &Project, table: &SymbolTable, sources: &HashMap<DocPath, String>, out: &mut impl Write) -> io::Result<()>`, `pub fn is_graph_format(content: &str) -> bool` (graph.rs)
+- Produces: `pub fn doc_hash(text: &str) -> String` (hash.rs, 64 hex), `pub fn write_graph(project: &Project, table: &SymbolTable, sources: &HashMap<DocPath, String>, out: &mut impl Write) -> io::Result<()>`, `pub fn is_graph_format(content: &str) -> bool` (graph.rs), `pub fn kind(&self, id: SymbolId) -> SymbolKind`, `pub fn name(&self, id: SymbolId) -> &str` (resolve.rs `SymbolTable`, `scope` 의 주소를 만드는 데 쓴다)
 
 - [ ] **Step 1: 실패하는 테스트를 쓴다.** `tests/graph.rs` 에 세 테스트를 둔다. `writes_sorted_docs_keywords_edges` 는 문서 두 개(B 가 A 의 keyword 를 import)의 출력 전체를 기대 문자열과 비교한다. `escapes_quotes_backslash_and_control` 은 description 의 `"`, `\`, 탭이 `\"`, `\\`, `\u0009` 로 나오는지 본다. `doc_hash_matches_normalize_sha256` 은 `"a  \r\n\n\n b\n"` 의 결과가 `normalize` 뒤 SHA-256 hex 와 같고 길이가 64 인지 본다.
 - [ ] **Step 2:** `cargo test -p kang --test graph` 가 컴파일 실패로 끝나는지 확인한다.
@@ -118,9 +126,9 @@ export function resolveRef(view: KangView, selfPath: string, local: string): { a
 - Modify: `orca-plugin/orca-plugin.json` (`.kang` custom editor)
 
 **Interfaces:**
-- Consumes: `kang.locate`, `kang.open` (Task 2), `parseKang`, `resolveRef`
+- Consumes: `kang.locate`, `kang.open` (Task 2), `parseKang`, `renderBody`, `lookupRef`
 
-- [ ] **Step 1:** 실패하는 테스트를 쓴다. `parseKang` 이 저장소의 `docs/adr/0002-flatten-on-read-import-on-write.kang` 원문에서 description, import 3개(`CONTEXT.topic`, `CONTEXT.owner`, `CONTEXT.문서`), 본문 링크를 만드는지 본다. `CONTEXT.kang` 에서 keyword 블록과 줄 끝 `#`무엇을 keyword 로 선언하나`` 링크를 만드는지 본다. 코드 펜스 안의 백틱은 링크가 되지 않는다. `\`` 는 백틱 문자로 남는다. `// uncoded`, `// iknow …`, `exception`, `cover`, `pending` 의 원본 기호가 출력에 남지 않는다. `resolveRef` 는 alias, import 의 마지막 이름, 자기 keyword, 자기 topic 을 각각 주소로 바꾼다.
+- [ ] **Step 1:** 실패하는 테스트를 쓴다. `parseKang` 이 저장소의 `docs/adr/0002-flatten-on-read-import-on-write.kang` 원문에서 description, import 3개(`CONTEXT.topic`, `CONTEXT.owner`, `CONTEXT.문서`), 본문 링크를 만드는지 본다. `CONTEXT.kang` 에서 keyword 블록과 줄 끝 `#`무엇을 keyword 로 선언하나`` 링크를 만드는지 본다. 코드 펜스 안의 백틱은 링크가 되지 않는다. `\`` 는 백틱 문자로 남는다. `// uncoded`, `// iknow …`, `exception`, `cover`, `pending` 의 원본 기호가 출력에 남지 않는다. `lookupRef` 는 참조 문자열을 `scope` 의 `local` 로 찾고, 맨 앞 `#` 나 `!` 하나는 떼고 찾는다. `scope` 에 없는 참조는 찾지 못한다.
 - [ ] **Step 2:** 테스트가 실패하는지 확인한다.
 - [ ] **Step 3:** `parse.ts` 와 `main.ts` 를 구현한다. `main.ts` 는 `orca.document.onDidChange` 로 원문을 받고, `kang.locate` 를 부르고, `marked` 로 렌더링한다. 마우스를 올리면 정의를 보여 주고, 클릭하면 `kang.open` 을 부른다. 상태가 `ok` 가 아니면 안내 문구를 보여 준다. 테마는 `--orca-*` 변수를 쓴다.
 - [ ] **Step 4:** `orca plugin test`, `orca plugin check`, `npx tsc -p orca-plugin` 가 통과하는지 확인한다.

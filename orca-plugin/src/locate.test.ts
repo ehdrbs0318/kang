@@ -30,9 +30,14 @@ function ws(id: string, path: string, name = id, branch: string | null = 'main')
  * @returns 그래프 인덱스 파일 원문
  */
 function graph(docs: Record<string, string>, keywords: { path: string; name: string; definition: string }[] = []) {
-	const docLines = Object.entries(docs).map(([path, text]) => JSON.stringify({ path, description: path, hash: docHash(text) }))
+	const docLines = Object.entries(docs).map(([path, text]) => JSON.stringify({ path, description: path, hash: docHash(text), scope: SCOPE[path] ?? [] }))
 	const keywordLines = keywords.map((k) => JSON.stringify(k))
 	return `{"kang":"graph/1",\n"docs":[\n${docLines.join(',\n')}\n],\n"keywords":[\n${keywordLines.join(',\n')}\n],\n"edges":[\n]}\n`
+}
+
+/** 테스트 인덱스의 문서별 scope 다. 없는 문서는 빈 목록이다. */
+const SCOPE: Record<string, { local: string; address: string; doc: string }[]> = {
+	'docs/A': [{ local: '카드', address: 'B.결제.카드', doc: 'B' }],
 }
 
 const DOC_A = '# A 문서\n\n본문\n'
@@ -51,7 +56,11 @@ test('normalize 는 CRLF 의 CR 을 지운다', () => {
 test('normalize 는 BOM 을 공백으로 보지 않고 Rust 의 공백 문자는 지운다', () => {
 	assert.equal(normalize('﻿a﻿\n'), '﻿a﻿')
 	assert.equal(normalize('a 　\u0085 \nb'), 'a\nb')
-	assert.notEqual(docHash('﻿a'), docHash('a'))
+})
+
+test('docHash 는 맨 앞 BOM 하나만 떼고 계산한다', () => {
+	assert.equal(docHash('\uFEFFa\n'), docHash('a\n'))
+	assert.notEqual(docHash('\uFEFF\uFEFFa'), docHash('a'))
 })
 
 test('docHash 는 정규화한 텍스트의 SHA-256 hex 64 자다', () => {
@@ -74,6 +83,7 @@ test('문서가 하나의 workspace 에만 맞으면 그 workspace 와 문서를
 	assert.equal(result.path, 'docs/A')
 	assert.deepEqual(result.docs.map((d) => d.path), ['docs/A', 'B'])
 	assert.deepEqual(result.definitions, { 'B.결제.카드': '카드 결제' })
+	assert.deepEqual(result.scope, [{ local: '카드', address: 'B.결제.카드', doc: 'B' }])
 	assert.deepEqual(result.stale, [])
 })
 
@@ -85,6 +95,30 @@ test('원문이 그래프 인덱스 파일과 같으면 kind 는 graph 이고 pa
 	if (result.status !== 'ok') return
 	assert.equal(result.kind, 'graph')
 	assert.equal(result.path, null)
+	assert.deepEqual(result.scope, [])
+})
+
+test('한 workspace 안에서 같은 해시의 문서가 둘이면 ambiguous 다', () => {
+	const fs = fakeFs({ '/r/a/.git/HEAD': 'x', '/r/a/.kang/graph.kang.json': graph({ A: DOC_A, C: DOC_A }) })
+	assert.deepEqual(locate(DOC_A, [ws('w1', '/r/a')], null, fs), { status: 'ambiguous' })
+})
+
+test('항목의 타입이 틀린 인덱스는 없는 것으로 보고, 다른 workspace 는 그대로 찾는다', () => {
+	const fs = fakeFs({
+		'/r/bad/.kang/graph.kang.json': '{"kang":"graph/1","docs":[null],"keywords":[],"edges":[]}',
+		'/r/bad2/.kang/graph.kang.json': JSON.stringify({ kang: 'graph/1', docs: [{ path: 1, description: '', hash: docHash(DOC_A), scope: [] }], keywords: [], edges: [] }),
+		'/r/bad3/.kang/graph.kang.json': JSON.stringify({ kang: 'graph/1', docs: [{ path: 'A', description: '', hash: docHash(DOC_A), scope: [{ local: 1 }] }], keywords: [], edges: [] }),
+		'/r/good/.kang/graph.kang.json': graph({ A: DOC_A }),
+	})
+	const bad = [ws('w1', '/r/bad'), ws('w2', '/r/bad2'), ws('w3', '/r/bad3')]
+	const result = locate(DOC_A, [...bad, ws('w4', '/r/good')], null, fs)
+	assert.equal(result.status === 'ok' && result.workspaceId, 'w4')
+	assert.deepEqual(locate(DOC_A, bad, null, fs), { status: 'notIndexed' })
+})
+
+test('로컬 후보가 없고 focus 된 workspace 가 원격이면 remoteOnly 다', () => {
+	const remote = { ...ws('w2', '/r/b', 'b', 'dev'), hostId: 'ssh-1' }
+	assert.deepEqual(locate(DOC_A, [ws('w1', '/r/a'), remote], { displayName: 'b', branch: 'dev' }, fakeFs({})), { status: 'remoteOnly' })
 })
 
 test('여러 workspace 가 맞으면 focus 된 workspace 의 이름과 branch 로 고른다', () => {

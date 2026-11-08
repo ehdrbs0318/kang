@@ -1,9 +1,9 @@
-// parse.ts 가 kang 원문을 화면용으로 나누고 그리는지, 참조를 주소로 푸는지 검사한다.
+// parse.ts 가 kang 원문을 화면용으로 나누고 그리는지, 참조를 scope 에서 찾는지 검사한다.
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { assert, test } from 'orca/testing'
-import { parseKang, renderBody, resolveRef } from './parse'
+import { lookupRef, parseKang, renderBody } from './parse'
 
 /** 이 파일에서 세 단계 위가 저장소 루트다. */
 const ROOT = fileURLToPath(new URL('../../../', import.meta.url))
@@ -30,9 +30,9 @@ test('ADR-0002 에서 description, import 3개, 본문 링크를 만든다', () 
 	const view = parseKang(source('docs/adr/0002-flatten-on-read-import-on-write'))
 	assert.ok(view.description.startsWith('ADR-0002: 읽을 때는 평탄화'))
 	assert.deepEqual(view.imports, [
-		{ target: 'CONTEXT.topic', doc: 'CONTEXT', local: 'topic' },
-		{ target: 'CONTEXT.owner', doc: 'CONTEXT', local: 'owner' },
-		{ target: 'CONTEXT.문서', doc: 'CONTEXT', local: '문서' },
+		{ target: 'CONTEXT.topic', local: 'topic' },
+		{ target: 'CONTEXT.owner', local: 'owner' },
+		{ target: 'CONTEXT.문서', local: '문서' },
 	])
 	const html = renderBody(view.body)
 	assert.ok(html.includes('<a class="kang-ref" data-ref="문서">문서</a>'))
@@ -119,32 +119,25 @@ test('본문의 HTML 은 글자로 남는다', () => {
 	assert.ok(html.includes('&#60;script&#62;'))
 })
 
-test('resolveRef 는 alias, import 의 마지막 이름, 자기 keyword, 자기 topic 을 주소로 바꾼다', () => {
-	const view = parseKang(
-		[
-			'---',
-			'description: d',
-			'---',
-			'',
-			'import `docs`/`A`.`결제` as `A 결제` rev "a3f9c1"',
-			'import `CONTEXT`.`문서` rev "f044b7"',
-			'import `docs`/`A`#`상품` rev "7b21e0"',
-			'',
-			'keyword `결제수단`.`카드`: 카드 결제',
-		].join('\n'),
-	)
-	assert.deepEqual(resolveRef(view, 'docs/B', 'A 결제'), { address: 'docs/A.결제', doc: 'docs/A' })
-	assert.deepEqual(resolveRef(view, 'docs/B', '문서'), { address: 'CONTEXT.문서', doc: 'CONTEXT' })
-	assert.deepEqual(resolveRef(view, 'docs/B', '결제수단.카드'), { address: 'docs/B.결제수단.카드', doc: 'docs/B' })
-	assert.deepEqual(resolveRef(view, 'docs/B', '#결제의 방법'), { address: 'docs/B#결제의 방법', doc: 'docs/B' })
-	assert.deepEqual(resolveRef(view, 'docs/B', 'docs/A!예외'), { address: 'docs/A!예외', doc: 'docs/A' })
-	assert.deepEqual(resolveRef(view, 'docs/B', 'A 결제.하위'), { address: 'docs/A.결제.하위', doc: 'docs/A' })
-	assert.equal(resolveRef(view, 'docs/B', '모르는 이름'), null)
+test('lookupRef 는 참조 문자열을 scope 의 local 로 찾고, 앞의 # 나 ! 하나는 떼고 찾는다', () => {
+	const scope = [
+		{ local: 'A 결제', address: 'docs/A.결제', doc: 'docs/A' },
+		{ local: '결제수단.카드', address: 'docs/B.결제수단.카드', doc: 'docs/B' },
+		{ local: '결제의 방법', address: 'docs/B#결제의 방법', doc: 'docs/B' },
+		{ local: '예외', address: 'docs/B!예외', doc: 'docs/B' },
+		{ local: 'docs/A#상품', address: 'docs/A#상품', doc: 'docs/A' },
+	]
+	assert.equal(lookupRef(scope, 'A 결제'), scope[0])
+	assert.equal(lookupRef(scope, '결제수단.카드'), scope[1])
+	assert.equal(lookupRef(scope, '#결제의 방법'), scope[2])
+	assert.equal(lookupRef(scope, '!예외'), scope[3])
+	assert.equal(lookupRef(scope, 'docs/A#상품'), scope[4])
 })
 
-test('# 참조는 대상이 topic 인 import 에만 맞고, 아니면 자기 topic 이다', () => {
-	const view = parseKang('---\ndescription: d\n---\n\nimport `CONTEXT`.`owner` rev "1"\nimport `docs`/`A`#`상품` rev "2"\n')
-	assert.deepEqual(resolveRef(view, 'docs/B', '#owner'), { address: 'docs/B#owner', doc: 'docs/B' })
-	assert.deepEqual(resolveRef(view, 'docs/B', 'owner'), { address: 'CONTEXT.owner', doc: 'CONTEXT' })
-	assert.deepEqual(resolveRef(view, 'docs/B', '#상품'), { address: 'docs/A#상품', doc: 'docs/A' })
+test('lookupRef 는 scope 에 없는 참조에 undefined 를 돌려준다', () => {
+	const scope = [{ local: 'A 결제', address: 'docs/A.결제', doc: 'docs/A' }]
+	assert.equal(lookupRef(scope, '모르는 이름'), undefined)
+	assert.equal(lookupRef(scope, 'A 결제.하위'), undefined)
+	assert.equal(lookupRef(scope, 'docs/A.결제'), undefined)
+	assert.equal(lookupRef([], 'A 결제'), undefined)
 })

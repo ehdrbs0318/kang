@@ -87,8 +87,9 @@ async function show(text: string): Promise<void> {
 	let located: Locate | null = null
 	try {
 		located = await orca.plugin.request('kang.locate', { text })
-	} catch {
+	} catch (error) {
 		// worker 가 없거나 응답하지 않으면 안내 문구만 보여 준다.
+		console.debug('kang.locate 요청이 실패해서 안내 문구만 보여 줍니다', error)
 	}
 	// 그래프 영역의 크기가 정해진 뒤에 그린다.
 	await styled
@@ -127,30 +128,42 @@ function draw(located: Locate | null): void {
 		cy.zoom(1)
 		cy.center()
 	}
-	// 점을 누르면 그 문서를 연다. 요청이 실패해도 화면은 그대로 둔다.
+	/**
+	 * 점을 누르면 그 문서를 연다.
+	 * @param event cytoscape 의 tap 이벤트. `target` 은 누른 점이고 `data('id')` 가 문서 경로다
+	 */
 	cy.on('tap', 'node', (event) => {
 		const path = String(event.target.data('id'))
-		orca.plugin.request('kang.open', { workspaceId: located.workspaceId, path }).catch(() => undefined)
+		// 요청이 실패해도 화면은 그대로 둔다.
+		orca.plugin.request('kang.open', { workspaceId: located.workspaceId, path }).catch((error) => console.debug('kang.open 요청이 실패했습니다', error))
 	})
-	// 화살표에 마우스를 올리면 그 import 의 심볼 목록을 마우스 옆에 보여 준다.
+	/**
+	 * 화살표에 마우스를 올리면 그 import 의 심볼 목록을 마우스 옆에 보여 준다.
+	 * @param event cytoscape 의 mouseover 이벤트. `target` 은 화살표이고 `renderedPosition` 은 화면 안의 마우스 위치다
+	 */
 	cy.on('mouseover', 'edge', (event) => {
 		tooltip.textContent = String(event.target.data('symbols'))
 		tooltip.style.left = `${canvas.offsetLeft + event.renderedPosition.x + 12}px`
 		tooltip.style.top = `${canvas.offsetTop + event.renderedPosition.y + 12}px`
 		tooltip.hidden = false
 	})
+	/** 화살표에서 마우스가 나가면 심볼 목록을 숨긴다. */
 	cy.on('mouseout', 'edge', () => {
 		tooltip.hidden = true
 	})
 	graph = cy
 }
 
-// 테마가 바뀌면 --orca-* 변수가 이미 바뀌었으므로 색을 다시 읽어 스타일을 바꾼다.
+/** 테마가 바뀌면 --orca-* 변수가 이미 바뀌었으므로 색을 다시 읽어 스타일을 바꾼다. 그래프가 없으면 할 일이 없다. */
 orca.on('theme', () => {
 	graph?.style(graphStyle())
 })
 
-// 처음 문서와, 밖에서 파일이 바뀔 때마다 오는 문서를 그린다. bytes 문서는 오지 않는다 (manifest 가 text 다).
+/**
+ * Orca 가 문서 내용을 줄 때마다 그래프를 다시 그린다. 처음 문서와, 밖에서 파일이 바뀔 때 온다.
+ * @param doc Orca 가 준 문서. bytes 문서는 오지 않는다 (manifest 가 text 다)
+ */
 orca.document?.onDidChange((doc) => {
+	// text 문서만 그린다.
 	if (doc.content.kind === 'text') void show(doc.content.text)
 })

@@ -1,7 +1,10 @@
 // custom editor 와 worker 가 함께 쓰는 요청 계약이다. 양쪽 모두 이 파일의 타입을 읽는다.
 
-/** 그래프 인덱스의 문서 한 줄이다. `hash` 는 정규화한 원문의 SHA-256 hex 값이다. */
-export type GraphDoc = { path: string; description: string; hash: string }
+/** 문서 본문의 참조 문자열 하나가 가리키는 심볼이다. `local` 은 참조 문자열, `address` 는 kang 의 정식 주소, `doc` 은 그 심볼을 선언한 문서 경로다. */
+export type ScopeEntry = { local: string; address: string; doc: string }
+
+/** 그래프 인덱스의 문서 한 줄이다. `hash` 는 맨 앞 BOM 을 떼고 정규화한 원문의 SHA-256 hex 값이다. `scope` 는 `kang build` 가 푼 본문 참조 목록이다. */
+export type GraphDoc = { path: string; description: string; hash: string; scope: ScopeEntry[] }
 
 /** 그래프 인덱스의 keyword 한 줄이다. `name` 은 계층을 `.` 으로 잇는다. */
 export type GraphKeyword = { path: string; name: string; definition: string }
@@ -19,6 +22,7 @@ export type Locate =
 			docs: GraphDoc[]
 			edges: GraphEdge[]
 			definitions: Record<string, string>
+			scope: ScopeEntry[]
 			stale: string[]
 	  }
 	| { status: 'notIndexed' | 'ambiguous' | 'remoteOnly' }

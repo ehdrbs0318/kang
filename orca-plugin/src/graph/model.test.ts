@@ -5,10 +5,10 @@ import { toElements } from './model'
 /**
  * 테스트용 문서 한 줄을 만든다.
  * @param path 문서 경로
- * @returns description 과 hash 를 채운 문서
+ * @returns description 과 hash 를 채우고 scope 는 비운 문서
  */
 function doc(path: string) {
-	return { path, description: `${path} 설명`, hash: '0'.repeat(64) }
+	return { path, description: `${path} 설명`, hash: '0'.repeat(64), scope: [] }
 }
 
 test('문서마다 점 하나, 연결마다 화살표 하나를 만들고 weight 는 들어오는 연결 수다', () => {

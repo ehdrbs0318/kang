@@ -62,19 +62,59 @@ export function normalize(text: string): string {
 }
 
 /**
- * 정규화한 텍스트의 SHA-256 hex 값을 계산한다.
- * @param text 원문
+ * 문서 해시를 계산한다. 맨 앞 BOM(U+FEFF) 하나를 떼고 정규화한 텍스트의 SHA-256 hex 값이다.
+ * `crates/kang/src/hash.rs` 의 `doc_hash` 와 같다. 컴파일러가 BOM 을 떼고 읽으므로 같이 뗀다.
+ * @param text 문서 원문
  * @returns 소문자 hex 64 자
  */
 export function docHash(text: string): string {
-	return createHash('sha256').update(normalize(text), 'utf8').digest('hex')
+	return createHash('sha256').update(normalize(text.replace(/^\uFEFF/, '')), 'utf8').digest('hex')
+}
+
+/**
+ * 값이 문자열인지 본다.
+ * @param value 볼 값
+ * @returns 문자열이면 true
+ */
+function isString(value: unknown): value is string {
+	return typeof value === 'string'
+}
+
+/**
+ * 값이 객체이고 주어진 필드가 모두 문자열인지 본다.
+ * @param value 볼 값
+ * @param keys 문자열이어야 하는 필드 이름들
+ * @returns 모두 문자열이면 true. null 이나 객체가 아닌 값은 false
+ */
+function hasStrings(value: unknown, keys: string[]): value is Record<string, unknown> {
+	return typeof value === 'object' && value !== null && keys.every((k) => isString((value as Record<string, unknown>)[k]))
+}
+
+/**
+ * 그래프 인덱스의 목록 세 개가 모두 계약의 타입을 지키는지 본다.
+ * @param docs `docs` 값
+ * @param keywords `keywords` 값
+ * @param edges `edges` 값
+ * @returns 모두 배열이고 모든 항목의 필드 타입이 맞으면 true
+ */
+function validLists(docs: unknown, keywords: unknown, edges: unknown): boolean {
+	return (
+		Array.isArray(docs) &&
+		docs.every(
+			(d) => hasStrings(d, ['path', 'description', 'hash']) && Array.isArray(d.scope) && d.scope.every((e: unknown) => hasStrings(e, ['local', 'address', 'doc'])),
+		) &&
+		Array.isArray(keywords) &&
+		keywords.every((k) => hasStrings(k, ['path', 'name', 'definition'])) &&
+		Array.isArray(edges) &&
+		edges.every((e) => hasStrings(e, ['from', 'to']) && Array.isArray(e.symbols) && e.symbols.every(isString))
+	)
 }
 
 /**
  * workspace 의 그래프 인덱스를 읽는다.
  * @param root workspace 루트 절대 경로
  * @param fs 파일 읽기
- * @returns 인덱스. 파일이 없거나, JSON 이 깨졌거나, `kang` 표지가 `graph/1` 이 아니면 null
+ * @returns 인덱스. 파일이 없거나, JSON 이 깨졌거나, `kang` 표지가 `graph/1` 이 아니거나, 항목 하나라도 타입이 틀리면 null
  */
 export function readIndex(root: string, fs: FileReader): GraphIndex | null {
 	const text = fs.read(join(root, INDEX_PATH))
@@ -88,11 +128,9 @@ export function readIndex(root: string, fs: FileReader): GraphIndex | null {
 		return null
 	}
 	const index = value as { kang?: unknown; docs?: unknown; keywords?: unknown; edges?: unknown } | null
-	// kang 이 만든 파일이 아니거나 목록이 없으면 인덱스가 없는 것으로 본다.
-	if (!index || index.kang !== 'graph/1' || !Array.isArray(index.docs) || !Array.isArray(index.keywords) || !Array.isArray(index.edges)) {
-		return null
-	}
-	return { text, docs: index.docs, keywords: index.keywords, edges: index.edges }
+	// kang 이 만든 파일이 아니거나 항목 하나라도 타입이 틀리면 인덱스가 없는 것으로 본다. 그래야 깨진 인덱스 하나가 다른 workspace 를 막지 않는다.
+	if (!index || index.kang !== 'graph/1' || !validLists(index.docs, index.keywords, index.edges)) return null
+	return { text, docs: index.docs as GraphDoc[], keywords: index.keywords as GraphKeyword[], edges: index.edges as GraphEdge[] }
 }
 
 /**
@@ -141,8 +179,8 @@ export function pickWorkspace(candidates: Candidate[], focused: Focused | null):
  * @param workspaces `workspace.list` 의 workspace 목록
  * @param focused focus 된 workspace. 없으면 null
  * @param fs 파일 읽기
- * @returns 찾은 결과. 맞는 인덱스가 없으면 `notIndexed`, 원격 workspace 만 있으면 `remoteOnly`,
- *   하나를 고를 수 없으면 `ambiguous`
+ * @returns 찾은 결과. 맞는 인덱스가 없으면 `notIndexed`, 원격 workspace 만 있거나 로컬 후보가 없고 focus 된 workspace 가 원격이면 `remoteOnly`,
+ *   하나를 고를 수 없거나 고른 workspace 안에 같은 해시의 문서가 둘 이상이면 `ambiguous`
  */
 export function locate(text: string, workspaces: Workspace[], focused: Focused | null, fs: FileReader): Locate {
 	const local = workspaces.filter(isLocal)
@@ -160,10 +198,15 @@ export function locate(text: string, workspaces: Workspace[], focused: Focused |
 		const paths = index.text === text ? [null] : index.docs.filter((d) => d.hash === hash).map((d) => d.path)
 		for (const path of paths) candidates.push({ workspace, path, gitCommonDir: gitCommonDir(workspace.path, fs) })
 	}
-	if (candidates.length === 0) return { status: 'notIndexed' }
+	// 로컬 후보가 없을 때 focus 된 workspace 가 원격이면, 그 문서는 원격 workspace 의 것일 수 있다.
+	if (candidates.length === 0) {
+		const remote = focused && workspaces.some((w) => !isLocal(w) && w.name === focused.displayName && w.branch === focused.branch)
+		return { status: remote ? 'remoteOnly' : 'notIndexed' }
+	}
 
 	const picked = pickWorkspace(candidates, focused)
-	if (picked === 'ambiguous') return { status: 'ambiguous' }
+	// 고를 수 없거나, 고른 workspace 안에 내용이 같은 문서가 둘 이상이면 어느 문서인지 모른다.
+	if (picked === 'ambiguous' || candidates.filter((c) => c.workspace.id === picked.workspace.id).length > 1) return { status: 'ambiguous' }
 
 	const root = picked.workspace.path
 	const index = indexes.get(picked.workspace.id)!
@@ -187,6 +230,7 @@ export function locate(text: string, workspaces: Workspace[], focused: Focused |
 		docs: index.docs,
 		edges: index.edges,
 		definitions,
+		scope: index.docs.find((d) => d.path === picked.path)?.scope ?? [],
 		stale,
 	}
 }
