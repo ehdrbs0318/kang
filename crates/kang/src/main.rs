@@ -26,7 +26,7 @@ use std::path::PathBuf;
 ///
 /// 인자를 틀린 에이전트가 다음에 하는 일이 `kang --help` 이므로 여기서 명령·인자
 /// 형식·종료 코드를 전부 보여줘야 재시도가 성공한다.
-const 사용법: &str = "kang — 문서 컴파일러
+const USAGE: &str = "kang — 문서 컴파일러
 
 명령:
   kang init                            에이전트 진입점과 첫 문서 생성
@@ -36,8 +36,8 @@ const 사용법: &str = "kang — 문서 컴파일러
   kang keywords [경로]                 키워드 목록
   kang refs <키워드>                   키워드를 참조하는 topic
   kang show <문서|토픽>                문서/토픽 조회 (YAML)
-  kang index <경로>                    심볼 인덱스 산출 (탭 구분)
-  kang types <경로>                    TypeScript 타입 산출 (topic)
+  kang index <경로>                    심볼 인덱스 생성 (탭 구분)
+  kang types <경로>                    TypeScript 타입 생성 (topic)
   kang --help                          이 도움말
   kang --version                       버전
 
@@ -62,19 +62,19 @@ const 사용법: &str = "kang — 문서 컴파일러
 fn main() {
     // `std::env::args()` 는 잘못된 유니코드 인자에 **패닉**한다. 인자 파싱은 도구의
     // 최외곽 신뢰 경계이고 그 위에 아무것도 없으므로, 여기서 죽으면 진단도 종료 코드도
-    // 남지 않는다. 로더가 비 UTF-8 파일 이름을 견디는데(`resolve::문서경로`) 그 앞의
+    // 남지 않는다. 로더가 비 UTF-8 파일 이름을 견디는데(`resolve::doc_path`) 그 앞의
     // 인자 파서가 죽으면 안 된다.
-    let Ok(인자) = std::env::args_os()
+    let Ok(args) = std::env::args_os()
         .skip(1)
         .map(std::ffi::OsString::into_string)
         .collect::<Result<Vec<String>, _>>()
     else {
         // 어떤 명령 이름도 심볼 주소도 UTF-8 이 아닐 수 없다. 답은 사용법 오류다.
         eprintln!("인자가 UTF-8 이 아닙니다.");
-        eprintln!("{사용법}");
+        eprintln!("{USAGE}");
         std::process::exit(2);
     };
-    let 조각: Vec<&str> = 인자.iter().map(String::as_str).collect();
+    let segment: Vec<&str> = args.iter().map(String::as_str).collect();
 
     // **플래그는 자기 자리에서만 플래그다.** 이름만 보고 허용하면 `kang index --help` 가
     // "경로가 `--help` 인 인덱스" 로 읽혀 그 이름의 파일이 생긴다 (실제로 생겼다).
@@ -85,23 +85,23 @@ fn main() {
     // 인자, `--import` 는 `bless` 의 셋째 인자. 그 밖의 `-` 로 시작하는 인자는 전부 사용법
     // 오류다. 문서·심볼 이름이 `-` 로 시작하면 CLI 로 가리킬 수 없고, 그때 처방은
     // 스펙 6.0 과 같다 — 주소를 댈 수 없는 이름은 이름을 고친다.
-    let 제자리_플래그 = |자리: usize| match 조각[자리] {
-        "--help" | "--version" => 조각.len() == 1,
-        "--import" => 자리 == 2 && 조각.first() == Some(&"bless"),
+    let is_positional_flag = |position: usize| match segment[position] {
+        "--help" | "--version" => segment.len() == 1,
+        "--import" => position == 2 && segment.first() == Some(&"bless"),
         _ => false,
     };
-    if let Some(자리) =
-        (0..조각.len()).find(|자리| 조각[*자리].starts_with('-') && !제자리_플래그(*자리))
+    if let Some(position) = (0..segment.len())
+        .find(|position| segment[*position].starts_with('-') && !is_positional_flag(*position))
     {
-        eprintln!("모르는 플래그입니다: {}", 조각[자리]);
-        eprintln!("{사용법}");
+        eprintln!("모르는 플래그입니다: {}", segment[position]);
+        eprintln!("{USAGE}");
         std::process::exit(2);
     }
 
-    let 코드 = match 조각.as_slice() {
+    let code = match segment.as_slice() {
         // 요청해서 본 도움말은 오류가 아니므로 표준 출력으로 낸다.
         ["--help"] => {
-            println!("{사용법}");
+            println!("{USAGE}");
             0
         }
         // 릴리즈 바이너리를 curl 로 받은 소비자는 그것이 어느 계약인지 알 방법이 이것뿐이다
@@ -114,51 +114,51 @@ fn main() {
         }
         ["build"] => match compile() {
             Ok(_) => 0,
-            Err(진단들) => 종료_코드(&진단들),
+            Err(diagnostics) => exit_code(&diagnostics),
         },
-        ["list"] => 목록(None),
-        ["list", 스코프] => 목록(Some(스코프)),
-        ["keywords"] => 키워드들(None),
-        ["keywords", 스코프] => 키워드들(Some(스코프)),
-        ["refs", 키워드] => 참조들(키워드),
-        ["show", 대상] => 조회(대상),
-        ["bless", 문서, "--import", 심볼] => 축복(문서, 심볼),
-        ["init"] => 초기화(),
-        ["index", 경로] => 산출(
-            경로,
+        ["list"] => list(None),
+        ["list", scope] => list(Some(scope)),
+        ["keywords"] => keywords(None),
+        ["keywords", scope] => keywords(Some(scope)),
+        ["refs", keyword] => refs(keyword),
+        ["show", target] => run_show(target),
+        ["bless", doc, "--import", symbol] => run_bless(doc, symbol),
+        ["init"] => run_init(),
+        ["index", path] => generate(
+            path,
             "인덱스",
             index::write_index,
-            index::인덱스_형식인가,
+            index::is_index_format,
             "tsv.tmp",
         ),
-        ["types", 경로] => 산출(
-            경로,
+        ["types", path] => generate(
+            path,
             "타입",
             index::write_types,
-            index::타입_형식인가,
+            index::is_types_format,
             "ts.tmp",
         ),
         // v1 에 없는 것과 **v1 이 만들지 않기로 한 것**은 다르다. 앞의 것은 다음 빌드를
         // 기다리면 되지만 이것은 기다려도 오지 않는다 (스펙 6절).
-        ["inspect"] => 미구현("kang inspect", "v2 기능이며 아직 구현되지 않았습니다."),
+        ["inspect"] => not_implemented("kang inspect", "v2 기능이며 아직 구현되지 않았습니다."),
         // 알 수 없는 명령과 인자 개수 불일치가 함께 여기로 온다.
         _ => {
             // 무엇이 틀렸는지 먼저 알린다. 도움말만 내면 어느 부분을 고칠지 모른 채
             // 같은 줄을 다시 쓴다.
-            if 조각.is_empty() {
+            if segment.is_empty() {
                 eprintln!("명령이 없습니다.");
             } else {
                 eprintln!(
                     "알 수 없는 명령이거나 인자가 맞지 않습니다: kang {}",
-                    조각.join(" ")
+                    segment.join(" ")
                 );
             }
-            eprintln!("{사용법}");
+            eprintln!("{USAGE}");
             2
         }
     };
 
-    std::process::exit(코드);
+    std::process::exit(code);
 }
 
 /// 프로젝트 루트를 찾아 문서를 전부 읽고 파싱하고 심볼 테이블을 세운다.
@@ -177,7 +177,7 @@ fn main() {
 ///
 /// # 반환값
 /// 프로젝트 루트와, 파싱된 프로젝트와 전역 심볼 테이블.
-/// **루트를 함께 돌려준다** — [`축복`] 이 문서 파일 경로를 조립하려면 필요하고,
+/// **루트를 함께 돌려준다** — [`run_bless`] 이 문서 파일 경로를 조립하려면 필요하고,
 /// 여기서 이미 찾았으므로 부르는 쪽이 다시 찾으면 같은 일을 두 번 한다
 ///
 /// # 오류
@@ -187,8 +187,8 @@ fn parse_project() -> Result<(PathBuf, Project, SymbolTable), Vec<Diagnostic>> {
     // 새로 만들지 않고 환경 오류로 즉시 끝낸다.
     let cwd = match std::env::current_dir() {
         Ok(cwd) => cwd,
-        Err(오류) => {
-            eprintln!("현재 디렉토리를 확인하지 못했습니다 — {오류}");
+        Err(error) => {
+            eprintln!("현재 디렉토리를 확인하지 못했습니다 — {error}");
             std::process::exit(2);
         }
     };
@@ -197,24 +197,24 @@ fn parse_project() -> Result<(PathBuf, Project, SymbolTable), Vec<Diagnostic>> {
     let root = match resolve::find_root(&cwd) {
         Ok(root) => root,
         // 루트를 못 찾으면 읽을 문서 자체가 없다. 함께 낼 진단도 없으므로 여기서 끝낸다.
-        Err(진단) => {
-            let 진단들 = vec![진단];
-            진단_찍기(&진단들);
-            return Err(진단들);
+        Err(diagnostic) => {
+            let diagnostics = vec![diagnostic];
+            print_diagnostics(&diagnostics);
+            return Err(diagnostics);
         }
     };
 
-    let (project, mut 진단들) = resolve::load(&root);
-    let (table, 이름_충돌) = SymbolTable::build(&project);
-    진단들.extend(이름_충돌);
+    let (project, mut diagnostics) = resolve::load(&root);
+    let (table, name_conflicts) = SymbolTable::build(&project);
+    diagnostics.extend(name_conflicts);
 
     // 문서가 없는 것은 error 가 아니다. 다만 조용히 성공하면 사용자는 명령이 동작한
     // 것인지 알 수 없다. 진단이 있으면 그것이 이미 사정을 설명하므로 겹쳐 말하지 않는다.
-    if project.docs.is_empty() && 진단들.is_empty() {
+    if project.docs.is_empty() && diagnostics.is_empty() {
         eprintln!("이 프로젝트에 .kang 문서가 없습니다. kang init 으로 첫 문서를 만드세요.");
     }
 
-    진단_마감(진단들)?;
+    finish_diagnostics(diagnostics)?;
     Ok((root, project, table))
 }
 
@@ -237,12 +237,12 @@ fn compile() -> Result<(Project, SymbolTable), Vec<Diagnostic>> {
     // 해석되지 않으면 예외 짝 맞추기가 성립하지 않는다. 핀은 고치는 방법이 `bless`
     // 하나로 기계적이라 마지막이다. 각 검사의 내부 순서는 이미 문서 경로 순이므로
     // 이 호출 순서가 곧 실행마다 같은 출력 순서다.
-    let mut 진단들 = check::check_cycles(&project);
-    진단들.extend(check::check_symbols(&project, &table));
-    진단들.extend(check::check_exceptions(&project, &table));
-    진단들.extend(check::check_revs(&project, &table));
+    let mut diagnostics = check::check_cycles(&project);
+    diagnostics.extend(check::check_symbols(&project, &table));
+    diagnostics.extend(check::check_exceptions(&project, &table));
+    diagnostics.extend(check::check_revs(&project, &table));
 
-    진단_마감(진단들)?;
+    finish_diagnostics(diagnostics)?;
     Ok((project, table))
 }
 
@@ -258,16 +258,19 @@ fn compile() -> Result<(Project, SymbolTable), Vec<Diagnostic>> {
 ///
 /// # 오류
 /// error 가 하나라도 있으면 받은 진단 전부
-fn 진단_마감(진단들: Vec<Diagnostic>) -> Result<(), Vec<Diagnostic>> {
+fn finish_diagnostics(diagnostics: Vec<Diagnostic>) -> Result<(), Vec<Diagnostic>> {
     // 진단은 문서가 아니라 사람과 에이전트에게 가는 말이므로 표준 오류로 낸다.
     // 그래야 error 가 있을 때 표준 출력이 비어 있다는 규약이 유지된다.
-    if !진단들.is_empty() {
-        진단_찍기(&진단들);
+    if !diagnostics.is_empty() {
+        print_diagnostics(&diagnostics);
     }
 
     // warn 은 이미 찍혔고 빌드를 실패시키지 않는다.
-    if 진단들.iter().any(|진단| 진단.severity == Severity::Error) {
-        return Err(진단들);
+    if diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.severity == Severity::Error)
+    {
+        return Err(diagnostics);
     }
 
     Ok(())
@@ -289,10 +292,10 @@ fn 진단_마감(진단들: Vec<Diagnostic>) -> Result<(), Vec<Diagnostic>> {
 ///
 /// # 반환값
 /// 환경 오류면 `2`, 그 밖의 컴파일 error 면 `1`
-fn 종료_코드(진단들: &[Diagnostic]) -> i32 {
-    if 진단들
+fn exit_code(diagnostics: &[Diagnostic]) -> i32 {
+    if diagnostics
         .iter()
-        .any(|진단| 진단.code == "K050" || 진단.code == "K051")
+        .any(|diagnostic| diagnostic.code == "K050" || diagnostic.code == "K051")
     {
         2
     } else {
@@ -311,8 +314,8 @@ fn 종료_코드(진단들: &[Diagnostic]) -> i32 {
 ///
 /// # 반환값
 /// 종료 코드 `3`
-fn 미구현(명령: &str, 사정: &str) -> i32 {
-    eprintln!("아직 쓸 수 없는 명령입니다: {명령} — {사정}");
+fn not_implemented(command: &str, why_not: &str) -> i32 {
+    eprintln!("아직 쓸 수 없는 명령입니다: {command} — {why_not}");
     3
 }
 
@@ -324,40 +327,40 @@ fn 미구현(명령: &str, 사정: &str) -> i32 {
 /// (스펙 3절). 그래서 `K050` 진단을 찍지 않는다. 찍으면 에이전트가 성공한 명령에서
 /// 고칠 것을 찾는다.
 ///
-/// **출력은 전부 표준 오류다.** `init` 은 파일을 만들 뿐 데이터를 내지 않으므로 [`축복`]
+/// **출력은 전부 표준 오류다.** `init` 은 파일을 만들 뿐 데이터를 내지 않으므로 [`run_bless`]
 /// 과 같은 규약을 따른다. 산출물마다의 처리는 [`kang::init::init`] 이 직접 찍는다.
 ///
 /// # 반환값
 /// 프로세스 종료 코드
-fn 초기화() -> i32 {
+fn run_init() -> i32 {
     // 현재 디렉토리를 잃은 프로세스는 루트를 정할 수 없다. `parse_project` 와 같은 답이다.
-    let cwd = std::env::current_dir().unwrap_or_else(|오류| {
-        eprintln!("현재 디렉토리를 확인하지 못했습니다 — {오류}");
+    let cwd = std::env::current_dir().unwrap_or_else(|error| {
+        eprintln!("현재 디렉토리를 확인하지 못했습니다 — {error}");
         std::process::exit(2);
     });
 
     // 하위 디렉토리에서 불러도 파일은 저장소 루트에 만들어져야 한다 (스펙 3절).
-    let (root, git_없음) = match resolve::find_root(&cwd) {
+    let (root, no_git) = match resolve::find_root(&cwd) {
         Ok(root) => (root, false),
         Err(_) => (cwd, true),
     };
 
-    let 만든것 = match init::init(&root) {
-        Ok(만든것) => 만든것,
+    let created = match init::init(&root) {
+        Ok(created) => created,
         // 실패는 전부 IO 다. 문서가 규칙을 어긴 것이 아니므로 환경 오류로 2 다.
-        Err(사유) => {
-            eprintln!("{사유}");
+        Err(reason) => {
+            eprintln!("{reason}");
             return 2;
         }
     };
 
     // 하나도 만들지 않았으면 그렇다고 말한다. 침묵하면 무엇이 일어났는지 알 수 없다.
-    if 만든것.is_empty() {
+    if created.is_empty() {
         eprintln!("이미 초기화되어 있습니다. 바꾼 것이 없습니다.");
     }
 
     // 여기서 안내하지 않으면 다음 명령인 `kang build` 가 `K050` 으로 막힌다.
-    if git_없음 {
+    if no_git {
         eprintln!(
             "이 디렉토리는 git 저장소가 아닙니다. kang build 는 저장소 루트를 프로젝트 루트로 삼으므로 git init 을 먼저 실행하세요."
         );
@@ -395,65 +398,65 @@ fn 초기화() -> i32 {
 ///
 /// # 매개변수
 /// - `경로`: 산출물을 쓸 파일 경로. 현재 디렉토리 기준으로 해석한다
-/// - `무엇`: 진단에 쓰는 산출물 이름 (`인덱스`·`타입`)
+/// - `무엇`: 진단에 쓰는 산출물 이름 (`index`·`타입`)
 /// - `생성기`: 프로젝트를 산출물 바이트로 바꾸는 함수
-/// - `임시_확장자`: 원자적 쓰기의 임시 파일 확장자. 원래 확장자를 앞에 남긴다
+/// - `temp_ext`: 원자적 쓰기의 임시 파일 확장자. 원래 확장자를 앞에 남긴다
 ///
 /// # 반환값
 /// 프로세스 종료 코드. 성공 0 / 컴파일 error 1 / 쓰기 실패 2
-fn 산출(
-    경로: &str,
-    무엇: &str,
-    생성기: fn(&Project, &SymbolTable, &mut Vec<u8>) -> std::io::Result<()>,
-    내_산출물인가: fn(&str) -> bool,
-    임시_확장자: &str,
+fn generate(
+    path: &str,
+    what: &str,
+    generator: fn(&Project, &SymbolTable, &mut Vec<u8>) -> std::io::Result<()>,
+    is_own_output: fn(&str) -> bool,
+    temp_ext: &str,
 ) -> i32 {
     let (project, table) = match compile() {
-        Ok(결과) => 결과,
-        Err(진단들) => return 종료_코드(&진단들),
+        Ok(result) => result,
+        Err(diagnostics) => return exit_code(&diagnostics),
     };
 
-    let mut 내용 = Vec::new();
+    let mut content = Vec::new();
     // 메모리 버퍼에 쓰므로 실패할 수 없다. 그래도 삼키지 않는다 — 삼키면 빈 산출물이
     // 성공으로 나가고 소비자는 "심볼이 없는 프로젝트" 로 읽는다.
-    if let Err(오류) = 생성기(&project, &table, &mut 내용) {
-        eprintln!("{무엇}을 만들지 못했습니다 — {오류}");
+    if let Err(error) = generator(&project, &table, &mut content) {
+        eprintln!("{what}을 만들지 못했습니다 — {error}");
         return 2;
     }
-    let 내용 = match String::from_utf8(내용) {
-        Ok(내용) => 내용,
-        Err(오류) => {
-            eprintln!("{무엇}이 UTF-8 이 아닙니다 — {오류}");
+    let content = match String::from_utf8(content) {
+        Ok(content) => content,
+        Err(error) => {
+            eprintln!("{what}이 UTF-8 이 아닙니다 — {error}");
             return 2;
         }
     };
 
-    let 파일 = std::path::PathBuf::from(경로);
+    let file = std::path::PathBuf::from(path);
 
     // **이미 있는 파일이 내 산출물로 보이지 않으면 덮어쓰지 않는다.** 경로를 그대로 받아
     // 쓰므로 `kang types Cargo.toml` 이나 `kang index docs/policy.kang` 한 번이 그 파일을
     // 지운다. 산출물은 언제든 다시 만들 수 있지만 남의 파일은 그렇지 않고 되돌릴 방법이
     // 없다. 재실행은 정상 사용이므로 내가 낸 것으로 보이면 그대로 덮어쓴다.
-    if let Ok(기존) = std::fs::read_to_string(&파일)
-        && !내_산출물인가(&기존)
+    if let Ok(existing) = std::fs::read_to_string(&file)
+        && !is_own_output(&existing)
     {
         eprintln!(
-            "그 자리에 kang 이 만들지 않은 파일이 있어 {무엇}을 쓰지 않았습니다 ({}).\n\n  fix:\n    [edit]  다른 경로를 주거나, 그 파일이 필요 없다면 지우고 다시 실행하세요",
-            파일.display()
+            "그 자리에 kang 이 만들지 않은 파일이 있어 {what}을 쓰지 않았습니다 ({}).\n\n  fix:\n    [edit]  다른 경로를 주거나, 그 파일이 필요 없다면 지우고 다시 실행하세요",
+            file.display()
         );
         return 2;
     }
 
     // 상위 디렉토리가 없으면 만든다. `.kang/index.tsv` 처럼 새 디렉토리에 두는 것이
     // 정상 사용이고, 여기서 실패하면 원자적 쓰기가 임시 파일부터 실패한다.
-    match 파일.parent() {
+    match file.parent() {
         // 경로에 디렉토리 조각이 있으면 만든다. 빈 부모는 `index.tsv` 처럼 현재
         // 디렉토리에 바로 두는 경우이며 만들 것이 없다.
-        Some(상위) if !상위.as_os_str().is_empty() => {
-            if let Err(오류) = std::fs::create_dir_all(상위) {
+        Some(parent) if !parent.as_os_str().is_empty() => {
+            if let Err(error) = std::fs::create_dir_all(parent) {
                 eprintln!(
-                    "{무엇}을 둘 디렉토리를 만들지 못했습니다 ({}) — {오류}",
-                    상위.display()
+                    "{what}을 둘 디렉토리를 만들지 못했습니다 ({}) — {error}",
+                    parent.display()
                 );
                 return 2;
             }
@@ -463,47 +466,47 @@ fn 산출(
 
     // 쓰기는 `bless` 와 같은 함수를 쓴다. 원자성 규약의 두 번째 사본을 만들면 한쪽만
     // 고쳐지는 날이 온다.
-    if let Err(사유) = bless::쓰기_원자적으로(&파일, &내용, 임시_확장자) {
-        eprintln!("{무엇}을 쓰지 못했습니다: {사유}");
+    if let Err(reason) = bless::write_atomically(&file, &content, temp_ext) {
+        eprintln!("{what}을 쓰지 못했습니다: {reason}");
         return 2;
     }
     0
 }
 
-fn 축복(문서: &str, 심볼: &str) -> i32 {
+fn run_bless(doc: &str, symbol: &str) -> i32 {
     // 주소부터 본다. 인자의 **모양**이 틀린 것은 프로젝트를 읽기 전에 답이 나오는
     // 사용법 오류이고, 그때 도움말을 함께 내는 것이 에이전트의 재시도 경로다.
-    let addr = match ImportAddress::parse(심볼) {
+    let addr = match ImportAddress::parse(symbol) {
         Ok(addr) => addr,
-        Err(사유) => {
-            eprintln!("{사유}");
-            eprintln!("{사용법}");
+        Err(reason) => {
+            eprintln!("{reason}");
+            eprintln!("{USAGE}");
             return 2;
         }
     };
 
     let (root, project, table) = match parse_project() {
-        Ok(결과) => 결과,
-        Err(진단들) => return 종료_코드(&진단들),
+        Ok(result) => result,
+        Err(diagnostics) => return exit_code(&diagnostics),
     };
 
-    let path = DocPath(경로_조각(Some(문서)));
+    let path = DocPath(path_segments(Some(doc)));
     // 실패는 전부 "그런 문서·import·대상이 없다" 또는 IO 다. 문서가 규칙을 어긴 것이
     // 아니므로 1 이 아니라 2 다 — `refs`·`show` 가 없는 주소에 주는 코드와 같다.
-    let 고쳤나 = match bless::bless(&project, &table, &root, &path, &addr) {
-        Ok(고쳤나) => 고쳤나,
-        Err(사유) => {
-            eprintln!("rev 핀을 갱신하지 못했습니다 — 문서 {문서}, import {심볼}: {사유}");
+    let changed = match bless::bless(&project, &table, &root, &path, &addr) {
+        Ok(changed) => changed,
+        Err(reason) => {
+            eprintln!("rev 핀을 갱신하지 못했습니다 — 문서 {doc}, import {symbol}: {reason}");
             return 2;
         }
     };
 
     // **바뀐 게 없는데 갱신했다고 하면 검증하면 거짓이다.** 스펙 4.8·6.2 는 삽입과
     // 갱신을 편집으로 부르고, 이미 맞는 핀에 재실행하는 것은 그 어느 쪽도 아니다.
-    if 고쳤나 {
-        eprintln!("rev 핀을 갱신했습니다 — 문서 {문서}, import {심볼}");
+    if changed {
+        eprintln!("rev 핀을 갱신했습니다 — 문서 {doc}, import {symbol}");
     } else {
-        eprintln!("이미 최신 핀입니다. 바꾼 것이 없습니다 — 문서 {문서}, import {심볼}");
+        eprintln!("이미 최신 핀입니다. 바꾼 것이 없습니다 — 문서 {doc}, import {symbol}");
     }
     0
 }
@@ -515,31 +518,31 @@ fn 축복(문서: &str, 심볼: &str) -> i32 {
 ///
 /// # 반환값
 /// 프로세스 종료 코드
-fn 목록(스코프: Option<&str>) -> i32 {
+fn list(scope: Option<&str>) -> i32 {
     let (project, _) = match compile() {
-        Ok(결과) => 결과,
-        Err(진단들) => return 종료_코드(&진단들),
+        Ok(result) => result,
+        Err(diagnostics) => return exit_code(&diagnostics),
     };
 
-    let 조각 = 경로_조각(스코프);
+    let segment = path_segments(scope);
     let mut out = std::io::stdout().lock();
-    let mut 맞은_문서 = 0;
+    let mut matched_docs = 0;
     // 문서를 경로 순으로 훑는다. 경로는 계층 축약 없이 전체 경로로 찍는다.
-    for path in project.경로들() {
+    for path in project.paths() {
         // 스코프 밖의 문서는 건너뛴다.
-        if !path.0.starts_with(&조각) {
+        if !path.0.starts_with(&segment) {
             continue;
         }
-        맞은_문서 += 1;
-        if let Some(코드) = 찍기(
+        matched_docs += 1;
+        if let Some(code) = print(
             &mut out,
             &format!("{path}: {}", project.docs[path].description),
         ) {
-            return 코드;
+            return code;
         }
     }
 
-    빈_스코프_안내(스코프, 맞은_문서);
+    empty_scope_notice(scope, matched_docs);
     0
 }
 
@@ -552,43 +555,43 @@ fn 목록(스코프: Option<&str>) -> i32 {
 ///
 /// # 반환값
 /// 프로세스 종료 코드
-fn 키워드들(스코프: Option<&str>) -> i32 {
+fn keywords(scope: Option<&str>) -> i32 {
     let (project, _) = match compile() {
-        Ok(결과) => 결과,
-        Err(진단들) => return 종료_코드(&진단들),
+        Ok(result) => result,
+        Err(diagnostics) => return exit_code(&diagnostics),
     };
 
-    let 조각 = 경로_조각(스코프);
+    let segment = path_segments(scope);
     let mut out = std::io::stdout().lock();
-    let mut 맞은_문서 = 0;
+    let mut matched_docs = 0;
     // 문서를 경로 순으로 훑는다.
-    for path in project.경로들() {
+    for path in project.paths() {
         // 스코프 밖의 문서는 건너뛴다.
-        if !path.0.starts_with(&조각) {
+        if !path.0.starts_with(&segment) {
             continue;
         }
-        맞은_문서 += 1;
+        matched_docs += 1;
         // 한 문서 안의 키워드는 선언 순서 그대로 낸다.
         for keyword in &project.docs[path].keywords {
-            let 줄 = format!(
+            let line = format!(
                 "{path}.{}: {}",
                 keyword.name.0.join("."),
                 keyword.definition
             );
-            if let Some(코드) = 찍기(&mut out, &줄) {
-                return 코드;
+            if let Some(code) = print(&mut out, &line) {
+                return code;
             }
         }
     }
 
-    빈_스코프_안내(스코프, 맞은_문서);
+    empty_scope_notice(scope, matched_docs);
     0
 }
 
 /// 경로 스코프가 아무 문서도 맞히지 못했음을 알린다.
 ///
 /// 조용히 빈 출력으로 끝나면 오타 하나가 "이 디렉토리에는 문서가 없다" 는 결론이 된다.
-/// 같은 이유로 [`참조들`] 은 없는 키워드를 빈 결과로 돌려주지 않고, [`경로_조각`] 은
+/// 같은 이유로 [`refs`] 은 없는 키워드를 빈 결과로 돌려주지 않고, [`path_segments`] 은
 /// 슬래시로 끝나는 인자를 빈 결과로 만들지 않는다.
 ///
 /// **판정은 맞은 문서 수로 한다.** 출력 줄 수로 하면 `kang keywords docs` 처럼 문서는
@@ -599,13 +602,13 @@ fn 키워드들(스코프: Option<&str>) -> i32 {
 ///
 /// # 매개변수
 /// - `스코프`: 사용자가 준 경로 스코프. `None` 이면 필터가 없었으므로 알릴 것도 없다
-/// - `맞은_문서`: 스코프에 걸린 문서 수
-fn 빈_스코프_안내(스코프: Option<&str>, 맞은_문서: usize) {
+/// - `matched_docs`: 스코프에 걸린 문서 수
+fn empty_scope_notice(scope: Option<&str>, matched_docs: usize) {
     // 스코프를 준 사람만이 그것이 빗나갔다는 사실을 알아야 한다.
-    if let Some(스코프) = 스코프
-        && 맞은_문서 == 0
+    if let Some(scope) = scope
+        && matched_docs == 0
     {
-        eprintln!("경로 스코프에 맞는 문서가 없습니다: {스코프}");
+        eprintln!("경로 스코프에 맞는 문서가 없습니다: {scope}");
         eprintln!("kang list 로 문서 경로를 확인하세요.");
     }
 }
@@ -613,54 +616,54 @@ fn 빈_스코프_안내(스코프: Option<&str>, 맞은_문서: usize) {
 /// 키워드를 참조하는 topic 을 한 줄씩 찍는다 (스펙 6.3·6.5).
 ///
 /// # 매개변수
-/// - `주소`: `docs/A.결제` 꼴의 키워드 주소. 백틱을 쓰지 않는다 (스펙 6.0)
+/// - `address`: `docs/A.결제` 꼴의 키워드 주소. 백틱을 쓰지 않는다 (스펙 6.0)
 ///
 /// # 반환값
 /// 프로세스 종료 코드
-fn 참조들(주소: &str) -> i32 {
+fn refs(address: &str) -> i32 {
     let (project, table) = match compile() {
-        Ok(결과) => 결과,
-        Err(진단들) => return 종료_코드(&진단들),
+        Ok(result) => result,
+        Err(diagnostics) => return exit_code(&diagnostics),
     };
 
     // **주소 파싱은 [`ImportAddress::parse`] 하나가 한다.** 여기서 손으로 다시 가르면
     // `K020` 의 `[shell] fix` 가 낸 주소를 `bless` 는 받고 `refs` 는 거절하는 어긋남이
     // 생기고, 스펙 6.0 주소 문법의 천장이 세 곳에 흩어진다. 천장 설명은 그 함수에 있다.
-    let 참조 = match ImportAddress::parse(주소) {
+    let reference = match ImportAddress::parse(address) {
         Ok(addr) if addr.target.kind == SymbolKind::Keyword => addr.target,
         // 주소가 아니거나 키워드 주소가 아니다. 둘 다 인자의 **모양** 문제이므로 사용법
         // 오류다 — 도움말이 에이전트의 첫 접점이라는 규약이 이 분기에서만 깨지면 안 된다.
         _ => {
-            eprintln!("키워드 주소가 아닙니다: {주소}");
+            eprintln!("키워드 주소가 아닙니다: {address}");
             eprintln!("문서 경로와 키워드를 점으로 이어 적으세요. 예: kang refs docs/A.결제");
-            eprintln!("{사용법}");
+            eprintln!("{USAGE}");
             return 2;
         }
     };
     // 없는 키워드를 빈 결과로 돌려주면 "아무도 참조하지 않는다" 와 구분할 수 없다.
-    let Some(대상) = table.resolve(&참조) else {
-        eprintln!("그런 키워드가 없습니다: {주소}");
+    let Some(target) = table.resolve(&reference) else {
+        eprintln!("그런 키워드가 없습니다: {address}");
         eprintln!("kang keywords 로 선언된 키워드를 확인하세요.");
         return 2;
     };
 
     // 문서를 경로 순으로, 그 안의 topic 은 선언 순서로 훑는다.
     let mut out = std::io::stdout().lock();
-    for path in project.경로들() {
+    for path in project.paths() {
         let scope = table.scope(path);
         for topic in &project.docs[path].topics {
             // 분할은 진단을 내는 층과 **같은 함수**를 쓴다. 두 층이 같은 문장을 다르게
             // 읽으면 빌드가 통과하는 문서에서 조회가 조용히 틀린 답을 낸다.
             // 참조는 alias 를 거칠 수 있으므로 이름이 아니라 심볼로 맞춘다.
-            let 가리킨다 = check::이름_분할(&topic.refs, scope)
+            let points_to_target = check::split_names(&topic.refs, scope)
                 .iter()
-                .any(|(이름, _)| scope.get(이름) == Some(&대상));
+                .any(|(name, _)| scope.get(name) == Some(&target));
             // 이 topic 이 대상을 가리키지 않으면 찍을 것이 없다.
-            if !가리킨다 {
+            if !points_to_target {
                 continue;
             }
-            if let Some(코드) = 찍기(&mut out, &format!("{path}#{}", topic.name)) {
-                return 코드;
+            if let Some(code) = print(&mut out, &format!("{path}#{}", topic.name)) {
+                return code;
             }
         }
     }
@@ -675,14 +678,14 @@ fn 참조들(주소: &str) -> i32 {
 /// 도구를 도입하고 오히려 나빠진다 (스펙 6.1).
 ///
 /// # 매개변수
-/// - `주소`: `docs/A` 또는 `docs/A#결제의 방법` 꼴의 주소. 백틱을 쓰지 않는다 (스펙 6.0)
+/// - `address`: `docs/A` 또는 `docs/A#결제의 방법` 꼴의 주소. 백틱을 쓰지 않는다 (스펙 6.0)
 ///
 /// # 반환값
 /// 프로세스 종료 코드
-fn 조회(주소: &str) -> i32 {
+fn run_show(address: &str) -> i32 {
     let (project, table) = match compile() {
-        Ok(결과) => 결과,
-        Err(진단들) => return 종료_코드(&진단들),
+        Ok(result) => result,
+        Err(diagnostics) => return exit_code(&diagnostics),
     };
 
     // **마지막 `/` 뒤에서 가른다** (스펙 6.0 주소 분할 규칙). 그 앞은 전부 디렉토리이므로
@@ -699,38 +702,38 @@ fn 조회(주소: &str) -> i32 {
     //
     // ponytail: 문서 **파일 이름**에 `#` 이 있으면 여전히 그 자리에서 갈린다. 스펙 6.0 이
     // 그 이름을 금지하기로 정했고, 그것을 거절하는 `K113` 은 문서를 로드하는 층의 몫이다.
-    let (디렉토리, 마지막) = 주소.rsplit_once('/').unwrap_or(("", 주소));
-    let (문서명, 토픽) = match 마지막.split_once('#') {
-        Some((문서명, 토픽)) => (문서명, Some(토픽)),
-        None => (마지막, None),
+    let (dir, last) = address.rsplit_once('/').unwrap_or(("", address));
+    let (doc_name, topic_name) = match last.split_once('#') {
+        Some((doc_name, topic_name)) => (doc_name, Some(topic_name)),
+        None => (last, None),
     };
 
-    let mut 조각 = 경로_조각(Some(디렉토리));
-    조각.push(문서명.to_string());
-    let path = DocPath(조각);
+    let mut segment = path_segments(Some(dir));
+    segment.push(doc_name.to_string());
+    let path = DocPath(segment);
     // 없는 주소를 빈 출력으로 돌려주면 "그런 문서가 없다" 와 "내용이 없다" 를 구분할 수 없다.
     let Some(document) = project.docs.get(&path) else {
-        eprintln!("그런 문서가 없습니다: {주소}");
+        eprintln!("그런 문서가 없습니다: {address}");
         eprintln!("kang list 로 문서 경로를 확인하세요.");
         return 2;
     };
 
-    let target = match 토픽 {
-        Some(이름) => {
-            if !document.topics.iter().any(|topic| topic.name == 이름) {
-                eprintln!("그 문서에 그런 topic 이 없습니다: {주소}");
+    let target = match topic_name {
+        Some(name) => {
+            if !document.topics.iter().any(|topic| topic.name == name) {
+                eprintln!("그 문서에 그런 topic 이 없습니다: {address}");
                 eprintln!("문서 전체를 조회하면 topic 목록이 함께 나옵니다.");
                 return 2;
             }
-            ShowTarget::Topic(path, 이름.to_string())
+            ShowTarget::Topic(path, name.to_string())
         }
         None => ShowTarget::Document(path),
     };
 
     // 한 번에 쓴다. 뷰는 하나의 YAML 문서이므로 중간에 끊기면 파싱되지 않는다.
     let mut out = std::io::stdout().lock();
-    if let Some(코드) = 찍기(&mut out, &show::show(&project, &table, &target)) {
-        return 코드;
+    if let Some(code) = print(&mut out, &show::show(&project, &table, &target)) {
+        return code;
     }
     0
 }
@@ -748,19 +751,19 @@ fn 조회(주소: &str) -> i32 {
 ///
 /// # 반환값
 /// 계속 써도 되면 `None`, 멈춰야 하면 그때의 종료 코드
-fn 찍기(out: &mut std::io::StdoutLock<'_>, 줄: &str) -> Option<i32> {
-    match writeln!(out, "{줄}") {
+fn print(out: &mut std::io::StdoutLock<'_>, line: &str) -> Option<i32> {
+    match writeln!(out, "{line}") {
         Ok(()) => None,
         // 파이프를 닫은 쪽은 원하는 만큼 읽었다. 그것이 곧 성공이다.
-        Err(오류) if 오류.kind() == std::io::ErrorKind::BrokenPipe => Some(0),
+        Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => Some(0),
         // 그 밖의 실패는 출력이 잘린 것이다. 0 을 주면 잘린 목록을 전부라고 말하게 된다.
         //
         // **2 다. 1 이 아니다.** 계약상 1 은 "컴파일 error 존재" 이고 그때는 stderr 에
         // `error[Kxxx]` 진단이 함께 온다. 디스크가 찼거나 리다이렉트가 깨진 것은 진단이
         // 하나도 없는 1 이 되어, 종료 코드로 분기하는 에이전트가 "문서를 고쳐라" 로 읽는다.
         // 스펙 6절의 기준("원인이 문서 밖에 있는가")대로 환경 오류다.
-        Err(오류) => {
-            eprintln!("표준 출력에 쓰지 못했습니다 — {오류}");
+        Err(error) => {
+            eprintln!("표준 출력에 쓰지 못했습니다 — {error}");
             Some(2)
         }
     }
@@ -768,30 +771,30 @@ fn 찍기(out: &mut std::io::StdoutLock<'_>, 줄: &str) -> Option<i32> {
 
 /// 진단 전량을 표준 오류에 쓴다.
 ///
-/// `eprint!` 는 쓰기에 실패하면 **패닉**한다 — [`찍기`] 가 표준 출력에서 막은 것과 같은
+/// `eprint!` 는 쓰기에 실패하면 **패닉**한다 — [`print`] 가 표준 출력에서 막은 것과 같은
 /// 사고다. `kang build 2>&1 | head` 는 `set -euo pipefail` 을 쓰는 CI 의 관용구이고,
 /// 진단은 실 규모에서 수십만 바이트이므로 파이프 버퍼(64KB)를 넘긴 뒤 EPIPE 가 난다.
 /// 그때 패닉하면 스펙 6절의 종료 코드가 101 로 뒤집힌다 — warn 만 있는 프로젝트의 0 도
 /// 함께 뒤집힌다.
 ///
-/// **진단을 내는 자리는 둘뿐이다** ([`parse_project`] 의 루트 탐색 실패와 [`진단_마감`]).
+/// **진단을 내는 자리는 둘뿐이다** ([`parse_project`] 의 루트 탐색 실패와 [`finish_diagnostics`]).
 /// 그 밖의 `eprint!` 는 한 줄짜리 안내라 파이프 버퍼에 든다.
 ///
 /// # 매개변수
 /// - `진단들`: 찍을 진단 전부
-fn 진단_찍기(진단들: &[Diagnostic]) {
+fn print_diagnostics(diagnostics: &[Diagnostic]) {
     let mut err = std::io::stderr().lock();
-    let Err(오류) = err.write_all(check::report(진단들).as_bytes()) else {
+    let Err(error) = err.write_all(check::report(diagnostics).as_bytes()) else {
         return;
     };
     // 파이프를 닫은 쪽은 원하는 만큼 읽었다. 그것이 곧 성공이므로 종료 코드는 진단이
     // 정한 그대로 둔다 — 여기서 바꾸면 EPIPE 가 판정을 뒤집는다.
-    if 오류.kind() == std::io::ErrorKind::BrokenPipe {
+    if error.kind() == std::io::ErrorKind::BrokenPipe {
         return;
     }
     // 그 밖의 실패는 진단이 잘린 것이다. 그때 0 이나 2 를 주면 보지 못한 진단을 없다고
     // 배운다. 안내도 같은 스트림이라 실패할 수 있으므로 결과를 버린다.
-    let _ = writeln!(err, "표준 오류에 쓰지 못했습니다 — {오류}");
+    let _ = writeln!(err, "표준 오류에 쓰지 못했습니다 — {error}");
     std::process::exit(1);
 }
 
@@ -805,11 +808,11 @@ fn 진단_찍기(진단들: &[Diagnostic]) {
 ///
 /// # 반환값
 /// 경로 조각들. 스코프가 없으면 빈 목록이며 그때 모든 문서가 맞는다
-fn 경로_조각(스코프: Option<&str>) -> Vec<String> {
-    스코프.map_or_else(Vec::new, |스코프| {
-        스코프
+fn path_segments(scope: Option<&str>) -> Vec<String> {
+    scope.map_or_else(Vec::new, |scope| {
+        scope
             .split('/')
-            .filter(|조각| !조각.is_empty())
+            .filter(|segment| !segment.is_empty())
             .map(str::to_string)
             .collect()
     })

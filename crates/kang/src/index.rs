@@ -1,7 +1,7 @@
 //! 심볼 산출 — `kang index` 와 `kang types`.
 //!
 //! proc-macro 가 읽을 탭 구분 인덱스와 `tsc` 가 읽을 TypeScript 타입을 낸다. **둘은 같은
-//! [`순회`] 를 공유한다** — 순회를 복제하면 Rust 쪽과 TS 쪽이 서로 다른 심볼 집합이나
+//! [`walk`] 를 공유한다** — 순회를 복제하면 Rust 쪽과 TS 쪽이 서로 다른 심볼 집합이나
 //! 다른 핀을 보게 되고, 한쪽만 통과하는 상태가 조용히 생긴다.
 //!
 //! 인덱스는 컴파일러가 아는 심볼 전부를 주소·종류·rev 로 한 줄씩 낸다.
@@ -10,7 +10,7 @@
 //! (V0001 §10.1)은 `syn`·`quote`·`proc-macro2` 뿐이고 인덱스 파서는 그 목록에 없다 —
 //! 손으로 쓴다. 그래서 형식이 탭 구분 텍스트다.
 //!
-//! **필드 순서가 `종류`·`rev`·`주소` 인 이유:**
+//! **필드 순서가 `종류`·`rev`·`address` 인 이유:**
 //! 심볼 이름에 탭이 들어가는 것은 오늘 합법이다(`show` 가 인용해 내고 `refs` 가 받는다).
 //! 주소를 앞에 두면 그 한 줄이 필드 넷이 되어 소비자가 조용히 오독한다. 가변 길이 필드를
 //! 마지막에 두면 `splitn(3, '\t')` 가 이름 안의 탭을 그대로 살린다 — 파서는 여전히
@@ -21,11 +21,11 @@
 //! 값과 같은 함수·같은 입력([`SymbolTable::hash_source`])에서 나와야 한다. 갈리면 매크로가
 //! 인덱스의 핀으로 거짓을 검증한다.
 //!
-//! **주소는 [`crate::check::심볼_주소`] 가 조립한다.** 네 번째 사본을 만들면 인덱스가 낸
+//! **주소는 [`crate::check::symbol_address`] 가 조립한다.** 네 번째 사본을 만들면 인덱스가 낸
 //! 주소를 `refs`·`show`·`bless` 가 못 받는 경우가 생긴다.
 
 use crate::ast::{DocPath, SymbolKind, SymbolRef};
-use crate::check::{심볼_주소, 종류_낱말};
+use crate::check::{kind_word, symbol_address};
 use crate::hash;
 use crate::resolve::{Project, SymbolTable};
 use std::io::{self, Write};
@@ -44,8 +44,8 @@ use std::io::{self, Write};
 /// # 오류
 /// 쓰기가 실패하면 그 사정을 그대로 올린다. 호출자가 부분 결과를 버릴 책임을 진다.
 pub fn write_index(project: &Project, table: &SymbolTable, out: &mut impl Write) -> io::Result<()> {
-    순회(project, table, |종류, rev, 주소| {
-        writeln!(out, "{}\t{rev}\t{주소}", 종류_낱말(종류))
+    walk(project, table, |kind, rev, address| {
+        writeln!(out, "{}\t{rev}\t{address}", kind_word(kind))
     })
 }
 
@@ -64,27 +64,25 @@ pub fn write_index(project: &Project, table: &SymbolTable, out: &mut impl Write)
 ///
 /// # 반환값
 /// 이 형식으로 읽히면 `true`
-pub fn 인덱스_형식인가(내용: &str) -> bool {
-    내용.lines().all(|줄| {
-        let mut 필드 = 줄.splitn(3, '\t');
+pub fn is_index_format(content: &str) -> bool {
+    content.lines().all(|line| {
+        let mut fields = line.splitn(3, '\t');
         // 종류·rev·주소 셋이 다 있어야 한다. 하나라도 없으면 다른 형식이다.
-        let (Some(종류), Some(rev), Some(주소)) = (필드.next(), 필드.next(), 필드.next())
+        let (Some(kind), Some(rev), Some(address)) = (fields.next(), fields.next(), fields.next())
         else {
             return false;
         };
         // rev 는 [`crate::hash::rev`] 가 내는 6자리 소문자 16진수다.
-        matches!(종류, "keyword" | "topic" | "exception")
+        matches!(kind, "keyword" | "topic" | "exception")
             && rev.len() == 6
-            && rev
-                .chars()
-                .all(|글자| matches!(글자, '0'..='9' | 'a'..='f'))
-            && !주소.is_empty()
+            && rev.chars().all(|ch| matches!(ch, '0'..='9' | 'a'..='f'))
+            && !address.is_empty()
     })
 }
 
 /// 주어진 내용이 [`write_types`] 가 낸 것으로 보이는지 본다.
 ///
-/// [`인덱스_형식인가`] 와 같은 이유로 있다. 이쪽은 첫 줄에 머리글이 있으므로 그것을 본다 —
+/// [`is_index_format`] 와 같은 이유로 있다. 이쪽은 첫 줄에 머리글이 있으므로 그것을 본다 —
 /// 그 머리글이 "손으로 고치지 않습니다" 라고 적은 이상, 그것이 없는 파일은 손으로 쓴
 /// 파일이고 덮어쓰면 안 된다.
 ///
@@ -93,8 +91,8 @@ pub fn 인덱스_형식인가(내용: &str) -> bool {
 ///
 /// # 반환값
 /// 이 형식으로 읽히면 `true`
-pub fn 타입_형식인가(내용: &str) -> bool {
-    내용.is_empty() || 내용.starts_with("// kang 이 생성한 파일입니다.")
+pub fn is_types_format(content: &str) -> bool {
+    content.is_empty() || content.starts_with("// kang 이 생성한 파일입니다.")
 }
 
 /// TypeScript 타입 파일을 낸다 (V0003 §5).
@@ -123,9 +121,9 @@ pub fn write_types(project: &Project, table: &SymbolTable, out: &mut impl Write)
          export interface KangTopics {{"
     )?;
 
-    순회(project, table, |종류, rev, 주소| match 종류 {
+    walk(project, table, |kind, rev, address| match kind {
         // topic 만 낸다 (위 rustdoc 의 근거).
-        SymbolKind::Topic => writeln!(out, "  \"{}\": \"{rev}\";", ts_리터럴(주소)),
+        SymbolKind::Topic => writeln!(out, "  \"{}\": \"{rev}\";", ts_literal(address)),
         SymbolKind::Keyword | SymbolKind::Exception => Ok(()),
     })?;
 
@@ -160,29 +158,29 @@ pub fn write_types(project: &Project, table: &SymbolTable, out: &mut impl Write)
 /// # 매개변수
 /// - `project`: 로드된 프로젝트
 /// - `table`: 심볼 테이블. 핀 계산의 입력을 여기서 얻는다
-/// - `낼것`: 심볼 하나마다 `(종류, 핀, 주소)` 로 불린다
+/// - `낼것`: 심볼 하나마다 `(kind, pin, address)` 로 불린다
 ///
 /// # 오류
 /// `낼것` 이 낸 오류를 그대로 올린다. 호출자가 부분 결과를 버릴 책임을 진다.
-fn 순회(
+fn walk(
     project: &Project,
     table: &SymbolTable,
-    mut 낼것: impl FnMut(SymbolKind, &str, &str) -> io::Result<()>,
+    mut emit: impl FnMut(SymbolKind, &str, &str) -> io::Result<()>,
 ) -> io::Result<()> {
     // 문서 경로로 정렬해 출력이 실행마다 같게 만든다. `Project::docs` 는 HashMap 이라
     // 순회 순서가 실행마다 다르다 — 정렬하지 않으면 커밋한 산출물이 매번 diff 를 낸다.
-    let 경로들 = project.경로들();
+    let paths = project.paths();
 
     // 문서마다 그 문서가 **선언한** 심볼만 낸다. import 한 것은 owner 의 줄에 이미 있다.
-    for 경로 in 경로들 {
-        let 문서 = &project.docs[경로];
+    for path in paths {
+        let doc = &project.docs[path];
 
         // keyword 는 계층 조각을 `.` 로 이은 전체 이름이 주소가 된다 (스펙 4.1).
-        for k in &문서.keywords {
-            한_줄(
-                &mut 낼것,
+        for k in &doc.keywords {
+            write_line(
+                &mut emit,
                 table,
-                경로,
+                path,
                 SymbolKind::Keyword,
                 &k.name.0.join("."),
             )?;
@@ -190,10 +188,10 @@ fn 순회(
 
         // topic 과 그 topic 이 선언한 exception 을 함께 낸다. exception 의 해시 입력은
         // 선언 topic 의 본문이므로(스펙 4.8) 두 줄의 rev 가 같은 것이 정상이다.
-        for t in &문서.topics {
-            한_줄(&mut 낼것, table, 경로, SymbolKind::Topic, &t.name)?;
+        for t in &doc.topics {
+            write_line(&mut emit, table, path, SymbolKind::Topic, &t.name)?;
             for e in &t.exceptions {
-                한_줄(&mut 낼것, table, 경로, SymbolKind::Exception, &e.name)?;
+                write_line(&mut emit, table, path, SymbolKind::Exception, &e.name)?;
             }
         }
     }
@@ -211,28 +209,28 @@ fn 순회(
 ///
 /// # 오류
 /// `낼것` 이 낸 오류를 그대로 올린다.
-fn 한_줄(
-    낼것: &mut impl FnMut(SymbolKind, &str, &str) -> io::Result<()>,
+fn write_line(
+    emit: &mut impl FnMut(SymbolKind, &str, &str) -> io::Result<()>,
     table: &SymbolTable,
     doc: &DocPath,
-    종류: SymbolKind,
+    kind: SymbolKind,
     name: &str,
 ) -> io::Result<()> {
-    let 주소 = 심볼_주소(doc, 종류, name, false);
-    let 참조 = SymbolRef {
+    let address = symbol_address(doc, kind, name, false);
+    let reference = SymbolRef {
         doc: doc.clone(),
-        kind: 종류,
+        kind,
         name: name.split('.').map(|s| s.to_string()).collect(),
     };
 
-    // 테이블에 없으면 그 심볼을 빼고 넘어간다 (`순회` rustdoc 의 근거).
-    let Some(id) = table.resolve(&참조) else {
+    // 테이블에 없으면 그 심볼을 빼고 넘어간다 (`walk` rustdoc 의 근거).
+    let Some(id) = table.resolve(&reference) else {
         return Ok(());
     };
 
     // 핀 계산은 `hash::rev` 하나가 담당한다. `check_revs` 가 비교하는 값과 같은
     // 함수·같은 입력에서 나와야 한다 — 갈리면 매크로가 거짓을 검증한다.
-    낼것(종류, &hash::rev(table.hash_source(id)), &주소)
+    emit(kind, &hash::rev(table.hash_source(id)), &address)
 }
 
 /// 주소를 TypeScript 큰따옴표 문자열 리터럴의 **내용**으로 만든다.
@@ -245,25 +243,25 @@ fn 한_줄(
 /// 그쪽 규칙이 하나 늘면 여기서 조용히 문법 오류가 난다.
 ///
 /// # 매개변수
-/// - `주소`: 심볼 주소
+/// - `address`: 심볼 주소
 ///
 /// # 반환값
 /// 큰따옴표 사이에 그대로 넣을 수 있는 문자열
-fn ts_리터럴(주소: &str) -> String {
-    let mut 결과 = String::with_capacity(주소.len());
+fn ts_literal(address: &str) -> String {
+    let mut result = String::with_capacity(address.len());
     // 주소 한 글자씩 보며 리터럴을 끊는 것만 이스케이프한다.
-    for c in 주소.chars() {
+    for c in address.chars() {
         match c {
-            '\\' => 결과.push_str("\\\\"),
-            '"' => 결과.push_str("\\\""),
+            '\\' => result.push_str("\\\\"),
+            '"' => result.push_str("\\\""),
             // 제어 문자는 이름에 합법이고(V0004 Task 3 J1) 탭이 실제로 든다. U+2028·
             // U+2029 는 옛 파서가 리터럴 안에서도 줄바꿈으로 읽는다. 둘 다 BMP 이므로
             // 네 자리 `\u` 로 적을 수 있다.
             c if c.is_control() || matches!(c, '\u{2028}' | '\u{2029}') => {
-                결과.push_str(&format!("\\u{:04x}", c as u32));
+                result.push_str(&format!("\\u{:04x}", c as u32));
             }
-            c => 결과.push(c),
+            c => result.push(c),
         }
     }
-    결과
+    result
 }

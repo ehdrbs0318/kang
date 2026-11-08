@@ -62,7 +62,7 @@ use crate::ast::{
     Diagnostic, DocPath, Document, Exception, Fix, FixKind, Import, Keyword, Location, Severity,
     SymbolKind, SymbolRef,
 };
-use crate::resolve::{Project, SymbolId, SymbolTable, 셸_인용};
+use crate::resolve::{Project, SymbolId, SymbolTable, shell_quote};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// 파일 단위 import 관계를 DFS 로 훑어 순환을 검출한다.
@@ -77,18 +77,18 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 pub fn check_cycles(project: &Project) -> Vec<Diagnostic> {
     // HashMap 의 나열 순서는 보장되지 않는다. 정렬해야 시작점 선택이 실행마다 같고,
     // 그래야 체인과 진단 순서를 골든 파일로 고정할 수 있다.
-    let 순서 = project.경로들();
+    let order = project.paths();
 
-    let mut 완료: HashSet<&DocPath> = HashSet::new();
-    let mut 스택: Vec<(&DocPath, usize)> = Vec::new();
+    let mut done: HashSet<&DocPath> = HashSet::new();
+    let mut stack: Vec<(&DocPath, usize)> = Vec::new();
     let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
     // 모든 문서를 시작점 후보로 돈다. 진입 차수가 0 인 문서만 시작점으로 삼는 최적화는
     // 순환만으로 이루어진 부분 그래프에서 그런 문서가 아예 없어 순환을 놓친다.
-    for doc in 순서 {
+    for doc in order {
         // 이미 다 본 문서 아래에는 순환이 없다는 것이 확인되었다.
-        if !완료.contains(doc) {
-            방문(project, doc, &mut 스택, &mut 완료, &mut diagnostics);
+        if !done.contains(doc) {
+            visit(project, doc, &mut stack, &mut done, &mut diagnostics);
         }
     }
 
@@ -107,58 +107,58 @@ pub fn check_cycles(project: &Project) -> Vec<Diagnostic> {
 /// - `스택`: 지금 내려온 경로. 각 항목은 문서와 **그 문서가 다음 문서로 나가는 import 줄**
 /// - `완료`: 아래를 다 훑어 순환이 없다고 확인된 문서들
 /// - `diagnostics`: 진단을 모을 곳
-fn 방문<'a>(
+fn visit<'a>(
     project: &'a Project,
     doc: &'a DocPath,
-    스택: &mut Vec<(&'a DocPath, usize)>,
-    완료: &mut HashSet<&'a DocPath>,
+    stack: &mut Vec<(&'a DocPath, usize)>,
+    done: &mut HashSet<&'a DocPath>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     // 나가는 줄은 아직 모른다. 간선을 따라갈 때마다 채운다.
-    스택.push((doc, 0));
+    stack.push((doc, 0));
 
     // 같은 문서를 두 번 import 하면 간선이 둘이다. 첫 줄만 따라간다 —
     // 둘 다 보면 같은 순환이 두 번 보고된다.
-    let mut 본_대상: HashSet<&DocPath> = HashSet::new();
+    let mut visited_targets: HashSet<&DocPath> = HashSet::new();
 
     // 이 문서의 import 를 파일 순서대로 따라간다. `iknow` 는 간선이 아니므로 보지 않는다.
     for import in &project.docs[doc].imports {
-        let 대상 = &import.target.doc;
+        let target = &import.target.doc;
 
         // 대상 문서가 실재하지 않으면 따라갈 간선이 없다. 미해결 import 진단은
         // 심볼 층의 몫이므로 여기서는 조용히 건너뛴다.
-        if !project.docs.contains_key(대상) {
+        if !project.docs.contains_key(target) {
             continue;
         }
 
         // 이미 따라간 대상이면 건너뛴다.
-        if !본_대상.insert(대상) {
+        if !visited_targets.insert(target) {
             continue;
         }
 
         // 지금 따라가는 간선의 줄. 체인이 이 문서를 지날 때 가리킬 위치다.
         // 되돌아옴 검사보다 **먼저** 기록해야 체인의 note 가 참이 된다.
-        스택
+        stack
             .last_mut()
             .expect("방문 진입에서 자기 프레임을 밀어 넣었다")
             .1 = import.line;
 
         // position 을 match 검사식에 그대로 두면 반복자 임시값이 match 전체 동안 살아
         // 스택을 빌리고, 그러면 재귀 호출이 스택을 다시 빌릴 수 없다.
-        let 되돌아온_자리 = 스택.iter().position(|(있는, _)| *있는 == 대상);
+        let loop_start = stack.iter().position(|(present, _)| *present == target);
 
-        match 되돌아온_자리 {
+        match loop_start {
             // 아직 스택에 있는 문서로 되돌아왔다 = 순환. 그 자리부터가 체인이다.
-            Some(시작) => diagnostics.push(순환(&스택[시작..])),
+            Some(start) => diagnostics.push(cycle(&stack[start..])),
             // 아래를 아직 안 본 문서면 내려간다.
-            None if !완료.contains(대상) => 방문(project, 대상, 스택, 완료, diagnostics),
+            None if !done.contains(target) => visit(project, target, stack, done, diagnostics),
             // 이미 다 본 문서. 그 아래에 순환이 없음이 확인되었으므로 다시 내려가지 않는다.
             None => {}
         }
     }
 
-    완료.insert(doc);
-    스택.pop();
+    done.insert(doc);
+    stack.pop();
 }
 
 /// 순환 체인 하나를 `K040` 진단으로 만든다.
@@ -171,61 +171,61 @@ fn 방문<'a>(
 ///
 /// # 반환값
 /// `K040` 진단
-fn 순환(체인: &[(&DocPath, usize)]) -> Diagnostic {
+fn cycle(chain: &[(&DocPath, usize)]) -> Diagnostic {
     // 체인은 되돌아온 자리에서 잘라 낸 스택 조각이므로 비어 있을 수 없다.
-    let 시작_문서 = 체인
+    let start_doc = chain
         .first()
         .expect("순환 체인에는 되돌아온 문서가 최소 하나 있다")
         .0;
     // 마지막 문서의 import 가 시작 문서를 다시 가리켜 고리가 닫힌다. 그 문서가 고칠 대상이다.
-    let 닫는_문서 = 체인[체인.len() - 1].0;
+    let closing_doc = chain[chain.len() - 1].0;
 
     // 체인이 하나면 자기 자신을 import 한 것이다. '서로' 라고 할 상대가 없고, 문서가
     // 하나뿐이라 "공통 개념을 상위 문서로" 도 뜻이 없다 — 설명과 처방이 함께 갈린다.
-    let 자기_import = 체인.len() == 1;
+    let self_import = chain.len() == 1;
 
     // 표시는 고리가 닫히는 것을 보여야 하므로 시작 문서를 끝에 한 번 더 적는다.
-    let mut 경로: Vec<String> = 체인.iter().map(|(doc, _)| doc.to_string()).collect();
-    경로.push(시작_문서.to_string());
-    let 표시 = 경로.join(" → ");
+    let mut path: Vec<String> = chain.iter().map(|(doc, _)| doc.to_string()).collect();
+    path.push(start_doc.to_string());
+    let display = path.join(" → ");
 
     // Edit 수정은 문서 문법이므로 경로를 백틱으로 적는다 (스펙 5.1.1) — `docs/a` 가 아니라
     // `` `docs`/`a` `` 여야 에이전트가 파일에서 찾을 실제 텍스트와 같다.
-    let 주소: String = 시작_문서
+    let address: String = start_doc
         .0
         .iter()
-        .map(|조각| format!("`{조각}`"))
+        .map(|segment| format!("`{segment}`"))
         .collect::<Vec<String>>()
         .join("/");
 
     Diagnostic {
         severity: Severity::Error,
         code: "K040",
-        message: if 자기_import {
+        message: if self_import {
             format!(
-                "import 그래프에 순환이 있습니다 — {표시}. 이 문서가 자기 자신을 전제로 삼고 있습니다."
+                "import 그래프에 순환이 있습니다 — {display}. 이 문서가 자기 자신을 전제로 삼고 있습니다."
             )
         } else {
             format!(
-                "import 그래프에 순환이 있습니다 — {표시}. 서로가 서로의 전제가 되어 어느 문서가 상위 정책인지 정할 수 없습니다."
+                "import 그래프에 순환이 있습니다 — {display}. 서로가 서로의 전제가 되어 어느 문서가 상위 정책인지 정할 수 없습니다."
             )
         },
         // 스펙 5.1.1 은 "관련 위치 전부" 를 요구한다. 체인의 문서 하나가 항목 하나이고
         // note 는 그 줄이 실제로 import 하는 대상을 말한다.
-        locations: 체인
+        locations: chain
             .iter()
             .enumerate()
-            .map(|(자리, &(doc, line))| {
+            .map(|(position, &(doc, line))| {
                 // 다음 문서. 마지막 문서의 다음은 시작 문서이며 그 간선이 고리를 닫는다.
-                let 다음 = 체인[(자리 + 1) % 체인.len()].0;
+                let next = chain[(position + 1) % chain.len()].0;
                 Location {
                     doc: doc.clone(),
                     line,
                     // 마지막 항목만 고리가 닫히는 자리라고 덧붙인다.
-                    note: if 자리 + 1 == 체인.len() {
-                        format!("여기서 import 하는 대상: {다음} — 순환이 닫힙니다")
+                    note: if position + 1 == chain.len() {
+                        format!("여기서 import 하는 대상: {next} — 순환이 닫힙니다")
                     } else {
-                        format!("여기서 import 하는 대상: {다음}")
+                        format!("여기서 import 하는 대상: {next}")
                     },
                 }
             })
@@ -234,12 +234,12 @@ fn 순환(체인: &[(&DocPath, usize)]) -> Diagnostic {
         // 줄 번호를 좌표로 쓰지 않는다 (ADR-0003) — 무엇을 지울지는 import 대상으로 지정한다.
         fixes: vec![Fix {
             kind: FixKind::Edit,
-            doc: Some(닫는_문서.clone()),
-            action: if 자기_import {
+            doc: Some(closing_doc.clone()),
+            action: if self_import {
                 "이 문서는 자기 자신을 import 하고 있습니다. 자기 문서가 선언한 심볼은 import 없이 그대로 쓸 수 있으므로 이 import 줄을 지우세요".to_string()
             } else {
                 format!(
-                    "이 문서의 import 줄 가운데 대상이 {주소} 인 것을 지워 순환을 끊으세요. 순환에 든 문서들이 함께 쓰는 개념이 있다면, 그 개념만 담은 상위 문서를 새로 만들어 각 문서가 그것을 import 하게 하세요"
+                    "이 문서의 import 줄 가운데 대상이 {address} 인 것을 지워 순환을 끊으세요. 순환에 든 문서들이 함께 쓰는 개념이 있다면, 그 개념만 담은 상위 문서를 새로 만들어 각 문서가 그것을 import 하게 하세요"
                 )
             },
         }],
@@ -251,7 +251,7 @@ fn 순환(체인: &[(&DocPath, usize)]) -> Diagnostic {
 /// [`SymbolTable`] 은 이름으로 [`SymbolId`] 를 주지만 종류·줄 번호를 되돌려 주는
 /// 접근자가 없다. 진단은 "어느 줄의 어떤 종류 선언인지" 를 말해야 하므로
 /// [`Project::docs`] 에서 직접 모은다.
-struct 선언<'a> {
+struct Declaration<'a> {
     /// 이 선언이 있는 문서.
     doc: &'a DocPath,
     /// 심볼의 종류. 주소의 구분 기호가 종류마다 다르다 (스펙 4.1).
@@ -276,29 +276,29 @@ struct 선언<'a> {
 /// # 반환값
 /// 규칙을 어긴 자리마다 만들어진 진단들. 어긴 것이 없으면 빈 벡터
 pub fn check_symbols(project: &Project, table: &SymbolTable) -> Vec<Diagnostic> {
-    let 순서 = project.경로들();
+    let order = project.paths();
 
     // 이름 충돌과 미해결 심볼은 둘 다 "이 이름을 선언한 문서가 누구인가" 를 물으므로
     // 색인을 먼저 완성한다. BTreeMap 이라 이름 순회가 결정적이다.
-    let mut 선언들: BTreeMap<String, Vec<선언>> = BTreeMap::new();
-    for doc in &순서 {
-        for 하나 in 선언_훑기(&project.docs[*doc]) {
-            선언들.entry(하나.name.clone()).or_default().push(하나);
+    let mut declarations: BTreeMap<String, Vec<Declaration>> = BTreeMap::new();
+    for doc in &order {
+        for one in scan_declarations(&project.docs[*doc]) {
+            declarations.entry(one.name.clone()).or_default().push(one);
         }
     }
 
     let mut diagnostics: Vec<Diagnostic> = Vec::new();
-    for doc in &순서 {
+    for doc in &order {
         let document = &project.docs[*doc];
         let scope = table.scope(doc);
-        let (참조, 사용) = 참조_해석(document, scope);
-        iknow_실재_검사(document, project, table, &mut diagnostics);
-        import_검사(document, project, table, &사용, &mut diagnostics);
-        계층_상위_검사(document, &선언들, &mut diagnostics);
-        미해결_검사(document, &참조, scope, &선언들, &mut diagnostics);
+        let (reference, used) = resolve_refs(document, scope);
+        check_iknow_exists(document, project, table, &mut diagnostics);
+        check_imports(document, project, table, &used, &mut diagnostics);
+        check_hierarchy_parent(document, &declarations, &mut diagnostics);
+        check_unresolved(document, &reference, scope, &declarations, &mut diagnostics);
     }
 
-    이름_충돌_검사(&선언들, &mut diagnostics);
+    check_name_conflicts(&declarations, &mut diagnostics);
     diagnostics
 }
 
@@ -308,15 +308,15 @@ pub fn check_symbols(project: &Project, table: &SymbolTable) -> Vec<Diagnostic> 
 /// 뒤 그 alias 로 커버한다 — 선언 이름 `무료 상품에 대한 청구서` 와 cover 이름
 /// `무료상품 청구서 예외` 는 다르고 둘을 잇는 것은 import 뿐이다. 그래서 짝은 이름 비교가
 /// 아니라 [`SymbolTable::scope`] 로 맞춘다. 이름으로 맞추면 스펙의 정본 예시가 거부된다.
-struct 커버<'a> {
+struct Cover<'a> {
     /// 이 문서의 스코프에서 cover 이름이 해석된 심볼. 해석되지 않으면 `None`.
-    대상: Option<SymbolId>,
+    target: Option<SymbolId>,
     /// cover 가 적힌 문서.
     doc: &'a DocPath,
     /// cover 가 적힌 topic 의 이름.
     topic: &'a str,
     /// cover 줄에 적힌 이름. 로컬 이름이므로 alias 일 수 있다.
-    이름: &'a str,
+    name: &'a str,
     /// 선언이 등장한 줄 번호. 1-based 다.
     line: usize,
 }
@@ -335,7 +335,7 @@ struct 커버<'a> {
 /// 스펙 5.1.1 은 "에이전트가 코드로 분기할 수 있어야 한다" 고 못박는다. 같은 코드로 묶으면
 /// 분기가 불가능해진다.
 ///
-/// **`K034` 는 이 층의 몫이다.** [`참조_해석`] 이 cover 를 미해결 판정에서 뺐으므로
+/// **`K034` 는 이 층의 몫이다.** [`resolve_refs`] 이 cover 를 미해결 판정에서 뺐으므로
 /// (짝 맞추기가 상태 기계의 일이기 때문이다) 여기서 보지 않으면 아무도 보지 않는다.
 ///
 /// 진단 순서는 **문서 경로 순**이고, `K034` 는 그 뒤에 다시 문서 경로 순으로 붙는다.
@@ -354,23 +354,23 @@ struct 커버<'a> {
 /// 상태 기계를 어긴 자리마다 만들어진 진단들. 어긴 것이 없으면 빈 벡터
 pub fn check_exceptions(project: &Project, table: &SymbolTable) -> Vec<Diagnostic> {
     // HashMap 의 나열 순서는 보장되지 않는다. 정렬해야 진단 순서가 실행마다 같다.
-    let 순서 = project.경로들();
+    let order = project.paths();
 
     // cover 를 프로젝트 전체에서 먼저 모은다. 진리표는 "이 예외를 커버하는 것이 몇 개인가"
     // 를 묻는데 커버는 다른 파일에 있을 수 있어, 한 문서만 보고는 답할 수 없다.
-    let mut 커버_전부: Vec<커버> = Vec::new();
-    for doc in &순서 {
+    let mut all_covers: Vec<Cover> = Vec::new();
+    for doc in &order {
         // 스코프를 문서마다 한 번만 뜬다. `scope` 는 매 호출 매핑을 복제한다.
         let scope = table.scope(doc);
         // 한 문서의 topic 을 돌며 그 topic 이 선언한 cover 를 모은다.
         for topic in &project.docs[*doc].topics {
             // 한 topic 이 여러 예외를 커버할 수 있다.
-            for (이름, line) in &topic.covers {
-                커버_전부.push(커버 {
-                    대상: scope.get(이름).copied(),
+            for (name, line) in &topic.covers {
+                all_covers.push(Cover {
+                    target: scope.get(name).copied(),
                     doc,
                     topic: &topic.name,
-                    이름,
+                    name,
                     line: *line,
                 });
             }
@@ -379,19 +379,19 @@ pub fn check_exceptions(project: &Project, table: &SymbolTable) -> Vec<Diagnosti
 
     // 예외의 식별자와 그 이름을 선언한 문서. 앞은 cover 가 예외를 가리키는지 판정하는 데,
     // 뒤는 import 하지 않은 cover 에게 어디서 가져오면 되는지 말하는 데 쓴다.
-    let mut 예외_전부: Vec<(SymbolId, &DocPath, &Exception)> = Vec::new();
+    let mut all_exceptions: Vec<(SymbolId, &DocPath, &Exception)> = Vec::new();
     // 값이 목록인 것은 같은 이름의 exception 이 iknow 로 여러 문서에 합법적으로 있을 수
     // 있기 때문이다 (스펙 4.4·5.1). 하나로 줄이면 `K034` 의 수정이 첫 문서를 단정하게 된다.
-    let mut 예외_소유자: BTreeMap<&str, Vec<&DocPath>> = BTreeMap::new();
-    for doc in &순서 {
+    let mut exception_owners: BTreeMap<&str, Vec<&DocPath>> = BTreeMap::new();
+    for doc in &order {
         // exception 은 topic 안에서만 선언된다 (파서가 강제한다).
         for topic in &project.docs[*doc].topics {
             for exception in &topic.exceptions {
                 // 같은 문서가 같은 이름을 두 번 선언하면 후보가 겹친다. 그 문서는 `K052`
                 // 를 따로 받으므로 여기서는 수정이 두 번 나오지 않게만 막는다.
-                let 후보 = 예외_소유자.entry(&exception.name).or_default();
-                if !후보.contains(doc) {
-                    후보.push(doc);
+                let candidates = exception_owners.entry(&exception.name).or_default();
+                if !candidates.contains(doc) {
+                    candidates.push(doc);
                 }
                 // **불변식: 이 해석은 항상 성공한다.** [`SymbolTable::build`] 가
                 // [`Project::docs`] 의 모든 exception 을 (문서, 종류, 이름) 으로 넣고
@@ -407,7 +407,7 @@ pub fn check_exceptions(project: &Project, table: &SymbolTable) -> Vec<Diagnosti
                 }) else {
                     continue;
                 };
-                예외_전부.push((id, doc, exception));
+                all_exceptions.push((id, doc, exception));
             }
         }
     }
@@ -419,19 +419,23 @@ pub fn check_exceptions(project: &Project, table: &SymbolTable) -> Vec<Diagnosti
     // ponytail: 예외마다 cover 전부를 훑어 O(예외 × cover) 다. 한 문서의 선언 수가 수백을
     // 넘지 않는 문서 프로젝트에서는 무해하다. 커지면 `대상` 으로 키를 잡은 색인을 한 번
     // 만들어 O(예외 + cover) 로 내린다.
-    for (id, doc, exception) in &예외_전부 {
-        let 짝: Vec<&커버> = 커버_전부.iter().filter(|c| c.대상 == Some(*id)).collect();
-        let 이름 = &exception.name;
+    for (id, doc, exception) in &all_exceptions {
+        let matching: Vec<&Cover> = all_covers
+            .iter()
+            .filter(|c| c.target == Some(*id))
+            .collect();
+        let name = &exception.name;
         // Edit 수정은 문서 문법이므로 주소를 백틱으로 적는다 (스펙 5.1.1).
         //
         // 아래 세 값은 전부 클로저다. `(일반, 커버 하나)` 통과 칸이 예외마다 이것들을
         // 버리는데, 통과가 정상이고 다수인 경로다.
-        let 주소 = || 심볼_주소(doc, SymbolKind::Exception, 이름, true);
+        let address = || symbol_address(doc, SymbolKind::Exception, name, true);
         // 커버 자리들. 어느 topic 이 커버하는지가 note 다.
-        let 커버_위치 = || -> Vec<Location> {
-            짝.iter()
+        let cover_locations = || -> Vec<Location> {
+            matching
+                .iter()
                 .map(|c| Location {
-                    // 이름 뒤에 조사를 붙이지 않는다 ([`대상_설명`] 과 같은 이유다) —
+                    // 이름 뒤에 조사를 붙이지 않는다 ([`describe_target`] 과 같은 이유다) —
                     // 끝소리에 따라 "이/가" 가 갈리는데 컴파일러가 판정할 수 없어,
                     // 붙이면 어느 한쪽에서 반드시 어색해진다. 줄표로 받는다.
                     doc: c.doc.clone(),
@@ -447,36 +451,35 @@ pub fn check_exceptions(project: &Project, table: &SymbolTable) -> Vec<Diagnosti
         // 같은 topic 이 같은 예외를 두 번 커버하면 두 설명이 글자까지 같아진다 — 스펙 5.2 가
         // 세는 단위는 선언이므로 그것도 error 다. 같은 문장을 두 번 나열하면 "하나만
         // 남기세요" 가 어느 것도 가리키지 못하므로, 겹치는 것은 **개수로** 말한다.
-        let 커버_설명 = || -> String {
-            let mut 목록: Vec<(String, usize)> = Vec::new();
+        let describe_covers = || -> String {
+            let mut list: Vec<(String, usize)> = Vec::new();
             // 짝을 돌며 같은 설명을 합치고 개수를 센다.
-            for c in &짝 {
-                let 하나 = format!(
+            for c in &matching {
+                let one = format!(
                     "{} 의 cover `{}` 줄",
-                    심볼_주소(c.doc, SymbolKind::Topic, c.topic, true),
-                    c.이름
+                    symbol_address(c.doc, SymbolKind::Topic, c.topic, true),
+                    c.name
                 );
-                match 목록.iter_mut().find(|(이미, _)| *이미 == 하나) {
+                match list.iter_mut().find(|(already, _)| *already == one) {
                     // 이미 같은 설명이 있으면 개수만 올린다.
-                    Some((_, 개수)) => *개수 += 1,
-                    None => 목록.push((하나, 1)),
+                    Some((_, count)) => *count += 1,
+                    None => list.push((one, 1)),
                 }
             }
-            목록
-                .into_iter()
+            list.into_iter()
                 // 하나뿐이면 개수를 붙이지 않는다 — "줄 1개" 는 군더더기다.
-                .map(|(설명, 개수)| {
-                    if 개수 > 1 {
-                        format!("{설명} {개수}개")
+                .map(|(description, count)| {
+                    if count > 1 {
+                        format!("{description} {count}개")
                     } else {
-                        설명
+                        description
                     }
                 })
                 .collect::<Vec<String>>()
                 .join(", ")
         };
 
-        let diagnostic = match (exception.pending, 짝.len()) {
+        let diagnostic = match (exception.pending, matching.len()) {
             // (일반, 커버 하나) — 통과다. 유일하게 진단이 없는 칸이다.
             (false, 1) => continue,
             // (일반, 커버 없음) — 예외를 선언했으나 그것을 다루는 정책이 없다.
@@ -484,7 +487,7 @@ pub fn check_exceptions(project: &Project, table: &SymbolTable) -> Vec<Diagnosti
                 severity: Severity::Error,
                 code: "K030",
                 message: format!(
-                    "이 예외를 커버하는 정책이 없습니다 — `{이름}`. 예외를 선언했으면 그것을 다루는 topic 이 있어야 합니다 (스펙 5.2)."
+                    "이 예외를 커버하는 정책이 없습니다 — `{name}`. 예외를 선언했으면 그것을 다루는 topic 이 있어야 합니다 (스펙 5.2)."
                 ),
                 locations: vec![Location {
                     doc: (*doc).clone(),
@@ -492,7 +495,7 @@ pub fn check_exceptions(project: &Project, table: &SymbolTable) -> Vec<Diagnosti
                     // "프로젝트에 없습니다" 라고 쓰면 grep 으로 반증된다 — 이름만 같고
                     // import 되지 않은 cover 줄이 문자 그대로 있을 수 있고, 그때 같은
                     // 실행의 `K034` 가 그 줄을 지목해 두 진단이 서로를 반박하는 모양이
-                    // 된다. 해석 기준으로 좁혀 말한다 ([`대상_설명`] 과 같은 기준이다).
+                    // 된다. 해석 기준으로 좁혀 말한다 ([`describe_target`] 과 같은 기준이다).
                     note: "여기서 선언된 예외 — 이 예외를 가리키는 cover 가 없습니다. 이름만 같고 import 되지 않은 cover 는 이 예외를 가리키지 않습니다"
                         .to_string(),
                 }],
@@ -502,8 +505,8 @@ pub fn check_exceptions(project: &Project, table: &SymbolTable) -> Vec<Diagnosti
                         // 어느 문서의 어느 topic 이 이 예외의 정책인지는 사람이 정한다.
                         doc: None,
                         action: format!(
-                            "이 예외를 다루는 정책 topic 을 정해 그 본문 끝에 다음 줄을 추가하세요: cover `{이름}`. 그 topic 이 다른 문서에 있다면 그 문서의 import 블록에 다음 줄을 먼저 추가하세요: import {}",
-                            주소()
+                            "이 예외를 다루는 정책 topic 을 정해 그 본문 끝에 다음 줄을 추가하세요: cover `{name}`. 그 topic 이 다른 문서에 있다면 그 문서의 import 블록에 다음 줄을 먼저 추가하세요: import {}",
+                            address()
                         ),
                     },
                     Fix {
@@ -521,8 +524,8 @@ pub fn check_exceptions(project: &Project, table: &SymbolTable) -> Vec<Diagnosti
                 severity: Severity::Error,
                 code: "K033",
                 message: format!(
-                    "한 예외를 커버하는 cover 선언이 {}개입니다 — `{이름}`. 예외 하나에 정책 하나를 강제합니다 (스펙 5.2).",
-                    짝.len()
+                    "한 예외를 커버하는 cover 선언이 {}개입니다 — `{name}`. 예외 하나에 정책 하나를 강제합니다 (스펙 5.2).",
+                    matching.len()
                 ),
                 locations: {
                     let mut locations = vec![Location {
@@ -531,7 +534,7 @@ pub fn check_exceptions(project: &Project, table: &SymbolTable) -> Vec<Diagnosti
                         note: "여기서 선언된 예외 — 아래 자리들이 모두 이 예외를 커버합니다"
                             .to_string(),
                     }];
-                    locations.extend(커버_위치());
+                    locations.extend(cover_locations());
                     locations
                 },
                 fixes: vec![Fix {
@@ -542,7 +545,7 @@ pub fn check_exceptions(project: &Project, table: &SymbolTable) -> Vec<Diagnosti
                     // (ADR-0003). 겹치는 설명이 개수로 접히므로 그 안내가 필요하다.
                     action: format!(
                         "이 예외를 실제로 다루는 정책 하나만 남기고 나머지 cover 줄을 지우세요. 지금 커버하는 것은 {}입니다. 지울 줄의 자리는 위 위치 목록에 있습니다",
-                        커버_설명()
+                        describe_covers()
                     ),
                 }],
             },
@@ -551,7 +554,7 @@ pub fn check_exceptions(project: &Project, table: &SymbolTable) -> Vec<Diagnosti
                 severity: Severity::Warn,
                 code: "K031",
                 message: format!(
-                    "정책이 아직 결정되지 않은 예외입니다 — `{이름}`. 알림이며 빌드를 실패시키지 않습니다 (스펙 5.2)."
+                    "정책이 아직 결정되지 않은 예외입니다 — `{name}`. 알림이며 빌드를 실패시키지 않습니다 (스펙 5.2)."
                 ),
                 locations: vec![Location {
                     doc: (*doc).clone(),
@@ -567,8 +570,8 @@ pub fn check_exceptions(project: &Project, table: &SymbolTable) -> Vec<Diagnosti
                     // `K030` 이 난다. warn 을 없애려는 수정이 error 둘을 만들면 안 된다.
                     // 형제 갈래인 `K030` 의 첫 수정과 같은 문장을 쓴다.
                     action: format!(
-                        "정책이 정해지면 그것을 다루는 topic 에 다음 줄을 추가하고, 이 선언에서 pending 을 지우세요: cover `{이름}`. 그 topic 이 다른 문서에 있다면 그 문서의 import 블록에 다음 줄을 먼저 추가하세요: import {}",
-                        주소()
+                        "정책이 정해지면 그것을 다루는 topic 에 다음 줄을 추가하고, 이 선언에서 pending 을 지우세요: cover `{name}`. 그 topic 이 다른 문서에 있다면 그 문서의 import 블록에 다음 줄을 먼저 추가하세요: import {}",
+                        address()
                     ),
                 }],
             },
@@ -577,7 +580,7 @@ pub fn check_exceptions(project: &Project, table: &SymbolTable) -> Vec<Diagnosti
                 severity: Severity::Error,
                 code: "K032",
                 message: format!(
-                    "pending 으로 선언된 예외를 커버하는 topic 이 있습니다 — `{이름}`. pending 은 이 예외를 다루는 정책이 아직 결정되지 않았다는 뜻인데 커버하는 topic 이 실제로 있어, 선언과 문서가 서로 어긋납니다 (스펙 5.2)."
+                    "pending 으로 선언된 예외를 커버하는 topic 이 있습니다 — `{name}`. pending 은 이 예외를 다루는 정책이 아직 결정되지 않았다는 뜻인데 커버하는 topic 이 실제로 있어, 선언과 문서가 서로 어긋납니다 (스펙 5.2)."
                 ),
                 locations: {
                     let mut locations = vec![Location {
@@ -586,7 +589,7 @@ pub fn check_exceptions(project: &Project, table: &SymbolTable) -> Vec<Diagnosti
                         note: "여기서 pending 으로 선언된 예외 — 정책이 미결정이라고 말합니다"
                             .to_string(),
                     }];
-                    locations.extend(커버_위치());
+                    locations.extend(cover_locations());
                     locations
                 },
                 // 둘 다 유효한 길이므로 각 수정이 자기 조건을 안고 있다.
@@ -598,12 +601,12 @@ pub fn check_exceptions(project: &Project, table: &SymbolTable) -> Vec<Diagnosti
                         // `K033` 이 새로 난다. 이 함수의 rustdoc 이 인정한 사실을 fix 본문이
                         // 부정하면 안 된다 — 스펙 V0001 5.1.1 은 에이전트가 fix 를 **그대로
                         // 적용**한다고 정한다. `K005` 가 같은 이유로 갈래를 가른다.
-                        action: if 짝.len() == 1 {
+                        action: if matching.len() == 1 {
                             "정책이 이미 결정된 것이라면(커버하는 topic 이 그 정책입니다) 이 exception 선언에서 pending 을 지우세요. 그러면 이 예외는 커버된 일반 예외가 되어 통과합니다".to_string()
                         } else {
                             format!(
                                 "정책이 이미 결정된 것이라면 이 exception 선언에서 pending 을 지우고, 커버하는 {} 가운데 실제 정책 하나만 남기세요. pending 만 지우면 커버가 둘 이상이라 `K033` 이 남습니다",
-                                커버_설명()
+                                describe_covers()
                             )
                         },
                     },
@@ -613,7 +616,7 @@ pub fn check_exceptions(project: &Project, table: &SymbolTable) -> Vec<Diagnosti
                         doc: None,
                         action: format!(
                             "정책이 아직 결정되지 않은 것이라면 {}을 지우세요. 그러면 이 예외는 `K031` 알림이 되고 빌드는 통과합니다",
-                            커버_설명()
+                            describe_covers()
                         ),
                     },
                 ],
@@ -622,20 +625,22 @@ pub fn check_exceptions(project: &Project, table: &SymbolTable) -> Vec<Diagnosti
         diagnostics.push(diagnostic);
     }
 
-    // 어떤 예외도 가리키지 않는 cover. `커버_전부` 가 이미 문서 경로 순이다.
+    // 어떤 예외도 가리키지 않는 cover. `all_covers` 가 이미 문서 경로 순이다.
     //
     // ponytail: 위와 같은 이유로 O(cover × 예외) 다. 같은 색인을 만들면 함께 내려간다.
-    for c in &커버_전부 {
+    for c in &all_covers {
         // 스코프에서 해석되고 그것이 예외이면 짝이 맞은 것이다.
-        if c.대상
-            .is_some_and(|id| 예외_전부.iter().any(|(예외_id, _, _)| *예외_id == id))
-        {
+        if c.target.is_some_and(|id| {
+            all_exceptions
+                .iter()
+                .any(|(exception_id, _, _)| *exception_id == id)
+        }) {
             continue;
         }
-        let 이름 = c.이름;
+        let name = c.name;
         // 스코프에 이름이 아예 없는 것과, 있으나 예외가 아닌 것은 다른 사실이다.
         // 뭉뚱그리면 둘 중 하나에 대해 진단이 거짓을 말한다.
-        let 이유 = if c.대상.is_some() {
+        let cause = if c.target.is_some() {
             "이 문서에서 그 이름은 exception 이 아닙니다. cover 는 exception 만 가리킬 수 있습니다 (스펙 4.6)."
         } else {
             "이 문서는 그 이름을 선언하지도 import 하지도 않았습니다."
@@ -644,13 +649,13 @@ pub fn check_exceptions(project: &Project, table: &SymbolTable) -> Vec<Diagnosti
         let mut fixes: Vec<Fix> = Vec::new();
         // 그 이름의 예외가 다른 문서에 있고 이 문서가 그것을 들여오지 않았다면,
         // 고칠 것은 빠진 import 줄이므로 그것을 그대로 준다 (스펙 5.1.1).
-        if c.대상.is_none()
-            && let Some(후보) = 예외_소유자.get(이름)
+        if c.target.is_none()
+            && let Some(candidates) = exception_owners.get(name)
         {
             // 후보가 둘 이상이면 어느 것을 고를지는 뜻이 정한다. 조건을 붙이지 않으면
-            // 진단이 "이것이 답이다" 라고 단정하게 된다 — `미해결_심볼` 과 같은 규칙이다.
-            for owner in 후보 {
-                let 조건 = if 후보.len() > 1 {
+            // 진단이 "이것이 답이다" 라고 단정하게 된다 — `unresolved_symbol` 과 같은 규칙이다.
+            for owner in candidates {
+                let condition = if candidates.len() > 1 {
                     format!("{owner} 가 같은 개념이라면, ")
                 } else {
                     String::new()
@@ -659,14 +664,14 @@ pub fn check_exceptions(project: &Project, table: &SymbolTable) -> Vec<Diagnosti
                     kind: FixKind::Edit,
                     doc: Some(c.doc.clone()),
                     action: format!(
-                        "{조건}import 블록에 다음 줄을 추가하세요: import {}",
-                        심볼_주소(owner, SymbolKind::Exception, 이름, true)
+                        "{condition}import 블록에 다음 줄을 추가하세요: import {}",
+                        symbol_address(owner, SymbolKind::Exception, name, true)
                     ),
                 });
                 // **`bless` 를 짝지어 한 왕복에 닫는다.** 핀을 붙일 문서를 여기서는
                 // 안다 — cover 줄이 있는 `c.doc` 다. 짝짓지 않으면 위 수정이 만든 핀
                 // 없는 import 줄에 `K020` 이 새로 떠 왕복이 둘로 늘어난다
-                // (스펙 V0001 5.1.1). `미해결_심볼` 이 같은 이유로 같은 짝을 낸다.
+                // (스펙 V0001 5.1.1). `unresolved_symbol` 이 같은 이유로 같은 짝을 낸다.
                 //
                 // 형제인 `K030`·`K031` 은 이 짝을 낼 수 없다. 어느 topic 이 이 예외의
                 // 정책인지는 사람이 정하므로 **핀을 붙일 문서를 모르고**, 지어내면
@@ -676,8 +681,8 @@ pub fn check_exceptions(project: &Project, table: &SymbolTable) -> Vec<Diagnosti
                     doc: None,
                     action: format!(
                         "kang bless {} --import {}",
-                        셸_인용(&c.doc.to_string()),
-                        셸_인용(&심볼_주소(owner, SymbolKind::Exception, 이름, false))
+                        shell_quote(&c.doc.to_string()),
+                        shell_quote(&symbol_address(owner, SymbolKind::Exception, name, false))
                     ),
                 });
             }
@@ -691,7 +696,7 @@ pub fn check_exceptions(project: &Project, table: &SymbolTable) -> Vec<Diagnosti
         diagnostics.push(Diagnostic {
             severity: Severity::Error,
             code: "K034",
-            message: format!("cover 대상 예외를 찾지 못했습니다 — `{이름}`. {이유}"),
+            message: format!("cover 대상 예외를 찾지 못했습니다 — `{name}`. {cause}"),
             locations: vec![Location {
                 doc: c.doc.clone(),
                 line: c.line,
@@ -742,10 +747,10 @@ pub fn check_exceptions(project: &Project, table: &SymbolTable) -> Vec<Diagnosti
 /// 핀이 없거나 어긋난 import 줄마다 만들어진 진단들. 어긴 것이 없으면 빈 벡터
 pub fn check_revs(project: &Project, table: &SymbolTable) -> Vec<Diagnostic> {
     // HashMap 의 나열 순서는 보장되지 않는다. 정렬해야 진단 순서가 실행마다 같다.
-    let 순서 = project.경로들();
+    let order = project.paths();
 
     let mut diagnostics: Vec<Diagnostic> = Vec::new();
-    for doc in 순서 {
+    for doc in order {
         // 한 문서의 import 를 파일 순서대로 본다.
         for import in &project.docs[doc].imports {
             // 대상이 없으면 물을 해시가 없다. 미해결 import 는 `K002` 의 몫이다.
@@ -755,18 +760,18 @@ pub fn check_revs(project: &Project, table: &SymbolTable) -> Vec<Diagnostic> {
                 continue;
             };
 
-            let 대상 = &import.target;
-            let 이름 = 대상.name.join(".");
-            let 문서_문법 = 심볼_주소(&대상.doc, 대상.kind, &이름, true);
+            let target = &import.target;
+            let name = target.name.join(".");
+            let doc_syntax = symbol_address(&target.doc, target.kind, &name, true);
             // `bless` 는 CLI 이므로 백틱 없는 주소에 인용을 붙인다 (스펙 5.1.1·6.0).
             // 심볼 이름에는 공백이 들어가므로 인용을 빠뜨리면 셸이 인자를 쪼갠다.
             // **alias 가 아니라 대상의 정본 이름**을 넘긴다 — alias 로는 bless 가 그 import
             // 줄을 찾지 못한다.
-            let 명령 = || {
+            let command = || {
                 format!(
                     "kang bless {} --import {}",
-                    셸_인용(&doc.to_string()),
-                    셸_인용(&심볼_주소(&대상.doc, 대상.kind, &이름, false))
+                    shell_quote(&doc.to_string()),
+                    shell_quote(&symbol_address(&target.doc, target.kind, &name, false))
                 )
             };
 
@@ -778,7 +783,7 @@ pub fn check_revs(project: &Project, table: &SymbolTable) -> Vec<Diagnostic> {
                     severity: Severity::Error,
                     code: "K020",
                     message: format!(
-                        "import 에 rev 핀이 없습니다 — {문서_문법}. keyword·topic·exception 세 종류 모두 핀이 필수입니다 (스펙 4.7). 핀은 손으로 계산할 수 없으므로 kang bless 가 삽입합니다 (스펙 4.8)."
+                        "import 에 rev 핀이 없습니다 — {doc_syntax}. keyword·topic·exception 세 종류 모두 핀이 필수입니다 (스펙 4.7). 핀은 손으로 계산할 수 없으므로 kang bless 가 삽입합니다 (스펙 4.8)."
                     ),
                     locations: vec![Location {
                         doc: doc.clone(),
@@ -792,17 +797,17 @@ pub fn check_revs(project: &Project, table: &SymbolTable) -> Vec<Diagnostic> {
                     fixes: vec![Fix {
                         kind: FixKind::Shell,
                         doc: None,
-                        action: 명령(),
+                        action: command(),
                     }],
                 },
-                Some(핀) => {
+                Some(pin) => {
                     // ponytail: 같은 대상을 여러 줄이 import 하면 해시를 줄마다 다시
                     // 계산한다. 입력이 한 줄 정의나 topic 본문 하나라 비용이 작아 캐시를
                     // 두지 않는다. 문서가 아주 커지거나 import 가 아주 많아지면
                     // `SymbolId` 별로 한 번만 계산해 재사용하는 형태로 올린다.
-                    let 현재 = crate::hash::rev(table.hash_source(id));
+                    let current = crate::hash::rev(table.hash_source(id));
                     // 핀이 현재 해시와 같으면 이 import 는 통과다.
-                    if *핀 == 현재 {
+                    if *pin == current {
                         continue;
                     }
                     Diagnostic {
@@ -816,20 +821,20 @@ pub fn check_revs(project: &Project, table: &SymbolTable) -> Vec<Diagnostic> {
                         // diff 를 출력하지 않는다 — 이전 본문이 없으므로 만들 수 없다.
                         // 무엇이 바뀌었는지는 git 이 안다.
                         message: format!(
-                            "rev 핀이 대상의 현재 내용과 다릅니다 — {문서_문법}. 핀은 참조 시점의 내용을 가리킵니다 (스펙 4.8). 무엇이 달라졌는지는 프로젝트 루트에서 git diff {} 로 확인하고, 이 문서가 지금의 대상에도 여전히 맞는지 확인한 뒤 핀을 갱신하세요.",
-                            셸_인용(&format!("{}.kang", 대상.doc))
+                            "rev 핀이 대상의 현재 내용과 다릅니다 — {doc_syntax}. 핀은 참조 시점의 내용을 가리킵니다 (스펙 4.8). 무엇이 달라졌는지는 프로젝트 루트에서 git diff {} 로 확인하고, 이 문서가 지금의 대상에도 여전히 맞는지 확인한 뒤 핀을 갱신하세요.",
+                            shell_quote(&format!("{}.kang", target.doc))
                         ),
                         locations: vec![Location {
                             doc: doc.clone(),
                             line: import.line,
-                            note: format!("여기서 import 했습니다 — 핀 {핀}, 현재 {현재}"),
+                            note: format!("여기서 import 했습니다 — 핀 {pin}, 현재 {current}"),
                         }],
                         // 산문을 붙이지 않는다 — 위 `K020` 과 같은 이유다. "다시 읽고
                         // 여전히 맞는지 확인한 뒤" 라는 선행 조건은 `message` 에 있다.
                         fixes: vec![Fix {
                             kind: FixKind::Shell,
                             doc: None,
-                            action: 명령(),
+                            action: command(),
                         }],
                     }
                 }
@@ -874,25 +879,25 @@ pub fn check_revs(project: &Project, table: &SymbolTable) -> Vec<Diagnostic> {
 /// # 반환값
 /// 진단마다 한 블록씩 담은 여러 줄 문자열. 진단이 없으면 빈 문자열
 pub fn report(diags: &[Diagnostic]) -> String {
-    let mut 출력 = String::new();
+    let mut output = String::new();
 
     // 진단 하나가 한 블록이다. 블록 사이는 빈 줄로 가른다.
     for diagnostic in diags {
-        if !출력.is_empty() {
-            출력.push('\n');
+        if !output.is_empty() {
+            output.push('\n');
         }
-        let 심각도 = match diagnostic.severity {
+        let severity = match diagnostic.severity {
             Severity::Error => "error",
             Severity::Warn => "warning",
         };
-        출력.push_str(&format!(
-            "{심각도}[{}]: {}\n\n",
+        output.push_str(&format!(
+            "{severity}[{}]: {}\n\n",
             diagnostic.code, diagnostic.message
         ));
 
         // `Location::line` 은 1-based 이므로 `0` 은 "가리킬 줄이 없음" 이다. 그때 `doc` 은
         // 문서 주소가 아니라 표시용 경로이므로 `.kang` 을 붙이면 없는 파일 이름을 지어낸다.
-        let 자리들: Vec<String> = diagnostic
+        let positions: Vec<String> = diagnostic
             .locations
             .iter()
             .map(|location| {
@@ -903,22 +908,22 @@ pub fn report(diags: &[Diagnostic]) -> String {
                 }
             })
             .collect();
-        let 폭 = 자리들
+        let width = positions
             .iter()
-            .map(|자리| 자리.chars().count())
+            .map(|position| position.chars().count())
             .max()
             .unwrap_or(0);
 
         // 관련 위치 전부를 찍고 note 를 같은 열에서 시작시킨다.
-        for (자리, location) in 자리들.iter().zip(&diagnostic.locations) {
+        for (position, location) in positions.iter().zip(&diagnostic.locations) {
             debug_assert!(
                 !location.note.ends_with('.'),
                 "{}: note 는 위치 표시이므로 마침표로 끝나지 않는다 — {}",
                 diagnostic.code,
                 location.note
             );
-            let 채움 = " ".repeat(폭 - 자리.chars().count());
-            출력.push_str(&format!("  {자리}{채움}   {}\n", location.note));
+            let padding = " ".repeat(width - position.chars().count());
+            output.push_str(&format!("  {position}{padding}   {}\n", location.note));
         }
 
         // fix 가 없는 진단은 만들지 않지만, 찍는 쪽이 그것을 전제로 빈 머리글을 남기면
@@ -926,7 +931,7 @@ pub fn report(diags: &[Diagnostic]) -> String {
         if diagnostic.fixes.is_empty() {
             continue;
         }
-        출력.push_str("\n  fix:\n");
+        output.push_str("\n  fix:\n");
         // `fixes` 는 순서 있는 목록이며 앞에서부터 적용한다 (스펙 5.1.1).
         for fix in &diagnostic.fixes {
             debug_assert!(
@@ -938,20 +943,20 @@ pub fn report(diags: &[Diagnostic]) -> String {
             match (&fix.kind, &fix.doc) {
                 // 문서 편집은 어느 파일을 여는지부터 보여야 한다.
                 (FixKind::Edit, Some(doc)) => {
-                    출력.push_str(&format!(
+                    output.push_str(&format!(
                         "    [edit]  {doc}.kang\n            {}\n",
                         fix.action
                     ));
                 }
                 // 대상 문서가 없는 편집은 파일 이름을 지어내지 않고 행동만 적는다.
-                (FixKind::Edit, None) => 출력.push_str(&format!("    [edit]  {}\n", fix.action)),
+                (FixKind::Edit, None) => output.push_str(&format!("    [edit]  {}\n", fix.action)),
                 // 셸 명령은 그대로 복사해 실행할 수 있어야 하므로 한 줄로 찍는다.
-                (FixKind::Shell, _) => 출력.push_str(&format!("    [shell] {}\n", fix.action)),
+                (FixKind::Shell, _) => output.push_str(&format!("    [shell] {}\n", fix.action)),
             }
         }
     }
 
-    출력
+    output
 }
 
 /// 문서의 모든 심볼 선언을 훑는다.
@@ -964,12 +969,12 @@ pub fn report(diags: &[Diagnostic]) -> String {
 ///
 /// # 반환값
 /// keyword 를 먼저, 그 다음 topic 과 그 topic 이 선언한 exception 을 담은 목록
-fn 선언_훑기(document: &Document) -> Vec<선언<'_>> {
-    let mut 목록: Vec<선언> = Vec::new();
+fn scan_declarations(document: &Document) -> Vec<Declaration<'_>> {
+    let mut list: Vec<Declaration> = Vec::new();
 
     // keyword 선언. 계층 이름은 `.` 로 이어 전체 이름으로 만든다 (스펙 4.3).
     for keyword in &document.keywords {
-        목록.push(선언 {
+        list.push(Declaration {
             doc: &document.path,
             kind: SymbolKind::Keyword,
             name: keyword.name.0.join("."),
@@ -980,7 +985,7 @@ fn 선언_훑기(document: &Document) -> Vec<선언<'_>> {
 
     // topic 과 그 topic 이 선언한 exception.
     for topic in &document.topics {
-        목록.push(선언 {
+        list.push(Declaration {
             doc: &document.path,
             kind: SymbolKind::Topic,
             name: topic.name.clone(),
@@ -988,7 +993,7 @@ fn 선언_훑기(document: &Document) -> Vec<선언<'_>> {
             iknow: &topic.iknow,
         });
         for exception in &topic.exceptions {
-            목록.push(선언 {
+            list.push(Declaration {
                 doc: &document.path,
                 kind: SymbolKind::Exception,
                 name: exception.name.clone(),
@@ -998,12 +1003,12 @@ fn 선언_훑기(document: &Document) -> Vec<선언<'_>> {
         }
     }
 
-    목록
+    list
 }
 
 /// 문서의 백틱 참조를 스코프 이름으로 합치고, 그 문서가 실제로 쓴 이름을 모은다.
 ///
-/// 조각을 이름으로 끊는 일 자체는 [`이름_분할`] 이 한다 — 왜 끊어야 하는지와 그 한계는
+/// 조각을 이름으로 끊는 일 자체는 [`split_names`] 이 한다 — 왜 끊어야 하는지와 그 한계는
 /// 거기 적혀 있다. 이 함수는 끊은 이름에 **참조된 자리**를 붙이고, 본문에 나타나지 않는
 /// 사용(계층 상위·`cover` 대상·상세 마커)을 더한다.
 ///
@@ -1012,7 +1017,7 @@ fn 선언_훑기(document: &Document) -> Vec<선언<'_>> {
 /// - `scope`: 그 문서에서 쓸 수 있는 로컬 이름들
 ///
 /// # 반환값
-/// - 합친 참조들. 각 항목은 `(이름, 줄 번호, 참조된 자리)` 이며 자리는 진단의 note 에 쓴다
+/// - 합친 참조들. 각 항목은 `(name, line number, referenced position)` 이며 자리는 진단의 note 에 쓴다
 /// - 이 문서가 쓴 이름 집합. 합친 이름과 **이 문서가 선언한 계층 이름의 상위 전부**를 담는다.
 ///   스펙 4.3 은 하위 키워드를 선언하려면 상위를 "같은 파일에서 정의했거나 import" 하라고
 ///   **의무로** 못박으므로, 그 상위 import 를 미사용이라 하면 처방대로 고친 문서가 위법이 된다.
@@ -1024,38 +1029,38 @@ fn 선언_훑기(document: &Document) -> Vec<선언<'_>> {
 ///   미사용 검사를 빠져나간다.
 ///
 /// keyword 상세 마커는 **참조 목록에도** 들어간다. `cover` 만 빠진다 — 이유는 아래 주석에.
-fn 참조_해석(
+fn resolve_refs(
     document: &Document,
     scope: &HashMap<String, SymbolId>,
 ) -> (Vec<(String, usize, &'static str)>, HashSet<String>) {
-    let mut 참조: Vec<(String, usize, &'static str)> = Vec::new();
-    let mut 사용: HashSet<String> = HashSet::new();
+    let mut reference: Vec<(String, usize, &'static str)> = Vec::new();
+    let mut used: HashSet<String> = HashSet::new();
 
     // keyword 정의와 topic 본문 두 자리를 함께 돈다. 스펙 4.2 는 "본문과 **선언부**의 모든
     // 백틱은 심볼 참조" 이므로 정의 안의 참조도 같은 규칙을 받는다.
-    let 자리들 = document
+    let positions = document
         .keywords
         .iter()
         .map(|keyword| (&keyword.refs, "keyword 정의"))
         .chain(document.topics.iter().map(|topic| (&topic.refs, "본문")));
 
-    // 조각을 이름으로 끊는 일은 [`이름_분할`] 하나가 한다. 여기서는 자리 표시만 붙인다.
-    for (조각들, 자리) in 자리들 {
-        for (이름, 줄) in 이름_분할(조각들, scope) {
-            사용.insert(이름.clone());
-            참조.push((이름, 줄, 자리));
+    // 조각을 이름으로 끊는 일은 [`split_names`] 하나가 한다. 여기서는 자리 표시만 붙인다.
+    for (segments, position) in positions {
+        for (name, line) in split_names(segments, scope) {
+            used.insert(name.clone());
+            reference.push((name, line, position));
         }
     }
 
     // 하위 키워드를 선언하면 그 **직접 상위**를 쓰는 것이다 (스펙 4.3:91). 본문이 그 이름을
     // 백틱으로 언급하지 않아도 마찬가지다.
     //
-    // 조부모까지 세지 않는다. 의무가 직접 상위에만 걸리므로([`계층_상위_검사`]) 조부모를
+    // 조부모까지 세지 않는다. 의무가 직접 상위에만 걸리므로([`check_hierarchy_parent`]) 조부모를
     // 세면 그것만 import 하고 쓰지 않는 줄의 참인 `K003` 이 사라진다. 연쇄는 각 선언이
     // 자기 직접 상위를 요구하면서 스스로 닫힌다.
     for keyword in &document.keywords {
         // 계층이 아니면 쓰는 상위가 없다. 자기 자신은 선언이지 사용이 아니다.
-        let Some(상위) = 직접_상위(&keyword.name.0) else {
+        let Some(parent) = direct_parent(&keyword.name.0) else {
             continue;
         };
 
@@ -1064,7 +1069,7 @@ fn 참조_해석(
         // 미사용으로 오인된다. 스펙 4.3:91 은 "import **한 것**" 을 허용하고
         // 4.7 은 alias 가 정식 이름을 폐기한다고 하지 않는다.
         //
-        // 종류도 [`계층_상위_검사`] 와 같이 본다. 이름만 같은 topic import 는 상위가 될 수
+        // 종류도 [`check_hierarchy_parent`] 와 같이 본다. 이름만 같은 topic import 는 상위가 될 수
         // 없으므로(스펙 4.1:68) 하위 선언이 그것을 쓰는 것이 아니다.
         //
         // ponytail: 같은 이름을 keyword 로 import 한 줄이 여럿이면 전부 사용으로 센다.
@@ -1072,8 +1077,8 @@ fn 참조_해석(
         // 대주었는지는 스코프가 알려 주지 않아, 없애려면 상위 해석을 import 줄 단위로
         // 되돌려야 한다. 그 형태가 실제로 나타나면 그때 올린다.
         for import in &document.imports {
-            if import.target.kind == SymbolKind::Keyword && import.target.name[..] == *상위 {
-                사용.insert(
+            if import.target.kind == SymbolKind::Keyword && import.target.name[..] == *parent {
+                used.insert(
                     import
                         .alias
                         .clone()
@@ -1081,7 +1086,7 @@ fn 참조_해석(
                 );
             }
         }
-        사용.insert(상위.join("."));
+        used.insert(parent.join("."));
     }
 
     // `cover` 대상과 keyword 상세 마커는 `refs` 에 담기지 않지만 선언부의 백틱이므로
@@ -1091,8 +1096,8 @@ fn 참조_해석(
     // 상태 기계의 몫이기 때문이다. 여기서 함께 보면 같은 사실이 두 번 보고된다.
     for topic in &document.topics {
         // 한 topic 이 여러 예외를 커버할 수 있다.
-        for (이름, _) in &topic.covers {
-            사용.insert(이름.clone());
+        for (name, _) in &topic.covers {
+            used.insert(name.clone());
         }
     }
 
@@ -1110,16 +1115,16 @@ fn 참조_해석(
             continue;
         };
         // 상세 마커는 백틱 이름 **하나**다 (파서가 강제한다). 합칠 조각이 없다.
-        사용.insert(detail.clone());
-        참조.push((detail.clone(), keyword.line, "keyword 상세 마커"));
+        used.insert(detail.clone());
+        reference.push((detail.clone(), keyword.line, "keyword 상세 마커"));
     }
 
-    (참조, 사용)
+    (reference, used)
 }
 
 /// 백틱 조각들을 스코프의 이름으로 끊는다.
 ///
-/// **참조 분할은 이 함수 하나가 담당한다.** [`참조_해석`] 과 CLI 의 `kang refs` 가 같은
+/// **참조 분할은 이 함수 하나가 담당한다.** [`resolve_refs`] 과 CLI 의 `kang refs` 가 같은
 /// 문장을 다르게 읽으면, 빌드가 통과하는 문서에서 조회가 있는 참조를 놓치고 없는 참조를
 /// 만든다. 둘 다 성공 종료라 신호가 없다. 참조를 세는 새 소비자(`kang show` 등)도
 /// 자기 분할을 쓰지 말고 이 함수를 부른다.
@@ -1154,18 +1159,18 @@ fn 참조_해석(
 /// 없으므로 **구조적으로 발화할 수 없다.** 그래서 승급하지 않았다.
 ///
 /// **올릴 조건은 계층 keyword 를 선언한 코퍼스에서 충돌 1 건이 관측되는 것이다.**
-/// 메커니즘 자체는 실재하며 `병합_천장은_같은_줄의_두_이름을_한_이름으로_읽는다`
+/// 메커니즘 자체는 실재하며 `merge_ceiling_reads_two_names_on_line_as_one`
 /// (`tests/cli.rs`) 가 현재 동작을 고정한다 — 고치면 그 테스트가 뒤집힌다.
 ///
 /// # 매개변수
-/// - `조각들`: 백틱 쌍 하나가 항목 하나인 `(이름, 줄 번호)` 목록
+/// - `조각들`: 백틱 쌍 하나가 항목 하나인 `(name, line number)` 목록
 /// - `scope`: 그 문서에서 쓸 수 있는 로컬 이름들
 ///
 /// # 반환값
-/// 끊어 낸 `(이름, 줄 번호)` 목록. 스코프에 없는 이름도 그대로 담는다 —
+/// 끊어 낸 `(name, line number)` 목록. 스코프에 없는 이름도 그대로 담는다 —
 /// 미해결 심볼 진단이 가리킬 자리가 필요하기 때문이다
-pub fn 이름_분할(
-    조각들: &[(String, usize)],
+pub fn split_names(
+    segments: &[(String, usize)],
     scope: &HashMap<String, SymbolId>,
 ) -> Vec<(String, usize)> {
     // 그룹 하나를 `.` 로 이어 붙인 문자열과, 조각 k 개까지의 바이트 길이 표를 만든다.
@@ -1177,19 +1182,19 @@ pub fn 이름_분할(
     //
     // 한 번 이어 붙여 두면 `그룹[자..자+길이]` 의 결합은 **그 문자열의 부분 슬라이스**다.
     // 조각 경계의 바이트 위치를 함께 들고 있으면 탐침이 할당 없이 `&전체[시작..끝]` 이다.
-    let 결합_준비 = |그룹: &[(String, usize)]| {
-        let mut 전체 = String::new();
-        let mut 경계 = Vec::with_capacity(그룹.len() + 1);
-        경계.push(0);
+    let prepare_join = |group: &[(String, usize)]| {
+        let mut whole = String::new();
+        let mut boundaries = Vec::with_capacity(group.len() + 1);
+        boundaries.push(0);
         // 조각을 차례로 붙이며 각 조각이 끝나는 바이트 위치를 적는다.
-        for (이름, _) in 그룹 {
-            if !전체.is_empty() {
-                전체.push('.');
+        for (name, _) in group {
+            if !whole.is_empty() {
+                whole.push('.');
             }
-            전체.push_str(이름);
-            경계.push(전체.len());
+            whole.push_str(name);
+            boundaries.push(whole.len());
         }
-        (전체, 경계)
+        (whole, boundaries)
     };
 
     // **스코프에 없는 길이는 탐침할 필요가 없다.** 조각 k 개를 이은 이름은 `.` 이 k-1 개인
@@ -1200,62 +1205,68 @@ pub fn 이름_분할(
     //
     // 스코프를 한 번 훑어 상한을 구한다. 이 저장소의 최대 깊이는 2 이고, 그 경우 안쪽
     // 루프가 m 이 아니라 2 로 묶인다. 판정은 그대로다 — 잘라낸 길이는 어차피 못 맞춘다.
-    let 최대_깊이 = scope
+    let max_depth = scope
         .keys()
-        .map(|키| 키.matches('.').count() + 1)
+        .map(|key| key.matches('.').count() + 1)
         .max()
         .unwrap_or(1);
 
-    let mut 이름들: Vec<(String, usize)> = Vec::new();
-    let mut 첫째 = 0;
+    let mut names: Vec<(String, usize)> = Vec::new();
+    let mut first = 0;
     // 같은 줄의 조각들을 한 그룹으로 끊어 가며 훑는다.
-    while 첫째 < 조각들.len() {
-        let 줄 = 조각들[첫째].1;
+    while first < segments.len() {
+        let line = segments[first].1;
         // 합칠 수 있는 것은 **같은 줄에서 이어지는** 조각뿐이다. 줄이 바뀌면
         // 원문에서 `.` 로 이어져 있을 수 없다.
-        let mut 끝 = 첫째;
-        while 끝 + 1 < 조각들.len() && 조각들[끝 + 1].1 == 줄 {
-            끝 += 1;
+        let mut end = first;
+        while end + 1 < segments.len() && segments[end + 1].1 == line {
+            end += 1;
         }
-        let 그룹 = &조각들[첫째..=끝];
-        let (전체, 경계) = 결합_준비(그룹);
+        let group = &segments[first..=end];
+        let (whole, boundaries) = prepare_join(group);
         // `자` 번째 조각부터 `길이` 개를 이은 문자열. 앞의 `.` 를 건너뛰려고 시작 위치를
         // 조각 경계에서 한 바이트 뒤로 민다 (첫 조각은 앞에 `.` 가 없다).
-        let 자른다 = |자: usize, 길이: usize| -> &str {
-            let 시작 = if 자 == 0 { 0 } else { 경계[자] + 1 };
-            &전체[시작..경계[자 + 길이]]
+        let slice = |offset: usize, length: usize| -> &str {
+            let start = if offset == 0 {
+                0
+            } else {
+                boundaries[offset] + 1
+            };
+            &whole[start..boundaries[offset + length]]
         };
 
         // 뒤에서부터 채우는 표. `이음[k]` 는 k 번째 조각부터 끝까지가 **전부** 해석되는
         // 분할이 있을 때 그 자리에서 잡을 길이다. 없으면 None.
         // 뒤를 먼저 알아야 앞에서 "이 길이를 잡으면 나머지가 살아남는가" 를 물을 수 있다.
-        let mut 이음: Vec<Option<usize>> = vec![None; 그룹.len() + 1];
-        이음[그룹.len()] = Some(0);
-        for 자 in (0..그룹.len()).rev() {
+        let mut joins: Vec<Option<usize>> = vec![None; group.len() + 1];
+        joins[group.len()] = Some(0);
+        for offset in (0..group.len()).rev() {
             // 긴 이음부터 본다. `A`.`B`.`C` 가 한 이름이면 `A`.`B` 로 끊기지 않아야 한다.
-            이음[자] = (1..=(그룹.len() - 자).min(최대_깊이))
+            joins[offset] = (1..=(group.len() - offset).min(max_depth))
                 .rev()
-                .find(|&길이| 이음[자 + 길이].is_some() && scope.contains_key(자른다(자, 길이)));
+                .find(|&length| {
+                    joins[offset + length].is_some() && scope.contains_key(slice(offset, length))
+                });
         }
 
         // 전부 해석되는 분할이 없으면 탐욕으로 끊어 진단할 자리를 만든다.
         // 이때만 미해결 심볼이 나온다.
-        let mut 자 = 0;
-        while 자 < 그룹.len() {
-            let 길이 = 이음[자].unwrap_or_else(|| {
-                (1..=(그룹.len() - 자).min(최대_깊이))
+        let mut offset = 0;
+        while offset < group.len() {
+            let length = joins[offset].unwrap_or_else(|| {
+                (1..=(group.len() - offset).min(max_depth))
                     .rev()
-                    .find(|&길이| scope.contains_key(자른다(자, 길이)))
+                    .find(|&length| scope.contains_key(slice(offset, length)))
                     .unwrap_or(1)
             });
-            이름들.push((자른다(자, 길이).to_string(), 줄));
-            자 += 길이;
+            names.push((slice(offset, length).to_string(), line));
+            offset += length;
         }
 
-        첫째 = 끝 + 1;
+        first = end + 1;
     }
 
-    이름들
+    names
 }
 
 /// 스코프에 없는 참조를 `K001` 로 보고한다.
@@ -1265,40 +1276,40 @@ pub fn 이름_분할(
 ///
 /// # 매개변수
 /// - `document`: 검사할 문서
-/// - `참조`: [`참조_해석`] 이 합친 참조들
+/// - `reference`: [`resolve_refs`] 이 합친 참조들
 /// - `scope`: 그 문서에서 쓸 수 있는 로컬 이름들
 /// - `선언들`: 이름별 선언 색인
 /// - `diagnostics`: 진단을 모을 곳
-fn 미해결_검사(
+fn check_unresolved(
     document: &Document,
-    참조: &[(String, usize, &'static str)],
+    reference: &[(String, usize, &'static str)],
     scope: &HashMap<String, SymbolId>,
-    선언들: &BTreeMap<String, Vec<선언>>,
+    declarations: &BTreeMap<String, Vec<Declaration>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     // 등장 순서대로 담는다. HashMap 을 쓰면 진단 순서가 실행마다 뒤집히므로,
     // 순서를 따로 관리하는 대신 순서 있는 자료구조 하나만 쓴다.
     // 한 문서에서 해석되지 않는 이름은 많아야 몇 개라 선형 탐색으로 충분하다.
-    let mut 자리들: Vec<(&str, Vec<(usize, &'static str)>)> = Vec::new();
+    let mut positions: Vec<(&str, Vec<(usize, &'static str)>)> = Vec::new();
 
     // 해석되지 않은 참조를 이름별로 모은다.
-    for (이름, 줄, 자리) in 참조 {
-        if scope.contains_key(이름) {
+    for (name, line, position) in reference {
+        if scope.contains_key(name) {
             continue;
         }
-        match 자리들.iter_mut().find(|(본, _)| *본 == 이름) {
-            Some((_, 모음)) => 모음.push((*줄, *자리)),
-            None => 자리들.push((이름, vec![(*줄, *자리)])),
+        match positions.iter_mut().find(|(seen_one, _)| *seen_one == name) {
+            Some((_, collection)) => collection.push((*line, *position)),
+            None => positions.push((name, vec![(*line, *position)])),
         }
     }
 
     // 이름마다 진단 하나를 만든다.
-    for (이름, 모음) in 자리들 {
-        diagnostics.push(미해결_심볼(
+    for (name, collection) in positions {
+        diagnostics.push(unresolved_symbol(
             &document.path,
-            이름,
-            &모음,
-            선언들.get(이름).map_or(&[][..], Vec::as_slice),
+            name,
+            &collection,
+            declarations.get(name).map_or(&[][..], Vec::as_slice),
         ));
     }
 }
@@ -1313,51 +1324,51 @@ fn 미해결_검사(
 /// - `document`: 검사할 문서
 /// - `project`: 파싱을 마친 프로젝트. 대상 문서가 실재하는지 여기서 본다
 /// - `table`: 전역 심볼 테이블
-/// - `사용`: [`참조_해석`] 이 모은, 이 문서가 실제로 쓴 이름들
+/// - `사용`: [`resolve_refs`] 이 모은, 이 문서가 실제로 쓴 이름들
 /// - `diagnostics`: 진단을 모을 곳
-fn import_검사(
+fn check_imports(
     document: &Document,
     project: &Project,
     table: &SymbolTable,
-    사용: &HashSet<String>,
+    used: &HashSet<String>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     // 같은 대상에 묶인 로컬 이름들. 대상은 등장 순서를 지키려고 Vec 으로 든다.
-    let mut 대상별: Vec<(&SymbolRef, Vec<&Import>)> = Vec::new();
+    let mut by_target: Vec<(&SymbolRef, Vec<&Import>)> = Vec::new();
 
     // import 를 파일 순서대로 훑는다.
     for import in &document.imports {
         // 대상이 실재하지 않으면 이름이 묶이지 않았다. 순환 검출도 이 간선을 건너뛰므로
         // (`check_cycles`) 여기서 진단하지 않으면 대상 없는 import 가 조용히 통과한다.
         if table.resolve(&import.target).is_none() {
-            diagnostics.push(import_대상_없음(document, import, project));
+            diagnostics.push(import_target_missing(document, import, project));
             continue;
         }
 
         // alias 가 있으면 그 이름으로, 없으면 대상의 정본 이름으로 묶인다 (스펙 4.7).
-        let 이름 = import
+        let name = import
             .alias
             .clone()
             .unwrap_or_else(|| import.target.name.join("."));
         // 사용 여부는 문서 전체에서 본다. 한 topic 에서라도 쓰였으면 통과다.
-        if !사용.contains(&이름) {
-            diagnostics.push(미사용_import(document, import));
+        if !used.contains(&name) {
+            diagnostics.push(unused_import(document, import));
         }
 
-        let 같은_대상 = 대상별.iter_mut().find(|(대상, _)| {
-            대상.doc == import.target.doc
-                && 대상.kind == import.target.kind
-                && 대상.name == import.target.name
+        let same_target = by_target.iter_mut().find(|(target, _)| {
+            target.doc == import.target.doc
+                && target.kind == import.target.kind
+                && target.name == import.target.name
         });
-        match 같은_대상 {
-            Some((_, 줄들)) => 줄들.push(import),
-            None => 대상별.push((&import.target, vec![import])),
+        match same_target {
+            Some((_, lines)) => lines.push(import),
+            None => by_target.push((&import.target, vec![import])),
         }
     }
 
     // 한 심볼에 서로 다른 이름이 둘 이상 붙었는지 본다 (스펙 4.7).
-    for (대상, 줄들) in 대상별 {
-        let 서로_다른: HashSet<String> = 줄들
+    for (target, lines) in by_target {
+        let distinct: HashSet<String> = lines
             .iter()
             .map(|import| {
                 import
@@ -1366,8 +1377,8 @@ fn import_검사(
                     .unwrap_or_else(|| import.target.name.join("."))
             })
             .collect();
-        if 서로_다른.len() >= 2 {
-            diagnostics.push(이름_여럿(document, 대상, &줄들));
+        if distinct.len() >= 2 {
+            diagnostics.push(multiple_names(document, target, &lines));
         }
     }
 }
@@ -1375,26 +1386,26 @@ fn import_검사(
 /// `iknow` 대상 문서와 심볼이 실재하는지 검사한다 (`K010`).
 ///
 /// `iknow` 는 import 가 아니므로 미사용 검사 대상이 아니다. 경로 실재와 상호성만 본다
-/// (스펙 4.4). 상호성은 [`이름_충돌_검사`] 가 본다.
+/// (스펙 4.4). 상호성은 [`check_name_conflicts`] 가 본다.
 ///
 /// # 매개변수
 /// - `document`: 검사할 문서
 /// - `project`: 파싱을 마친 프로젝트
 /// - `table`: 전역 심볼 테이블
 /// - `diagnostics`: 진단을 모을 곳
-fn iknow_실재_검사(
+fn check_iknow_exists(
     document: &Document,
     project: &Project,
     table: &SymbolTable,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     // 세 종류 선언 모두가 iknow 를 받을 수 있다 (스펙 4.4).
-    for 하나 in 선언_훑기(document) {
+    for one in scan_declarations(document) {
         // 한 선언이 여러 대상을 나열할 수 있다.
-        for 대상 in 하나.iknow {
+        for target in one.iknow {
             // 문서도 심볼도 실재해야 한다. 이름이 바뀌면 여기서 잡힌다 (스펙 4.4).
-            if table.resolve(대상).is_none() {
-                diagnostics.push(iknow_대상_없음(&하나, 대상, project));
+            if table.resolve(target).is_none() {
+                diagnostics.push(iknow_target_missing(&one, target, project));
             }
         }
     }
@@ -1406,62 +1417,65 @@ fn iknow_실재_검사(
 /// 묶고 수정도 양쪽에 하나씩 낸다. 문서마다 진단을 내면 같은 사실이 N번 나온다.
 /// 그래서 3개 파일 중 한 곳만 빠뜨려도 진단은 **하나**이고, 수정만 그 한 곳을 가리킨다.
 ///
-/// 판정은 **전체 경로 기준**이다 — `결제`.`상태` 와 `구독`.`상태` 는 다른 이름이므로
+/// 판정은 **전체 경로 기준**이다 — `payment`.`상태` 와 `구독`.`상태` 는 다른 이름이므로
 /// 충돌이 아니다 (스펙 4.3). 색인의 키가 이미 전체 경로라 이것이 원천에서 지켜진다.
 ///
 /// # 매개변수
 /// - `선언들`: 이름별 선언 색인
 /// - `diagnostics`: 진단을 모을 곳
-fn 이름_충돌_검사(
-    선언들: &BTreeMap<String, Vec<선언>>, diagnostics: &mut Vec<Diagnostic>
+fn check_name_conflicts(
+    declarations: &BTreeMap<String, Vec<Declaration>>,
+    diagnostics: &mut Vec<Diagnostic>,
 ) {
     // 이름마다 그 이름을 선언한 문서들을 본다. BTreeMap 이라 이름 순회가 결정적이다.
-    for (이름, 선언목록) in 선언들 {
+    for (name, decl_list) in declarations {
         // 문서마다 대표 선언 하나를 고른다. 한 문서가 같은 이름을 두 번 선언한
         // 경우(`K052`)도 문서 하나로 센다. 상대의 **종류**를 알아야 수정이 옳은 구분
         // 기호를 적으므로 문서 경로가 아니라 선언을 들고 다닌다.
-        let mut 대표들: Vec<&선언> = Vec::new();
-        for 하나 in 선언목록 {
-            if !대표들.iter().any(|이미| 이미.doc == 하나.doc) {
-                대표들.push(하나);
+        let mut representatives: Vec<&Declaration> = Vec::new();
+        for one in decl_list {
+            if !representatives.iter().any(|already| already.doc == one.doc) {
+                representatives.push(one);
             }
         }
         // 한 문서만 선언했으면 충돌이 아니다.
-        if 대표들.len() < 2 {
+        if representatives.len() < 2 {
             continue;
         }
 
         // 문서마다 아직 명시하지 않은 상대를 모은다. N개 파일이면 각자 나머지 N-1개를
         // 전부 명시해야 한다 (스펙 4.4).
-        let mut 누락: Vec<(&선언, Vec<&선언>)> = Vec::new();
-        for &대표 in &대표들 {
+        let mut missing: Vec<(&Declaration, Vec<&Declaration>)> = Vec::new();
+        for &representative in &representatives {
             // 같은 문서의 선언이 여럿이면 iknow 는 합집합으로 본다.
             // 종류는 보지 않는다 — 종류를 잘못 쓴 대상은 `K010` 이 이미 잡으므로,
             // 여기서 또 "빠뜨렸다" 고 하면 명시한 사람에게 거짓을 말하게 된다.
-            let 내_iknow: HashSet<&DocPath> = 선언목록
+            let my_iknow: HashSet<&DocPath> = decl_list
                 .iter()
-                .filter(|하나| 하나.doc == 대표.doc)
-                .flat_map(|하나| 하나.iknow.iter())
-                .filter(|대상| 대상.name.join(".") == *이름)
-                .map(|대상| &대상.doc)
+                .filter(|one| one.doc == representative.doc)
+                .flat_map(|one| one.iknow.iter())
+                .filter(|target| target.name.join(".") == *name)
+                .map(|target| &target.doc)
                 .collect();
-            let 빠진: Vec<&선언> = 대표들
+            let absent: Vec<&Declaration> = representatives
                 .iter()
                 .copied()
-                .filter(|상대| 상대.doc != 대표.doc && !내_iknow.contains(상대.doc))
+                .filter(|relative| {
+                    relative.doc != representative.doc && !my_iknow.contains(relative.doc)
+                })
                 .collect();
-            if 빠진.is_empty() {
+            if absent.is_empty() {
                 continue;
             }
-            누락.push((대표, 빠진));
+            missing.push((representative, absent));
         }
 
         // 전부 상호 명시했으면 합법이다. 여기서 무조건 진단하면 iknow 를 제대로 쓴
         // 문서가 거부된다.
-        if 누락.is_empty() {
+        if missing.is_empty() {
             continue;
         }
-        diagnostics.push(iknow_불완전(이름, 선언목록, &누락));
+        diagnostics.push(iknow_incomplete(name, decl_list, &missing));
     }
 }
 
@@ -1482,18 +1496,18 @@ fn 이름_충돌_검사(
 ///
 /// **주소 조립은 이 함수 하나가 담당한다.** `kang index`(V0004 Task 3)도 이것을 부른다 —
 /// 사본을 만들면 인덱스가 낸 주소를 `refs`·`show`·`bless` 가 못 받는 경우가 생긴다.
-pub fn 심볼_주소(doc: &DocPath, kind: SymbolKind, name: &str, 백틱: bool) -> String {
-    let 감싸기 = |조각: &str| {
-        if 백틱 {
-            format!("`{조각}`")
+pub fn symbol_address(doc: &DocPath, kind: SymbolKind, name: &str, backtick: bool) -> String {
+    let wrap = |segment: &str| {
+        if backtick {
+            format!("`{segment}`")
         } else {
-            조각.to_string()
+            segment.to_string()
         }
     };
-    let 문서 = doc
+    let doc_text = doc
         .0
         .iter()
-        .map(|조각| 감싸기(조각))
+        .map(|segment| wrap(segment))
         .collect::<Vec<String>>()
         .join("/");
 
@@ -1507,15 +1521,15 @@ pub fn 심볼_주소(doc: &DocPath, kind: SymbolKind, name: &str, 백틱: bool) 
         // `name` 을 이은 문자열이 아니라 조각 목록으로 받아야 하고, 그것은 `후보` 를 비롯한
         // 호출자 넷의 자료형을 바꾼다. **원문 표기가 진단에 그대로 필요해지면 그때 올린다.**
         SymbolKind::Keyword => {
-            let 이름 = name
+            let name_text = name
                 .split('.')
-                .map(&감싸기)
+                .map(&wrap)
                 .collect::<Vec<String>>()
                 .join(".");
-            format!("{문서}.{이름}")
+            format!("{doc_text}.{name_text}")
         }
-        SymbolKind::Topic => format!("{문서}#{}", 감싸기(name)),
-        SymbolKind::Exception => format!("{문서}!{}", 감싸기(name)),
+        SymbolKind::Topic => format!("{doc_text}#{}", wrap(name)),
+        SymbolKind::Exception => format!("{doc_text}!{}", wrap(name)),
     }
 }
 
@@ -1531,19 +1545,19 @@ pub fn 심볼_주소(doc: &DocPath, kind: SymbolKind, name: &str, 백틱: bool) 
 ///
 /// # 반환값
 /// 원인을 설명하는 한 문장
-fn 대상_설명(대상: &SymbolRef, project: &Project) -> String {
-    if project.docs.contains_key(&대상.doc) {
+fn describe_target(target: &SymbolRef, project: &Project) -> String {
+    if project.docs.contains_key(&target.doc) {
         // 조사를 이름 뒤에 붙이지 않는다. 이름의 끝소리에 따라 "이/가" 가 갈리는데
         // 컴파일러가 그것을 판정할 수 없어, 붙이면 어느 한쪽에서 반드시 어색해진다.
         format!(
             "문서 {} 에는 그 이름의 {} 선언이 없습니다.",
-            대상.doc,
-            종류_낱말(대상.kind)
+            target.doc,
+            kind_word(target.kind)
         )
     } else {
         format!(
             "이 프로젝트에서 문서 {} 를 찾지 못했습니다. 경로가 틀렸거나 그 문서가 컴파일되지 않았습니다.",
-            대상.doc
+            target.doc
         )
     }
 }
@@ -1571,20 +1585,24 @@ fn 대상_설명(대상: &SymbolRef, project: &Project) -> String {
 /// - `document`: 검사할 문서
 /// - `선언들`: 이름별 선언 색인. 상위를 어디서 가져올 수 있는지 알려 주는 데 쓴다
 /// - `diagnostics`: 진단을 모을 곳
-fn 계층_상위_검사(
+fn check_hierarchy_parent(
     document: &Document,
-    선언들: &BTreeMap<String, Vec<선언>>,
+    declarations: &BTreeMap<String, Vec<Declaration>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     // 이 문서가 선언한 keyword 를 파일 순서대로 본다.
     for keyword in &document.keywords {
         // 계층이 아니면 요구할 상위가 없다.
-        let Some(상위) = 직접_상위(&keyword.name.0) else {
+        let Some(parent) = direct_parent(&keyword.name.0) else {
             continue;
         };
 
         // 같은 파일에서 선언했으면 통과다. 이 가지는 `keywords` 만 보므로 종류가 이미 맞다.
-        if document.keywords.iter().any(|다른| 다른.name.0 == *상위) {
+        if document
+            .keywords
+            .iter()
+            .any(|other| other.name.0 == *parent)
+        {
             continue;
         }
 
@@ -1598,7 +1616,7 @@ fn 계층_상위_검사(
         // 같은 이름을 topic 과 keyword 로 각각 import 한 문서에서 topic 줄이 먼저 나올 때
         // keyword import 가 있는데도 진단이 난다.
         if document.imports.iter().any(|import| {
-            import.target.kind == SymbolKind::Keyword && import.target.name[..] == *상위
+            import.target.kind == SymbolKind::Keyword && import.target.name[..] == *parent
         }) {
             continue;
         }
@@ -1607,24 +1625,24 @@ fn 계층_상위_검사(
         // 묶여 있을** 수 있다 — 다른 종류의 import 이거나 이 파일의 topic·exception 이다.
         // 그때 "찾을 수 없습니다" 는 거짓이고, 수정이 그 이름을 또 묶으면 `K052` 가 난다.
         // 위에서 keyword 가 없음이 확정되었으므로 어느 것을 집어도 참인 종류다.
-        let 이름 = 상위.join(".");
-        let 다른_종류 = document
+        let name = parent.join(".");
+        let other_kinds = document
             .imports
             .iter()
-            .find(|import| import.target.name[..] == *상위)
-            .map(|import| 종류_낱말(import.target.kind))
+            .find(|import| import.target.name[..] == *parent)
+            .map(|import| kind_word(import.target.kind))
             .or_else(|| {
-                선언_훑기(document)
+                scan_declarations(document)
                     .into_iter()
-                    .find(|하나| 하나.name == 이름)
-                    .map(|하나| 종류_낱말(하나.kind))
+                    .find(|one| one.name == name)
+                    .map(|one| kind_word(one.kind))
             });
-        diagnostics.push(계층_상위_없음(
+        diagnostics.push(hierarchy_parent_missing(
             document,
             keyword,
-            상위,
-            다른_종류,
-            선언들,
+            parent,
+            other_kinds,
+            declarations,
         ));
     }
 }
@@ -1639,10 +1657,10 @@ fn 계층_상위_검사(
 ///
 /// # 반환값
 /// 본문에서 그 심볼을 부를 때 실제로 쓰는 표기
-fn 로컬_표기(import: &Import) -> String {
+fn local_label(import: &Import) -> String {
     match &import.alias {
         Some(alias) => format!("`{alias}`"),
-        None => 백틱_이음(&import.target.name.join(".")),
+        None => backtick_joined(&import.target.name.join(".")),
     }
 }
 
@@ -1659,10 +1677,9 @@ fn 로컬_표기(import: &Import) -> String {
 ///
 /// # 반환값
 /// 조각마다 백틱을 두르고 `.` 로 이은 문자열
-fn 백틱_이음(이름: &str) -> String {
-    이름
-        .split('.')
-        .map(|조각| format!("`{조각}`"))
+fn backtick_joined(name: &str) -> String {
+    name.split('.')
+        .map(|segment| format!("`{segment}`"))
         .collect::<Vec<String>>()
         .join(".")
 }
@@ -1673,7 +1690,7 @@ fn 백틱_이음(이름: &str) -> String {
 /// `A` 는 요구하지 않는다. `A`.`B` 가 import 된 것이면 `A` 는 그 파일의 사정이고, 이 파일이
 /// 선언한 것이면 그 선언이 자기 차례에 `A` 를 요구받아 연쇄가 스스로 닫힌다.
 ///
-/// 사용 집계와 [`계층_상위_검사`] 가 이것을 함께 쓴다. 둘이 다른 범위를 보면 한쪽이
+/// 사용 집계와 [`check_hierarchy_parent`] 가 이것을 함께 쓴다. 둘이 다른 범위를 보면 한쪽이
 /// 의무라고 하지 않은 것을 다른 쪽이 사용으로 세어 참인 `K003` 이 사라진다.
 ///
 /// # 매개변수
@@ -1681,11 +1698,11 @@ fn 백틱_이음(이름: &str) -> String {
 ///
 /// # 반환값
 /// 계층이면 마지막 조각을 뗀 앞부분. 계층이 아니면 `None`
-fn 직접_상위(조각들: &[String]) -> Option<&[String]> {
-    조각들
+fn direct_parent(segments: &[String]) -> Option<&[String]> {
+    segments
         .split_last()
-        .map(|(_, 앞)| 앞)
-        .filter(|앞| !앞.is_empty())
+        .map(|(_, before)| before)
+        .filter(|before| !before.is_empty())
 }
 
 /// 심볼 종류를 문서에 쓰는 낱말로 바꾼다.
@@ -1695,7 +1712,7 @@ fn 직접_상위(조각들: &[String]) -> Option<&[String]> {
 ///
 /// # 반환값
 /// 선언 문법에 쓰이는 낱말
-pub fn 종류_낱말(kind: SymbolKind) -> &'static str {
+pub fn kind_word(kind: SymbolKind) -> &'static str {
     match kind {
         SymbolKind::Keyword => "keyword",
         SymbolKind::Topic => "topic",
@@ -1708,59 +1725,59 @@ pub fn 종류_낱말(kind: SymbolKind) -> &'static str {
 /// # 매개변수
 /// - `doc`: 참조한 문서
 /// - `이름`: 해석되지 않은 이름
-/// - `자리들`: 그 이름을 참조한 `(줄 번호, 참조된 자리)` 목록. 최소 1개
-/// - `선언한_곳`: 프로젝트에서 그 이름을 선언한 자리들. 없으면 빈 슬라이스
+/// - `자리들`: 그 이름을 참조한 `(line number, referenced position)` 목록. 최소 1개
+/// - `declared_at`: 프로젝트에서 그 이름을 선언한 자리들. 없으면 빈 슬라이스
 ///
 /// # 반환값
 /// `K001` 진단
-fn 미해결_심볼(
+fn unresolved_symbol(
     doc: &DocPath,
-    이름: &str,
-    자리들: &[(usize, &'static str)],
-    선언한_곳: &[선언],
+    name: &str,
+    positions: &[(usize, &'static str)],
+    declared_at: &[Declaration],
 ) -> Diagnostic {
     // 같은 문서가 같은 이름을 두 번 선언했을 수 있으므로 문서 단위로 줄인다.
-    let mut 후보: Vec<&선언> = Vec::new();
-    for 하나 in 선언한_곳 {
-        if !후보.iter().any(|이미| 이미.doc == 하나.doc) {
-            후보.push(하나);
+    let mut candidates: Vec<&Declaration> = Vec::new();
+    for one in declared_at {
+        if !candidates.iter().any(|already| already.doc == one.doc) {
+            candidates.push(one);
         }
     }
 
     // 개수를 세어 말한다. "하나 있습니다" 라고 해 놓고 둘이면 진단이 거짓을 말한다.
-    let 안내 = if 후보.is_empty() {
+    let hint = if candidates.is_empty() {
         "프로젝트 어디에도 이 이름을 선언한 문서가 없습니다. 이름을 잘못 썼거나, 아직 선언하지 않았습니다.".to_string()
     } else {
-        let 목록: Vec<String> = 후보.iter().map(|하나| 하나.doc.to_string()).collect();
+        let list: Vec<String> = candidates.iter().map(|one| one.doc.to_string()).collect();
         format!(
             "같은 이름을 선언한 문서가 {} 개 있습니다: {}. 같은 개념이라면 import 하고, 다른 개념이라면 이 문서에서 선언한 뒤 양쪽에 iknow 를 붙이세요.",
-            후보.len(),
-            목록.join(", ")
+            candidates.len(),
+            list.join(", ")
         )
     };
 
     // 선언한 문서가 없으면 import 할 대상도 없다. 그때는 선언하거나 오타를 고치는 것이
     // 유일한 처방이다.
-    let fixes: Vec<Fix> = if 후보.is_empty() {
+    let fixes: Vec<Fix> = if candidates.is_empty() {
         vec![Fix {
             kind: FixKind::Edit,
             doc: Some(doc.clone()),
             action: format!(
-                "이 문서에서 keyword 로 선언하거나(예: keyword `{이름}`: <한 줄 정의>) 참조의 오타를 고치세요"
+                "이 문서에서 keyword 로 선언하거나(예: keyword `{name}`: <한 줄 정의>) 참조의 오타를 고치세요"
             ),
         }]
     } else {
         // 후보마다 "import 를 쓰고 → 핀을 붙인다" 두 수정이 짝을 이룬다. 순서가 뒤집히면
         // bless 가 핀을 붙일 줄이 아직 없다 (스펙 4.8).
-        후보
+        candidates
             .iter()
-            .flat_map(|하나| {
-                let 문서_문법 = 심볼_주소(하나.doc, 하나.kind, &하나.name, true);
-                let cli_문법 = 심볼_주소(하나.doc, 하나.kind, &하나.name, false);
+            .flat_map(|one| {
+                let doc_syntax = symbol_address(one.doc, one.kind, &one.name, true);
+                let cli_syntax = symbol_address(one.doc, one.kind, &one.name, false);
                 // 후보가 둘 이상이면 어느 것을 고를지는 뜻이 정한다. 조건을 붙이지 않으면
                 // 진단이 "이것이 답이다" 라고 단정하게 된다.
-                let 조건 = if 후보.len() > 1 {
-                    format!("{} 가 같은 개념이라면, ", 하나.doc)
+                let condition = if candidates.len() > 1 {
+                    format!("{} 가 같은 개념이라면, ", one.doc)
                 } else {
                     String::new()
                 };
@@ -1769,7 +1786,7 @@ fn 미해결_심볼(
                         kind: FixKind::Edit,
                         doc: Some(doc.clone()),
                         action: format!(
-                            "{조건}import 블록에 다음 줄을 추가하세요: import {문서_문법}"
+                            "{condition}import 블록에 다음 줄을 추가하세요: import {doc_syntax}"
                         ),
                     },
                     // 산문을 붙이지 않는다 — `K020` 과 같은 이유다. 이 명령이 바로 위
@@ -1779,8 +1796,8 @@ fn 미해결_심볼(
                         doc: None,
                         action: format!(
                             "kang bless {} --import {}",
-                            셸_인용(&doc.to_string()),
-                            셸_인용(&cli_문법)
+                            shell_quote(&doc.to_string()),
+                            shell_quote(&cli_syntax)
                         ),
                     },
                 ]
@@ -1792,14 +1809,14 @@ fn 미해결_심볼(
         severity: Severity::Error,
         code: "K001",
         message: format!(
-            "선언되지 않은 심볼 — `{이름}`. 이 문서는 이 이름을 선언하지도 import 하지도 않았습니다. {안내}"
+            "선언되지 않은 심볼 — `{name}`. 이 문서는 이 이름을 선언하지도 import 하지도 않았습니다. {hint}"
         ),
-        locations: 자리들
+        locations: positions
             .iter()
-            .map(|(줄, 자리)| Location {
+            .map(|(line, position)| Location {
                 doc: doc.clone(),
-                line: *줄,
-                note: format!("{자리}에서 참조했습니다"),
+                line: *line,
+                note: format!("{position}에서 참조했습니다"),
             })
             .collect(),
         fixes,
@@ -1812,7 +1829,7 @@ fn 미해결_심볼(
 /// - `document`: 그 선언이 있는 문서
 /// - `keyword`: 상위를 갖추지 못한 계층 keyword 선언
 /// - `상위`: 요구되는 직접 상위의 이름 조각들. 최소 1개
-/// - `다른_종류`: 그 이름이 이 문서에 이미 묶여 있으나 keyword 가 아닐 때 그 종류의 낱말.
+/// - `other_kinds`: 그 이름이 이 문서에 이미 묶여 있으나 keyword 가 아닐 때 그 종류의 낱말.
 ///   아예 없으면 `None` — "이 문서에 없다" 와 "종류가 다르다" 는 다른 사실이고
 ///   뭉뚱그리면 진단이 둘 중 하나에 대해 거짓을 말한다. 이 값이 `Some` 이면 수정이
 ///   그 이름을 **또 묶지 않도록** 문구가 갈린다 (그러면 `K052` 가 난다)
@@ -1820,33 +1837,37 @@ fn 미해결_심볼(
 ///
 /// # 반환값
 /// `K005` 진단
-fn 계층_상위_없음(
+fn hierarchy_parent_missing(
     document: &Document,
     keyword: &Keyword,
-    상위: &[String],
-    다른_종류: Option<&'static str>,
-    선언들: &BTreeMap<String, Vec<선언>>,
+    parent: &[String],
+    other_kinds: Option<&'static str>,
+    declarations: &BTreeMap<String, Vec<Declaration>>,
 ) -> Diagnostic {
-    let 상위_표기 = 백틱_이음(&상위.join("."));
+    let parent_display = backtick_joined(&parent.join("."));
 
     // 그 이름을 keyword 로 선언한 문서를 찾는다. topic·exception 은 상위가 될 수 없으므로
     // (스펙 4.3 은 "상위 **키워드**") import 를 권할 대상이 아니다.
-    let mut 후보: Vec<&선언> = Vec::new();
-    for 하나 in 선언들.get(&상위.join(".")).map_or(&[][..], Vec::as_slice) {
-        if 하나.kind == SymbolKind::Keyword && !후보.iter().any(|이미| 이미.doc == 하나.doc)
+    let mut candidates: Vec<&Declaration> = Vec::new();
+    for one in declarations
+        .get(&parent.join("."))
+        .map_or(&[][..], Vec::as_slice)
+    {
+        if one.kind == SymbolKind::Keyword
+            && !candidates.iter().any(|already| already.doc == one.doc)
         {
-            후보.push(하나);
+            candidates.push(one);
         }
     }
 
     // 개수를 세어 말한다. 없는데 "있습니다" 라고 하면 진단이 거짓을 말한다.
-    let 안내 = match 후보.first() {
+    let hint = match candidates.first() {
         Some(_) => format!(
             "그 이름을 keyword 로 선언한 문서가 {} 개 있습니다: {}.",
-            후보.len(),
-            후보
+            candidates.len(),
+            candidates
                 .iter()
-                .map(|하나| 하나.doc.to_string())
+                .map(|one| one.doc.to_string())
                 .collect::<Vec<String>>()
                 .join(", ")
         ),
@@ -1856,13 +1877,13 @@ fn 계층_상위_없음(
     Diagnostic {
         severity: Severity::Error,
         code: "K005",
-        message: match 다른_종류 {
+        message: match other_kinds {
             // 이름은 있다. 없다고 하면 거짓이다.
-            Some(낱말) => format!(
-                "계층 keyword 의 상위가 keyword 가 아닙니다 — {상위_표기}. 이 이름은 이 문서에 이미 묶여 있지만 종류가 {낱말} 입니다. `.` 는 키워드 계층이므로 상위는 keyword 여야 합니다 (스펙 4.1·4.3). {안내}"
+            Some(word) => format!(
+                "계층 keyword 의 상위가 keyword 가 아닙니다 — {parent_display}. 이 이름은 이 문서에 이미 묶여 있지만 종류가 {word} 입니다. `.` 는 키워드 계층이므로 상위는 keyword 여야 합니다 (스펙 4.1·4.3). {hint}"
             ),
             None => format!(
-                "계층 keyword 의 상위를 이 문서에서 찾을 수 없습니다 — {상위_표기}. 스펙 4.3 은 상위 키워드가 같은 파일에서 정의했거나 import 한 것이어야 한다고 정합니다. {안내}"
+                "계층 keyword 의 상위를 이 문서에서 찾을 수 없습니다 — {parent_display}. 스펙 4.3 은 상위 키워드가 같은 파일에서 정의했거나 import 한 것이어야 한다고 정합니다. {hint}"
             ),
         },
         locations: vec![Location {
@@ -1870,7 +1891,7 @@ fn 계층_상위_없음(
             line: keyword.line,
             note: format!(
                 "여기서 하위 keyword 를 선언했습니다 — {}",
-                백틱_이음(&keyword.name.0.join("."))
+                backtick_joined(&keyword.name.0.join("."))
             ),
         }],
         // 두 갈래는 **배타적**이다. 어느 쪽인지는 뜻이 정하므로 조건을 action 에 담는다.
@@ -1881,32 +1902,32 @@ fn 계층_상위_없음(
                 doc: Some(document.path.clone()),
                 // 같은 이름이 이미 묶여 있으면 선언만 더하는 것은 `K052` 를 만든다.
                 // 스펙 V0001 5.1.1 은 에이전트가 fix 를 **그대로 적용**한다고 정한다.
-                action: match 다른_종류 {
-                    Some(낱말) => format!(
-                        "이 개념이 이 문서의 것이라면, 같은 이름을 묶고 있는 그 {낱말} 줄을 먼저 지운 뒤 상위를 여기서 선언하세요: keyword {상위_표기}: <한 줄 정의>"
+                action: match other_kinds {
+                    Some(word) => format!(
+                        "이 개념이 이 문서의 것이라면, 같은 이름을 묶고 있는 그 {word} 줄을 먼저 지운 뒤 상위를 여기서 선언하세요: keyword {parent_display}: <한 줄 정의>"
                     ),
                     None => format!(
-                        "이 개념이 이 문서의 것이라면, 상위를 여기서 선언하세요: keyword {상위_표기}: <한 줄 정의>"
+                        "이 개념이 이 문서의 것이라면, 상위를 여기서 선언하세요: keyword {parent_display}: <한 줄 정의>"
                     ),
                 },
             },
             Fix {
                 kind: FixKind::Edit,
                 doc: Some(document.path.clone()),
-                action: match 후보.first() {
+                action: match candidates.first() {
                     // 이름을 이미 다른 종류로 import 했다면 그 줄을 바꾸라고 말해야 한다.
                     // "추가하세요" 라고만 하면 같은 이름이 두 번 묶여 `K052` 가 난다.
-                    Some(하나) if 다른_종류.is_some() => format!(
+                    Some(one) if other_kinds.is_some() => format!(
                         "상위 keyword 가 {} 의 것이라면, 지금의 import 줄을 그 keyword 로 바꾸세요: import {}",
-                        하나.doc,
-                        심볼_주소(하나.doc, 하나.kind, &상위.join("."), true)
+                        one.doc,
+                        symbol_address(one.doc, one.kind, &parent.join("."), true)
                     ),
-                    Some(하나) => format!(
+                    Some(one) => format!(
                         "상위가 {} 의 것이라면, import 블록에 다음 줄을 추가하세요: import {}",
-                        하나.doc,
-                        심볼_주소(하나.doc, 하나.kind, &상위.join("."), true)
+                        one.doc,
+                        symbol_address(one.doc, one.kind, &parent.join("."), true)
                     ),
-                    None if 다른_종류.is_some() => "상위가 다른 문서의 것이라면, 그 문서에서 그것을 keyword 로 선언한 뒤, 같은 이름을 묶고 있는 이 문서의 줄을 그 import 로 바꾸세요"
+                    None if other_kinds.is_some() => "상위가 다른 문서의 것이라면, 그 문서에서 그것을 keyword 로 선언한 뒤, 같은 이름을 묶고 있는 이 문서의 줄을 그 import 로 바꾸세요"
                         .to_string(),
                     None => "상위가 다른 문서의 것이라면, 그 문서에서 그것을 keyword 로 선언한 뒤 이 문서의 import 블록에서 가져오세요"
                         .to_string(),
@@ -1928,13 +1949,13 @@ fn 계층_상위_없음(
 ///
 /// # 반환값
 /// `K002` 진단
-fn import_대상_없음(document: &Document, import: &Import, project: &Project) -> Diagnostic {
-    let 대상 = &import.target;
-    let 문서_문법 = 심볼_주소(&대상.doc, 대상.kind, &대상.name.join("."), true);
+fn import_target_missing(document: &Document, import: &Import, project: &Project) -> Diagnostic {
+    let target = &import.target;
+    let doc_syntax = symbol_address(&target.doc, target.kind, &target.name.join("."), true);
 
     // 문서 자체가 없으면 경로를, 심볼이 없으면 이름을 고쳐야 한다. 처방이 갈린다.
-    let 처방 = if project.docs.contains_key(&대상.doc) {
-        format!("이 import 줄의 대상 이름을 고치거나, 대상 문서에 다음을 선언하세요: {문서_문법}")
+    let remedy = if project.docs.contains_key(&target.doc) {
+        format!("이 import 줄의 대상 이름을 고치거나, 대상 문서에 다음을 선언하세요: {doc_syntax}")
     } else {
         "이 import 줄의 대상 경로를 실재하는 문서로 고치세요. 그 문서가 컴파일에 실패했다면 먼저 그쪽 진단을 고치세요".to_string()
     };
@@ -1943,8 +1964,8 @@ fn import_대상_없음(document: &Document, import: &Import, project: &Project)
         severity: Severity::Error,
         code: "K002",
         message: format!(
-            "import 대상을 찾지 못했습니다 — {문서_문법}. {}",
-            대상_설명(대상, project)
+            "import 대상을 찾지 못했습니다 — {doc_syntax}. {}",
+            describe_target(target, project)
         ),
         locations: vec![Location {
             doc: document.path.clone(),
@@ -1954,7 +1975,7 @@ fn import_대상_없음(document: &Document, import: &Import, project: &Project)
         fixes: vec![Fix {
             kind: FixKind::Edit,
             doc: Some(document.path.clone()),
-            action: 처방,
+            action: remedy,
         }],
     }
 }
@@ -1967,28 +1988,28 @@ fn import_대상_없음(document: &Document, import: &Import, project: &Project)
 ///
 /// # 반환값
 /// `K003` 진단
-fn 미사용_import(document: &Document, import: &Import) -> Diagnostic {
+fn unused_import(document: &Document, import: &Import) -> Diagnostic {
     // 이 문서에서 그 심볼을 부를 때 **실제로 쓰는 표기**다. alias 는 백틱 한 쌍이고,
     // alias 가 없으면 대상의 계층 이름이므로 조각마다 백틱을 두른다 (스펙 4.1).
     // 계층 이름을 한 쌍으로 감싸면 문서에 없는 문자열을 찾으라고 시키게 된다.
-    let 표기 = 로컬_표기(import);
+    let notation = local_label(import);
 
     Diagnostic {
         severity: Severity::Error,
         code: "K003",
         message: format!(
-            "import 했으나 이 문서의 어느 곳에서도 쓰지 않았습니다 — {표기}. 쓰지 않는 import 는 문서가 무엇을 전제하는지 흐립니다."
+            "import 했으나 이 문서의 어느 곳에서도 쓰지 않았습니다 — {notation}. 쓰지 않는 import 는 문서가 무엇을 전제하는지 흐립니다."
         ),
         locations: vec![Location {
             doc: document.path.clone(),
             line: import.line,
-            note: format!("여기서 import 했고, 이 문서에서 부르는 이름은 {표기} 입니다"),
+            note: format!("여기서 import 했고, 이 문서에서 부르는 이름은 {notation} 입니다"),
         }],
         fixes: vec![Fix {
             kind: FixKind::Edit,
             doc: Some(document.path.clone()),
             action: format!(
-                "이 import 줄을 지우세요. 이 문서가 실제로 그 개념을 쓴다면, 쓰는 자리에서 다음 표기로 참조하세요: {표기}"
+                "이 import 줄을 지우세요. 이 문서가 실제로 그 개념을 쓴다면, 쓰는 자리에서 다음 표기로 참조하세요: {notation}"
             ),
         }],
     }
@@ -1999,27 +2020,27 @@ fn 미사용_import(document: &Document, import: &Import) -> Diagnostic {
 /// # 매개변수
 /// - `document`: import 를 쓴 문서
 /// - `대상`: 여러 이름이 붙은 심볼
-/// - `줄들`: 그 심볼을 가리키는 import 줄들. 최소 2개
+/// - `lines`: 그 심볼을 가리키는 import 줄들. 최소 2개
 ///
 /// # 반환값
 /// `K004` 진단
-fn 이름_여럿(document: &Document, 대상: &SymbolRef, 줄들: &[&Import]) -> Diagnostic {
-    let 문서_문법 = 심볼_주소(&대상.doc, 대상.kind, &대상.name.join("."), true);
+fn multiple_names(document: &Document, target: &SymbolRef, lines: &[&Import]) -> Diagnostic {
+    let doc_syntax = symbol_address(&target.doc, target.kind, &target.name.join("."), true);
 
     Diagnostic {
         severity: Severity::Error,
         code: "K004",
         message: format!(
-            "한 심볼이 이 문서에서 서로 다른 이름 여럿으로 묶였습니다 — {문서_문법}. 하나의 개념이 여러 이름을 갖는 것을 막습니다 (스펙 4.7)."
+            "한 심볼이 이 문서에서 서로 다른 이름 여럿으로 묶였습니다 — {doc_syntax}. 하나의 개념이 여러 이름을 갖는 것을 막습니다 (스펙 4.7)."
         ),
         // import 줄 전부가 관련 위치다. 하나만 보여 주면 나머지를 찾아 헤맨다.
-        locations: 줄들
+        locations: lines
             .iter()
             .map(|import| Location {
                 doc: document.path.clone(),
                 line: import.line,
                 // 로컬 이름도 문서 문법으로 적는다. alias 면 한 쌍, 아니면 조각마다.
-                note: format!("여기서 묶은 이름: {}", 로컬_표기(import)),
+                note: format!("여기서 묶은 이름: {}", local_label(import)),
             })
             .collect(),
         fixes: vec![Fix {
@@ -2039,30 +2060,30 @@ fn 이름_여럿(document: &Document, 대상: &SymbolRef, 줄들: &[&Import]) ->
 ///
 /// # 반환값
 /// `K010` 진단
-fn iknow_대상_없음(하나: &선언, 대상: &SymbolRef, project: &Project) -> Diagnostic {
-    let 문서_문법 = 심볼_주소(&대상.doc, 대상.kind, &대상.name.join("."), true);
+fn iknow_target_missing(one: &Declaration, target: &SymbolRef, project: &Project) -> Diagnostic {
+    let doc_syntax = symbol_address(&target.doc, target.kind, &target.name.join("."), true);
 
     Diagnostic {
         severity: Severity::Error,
         code: "K010",
         message: format!(
-            "iknow 대상을 찾지 못했습니다 — {문서_문법}. {}",
-            대상_설명(대상, project)
+            "iknow 대상을 찾지 못했습니다 — {doc_syntax}. {}",
+            describe_target(target, project)
         ),
         locations: vec![Location {
-            doc: 하나.doc.clone(),
-            line: 하나.line,
+            doc: one.doc.clone(),
+            line: one.line,
             note: format!(
                 "여기 {} 선언의 iknow 가 그 대상을 가리킵니다 — `{}`",
-                종류_낱말(하나.kind),
-                하나.name
+                kind_word(one.kind),
+                one.name
             ),
         }],
         fixes: vec![Fix {
             kind: FixKind::Edit,
-            doc: Some(하나.doc.clone()),
+            doc: Some(one.doc.clone()),
             action: format!(
-                "이 선언의 iknow 대상 주소를 실재하는 심볼로 고치세요. 그 대상이 사라졌다면 iknow 목록에서 다음을 지우세요: {문서_문법}"
+                "이 선언의 iknow 대상 주소를 실재하는 심볼로 고치세요. 그 대상이 사라졌다면 iknow 목록에서 다음을 지우세요: {doc_syntax}"
             ),
         }],
     }
@@ -2079,59 +2100,64 @@ fn iknow_대상_없음(하나: &선언, 대상: &SymbolRef, project: &Project) -
 ///
 /// # 반환값
 /// `K012` 진단
-fn iknow_불완전(
-    이름: &str, 선언목록: &[선언], 누락: &[(&선언, Vec<&선언>)]
+fn iknow_incomplete(
+    name: &str,
+    decl_list: &[Declaration],
+    missing: &[(&Declaration, Vec<&Declaration>)],
 ) -> Diagnostic {
-    let 표기 = 백틱_이음(이름);
+    let notation = backtick_joined(name);
 
     Diagnostic {
         severity: Severity::Error,
         code: "K012",
         message: format!(
-            "같은 이름의 심볼이 여러 파일에서 선언됨 — {표기}. iknow 상호 명시가 완전하지 않습니다. 다른 뜻이라면 각 선언에 iknow 를 붙여 상호 명시하고, 같은 뜻이라면 한쪽을 지우고 다른 쪽을 import 하세요."
+            "같은 이름의 심볼이 여러 파일에서 선언됨 — {notation}. iknow 상호 명시가 완전하지 않습니다. 다른 뜻이라면 각 선언에 iknow 를 붙여 상호 명시하고, 같은 뜻이라면 한쪽을 지우고 다른 쪽을 import 하세요."
         ),
         // 선언한 자리 전부가 관련 위치다 (스펙 5.1.1).
-        locations: 선언목록
+        locations: decl_list
             .iter()
             .enumerate()
-            .map(|(자리, 하나)| Location {
-                doc: 하나.doc.clone(),
-                line: 하나.line,
+            .map(|(position, one)| Location {
+                doc: one.doc.clone(),
+                line: one.line,
                 // 첫 자리에만 "여기서", 나머지는 "여기서도" 라고 말한다. 어느 쪽이 원인인지는
                 // 컴파일러가 알 수 없으므로 순서를 주장하지 않는다.
-                note: if 자리 == 0 {
-                    format!("여기서 선언했습니다 — {} {표기}", 종류_낱말(하나.kind))
+                note: if position == 0 {
+                    format!("여기서 선언했습니다 — {} {notation}", kind_word(one.kind))
                 } else {
-                    format!("여기서도 선언했습니다 — {} {표기}", 종류_낱말(하나.kind))
+                    format!("여기서도 선언했습니다 — {} {notation}", kind_word(one.kind))
                 },
             })
             .collect(),
         // 고칠 곳은 **빠뜨린 문서뿐**이다. 이미 상호 명시한 문서에까지 수정을 내면
         // 진단이 하지 않은 잘못을 탓하게 된다.
-        fixes: 누락
+        fixes: missing
             .iter()
-            .map(|(대표, 빠진)| {
-                let 목록: Vec<String> = 빠진
+            .map(|(representative, absent)| {
+                let list: Vec<String> = absent
                     .iter()
                     // 주소는 **상대의** 문서와 종류로 짓는다. 자기 종류를 쓰면 구분 기호가
                     // 뒤바뀌어(`.` ↔ `#` ↔ `!`) 그대로 적용한 문서가 `K010` 을 맞는다.
-                    .map(|상대| 심볼_주소(상대.doc, 상대.kind, 이름, true))
+                    .map(|relative| symbol_address(relative.doc, relative.kind, name, true))
                     .collect();
-                let 낱말 = 종류_낱말(대표.kind);
+                let word = kind_word(representative.kind);
                 // 이미 iknow 를 쓴 문서에게 "추가하세요" 라고 하면 줄을 하나 더 만들게 된다.
-                let 이미_있음 = 대표.iknow.iter().any(|대상| 대상.name.join(".") == 이름);
+                let already_present = representative
+                    .iknow
+                    .iter()
+                    .any(|target| target.name.join(".") == name);
                 Fix {
                     kind: FixKind::Edit,
-                    doc: Some(대표.doc.clone()),
-                    action: if 이미_있음 {
+                    doc: Some(representative.doc.clone()),
+                    action: if already_present {
                         format!(
-                            "{낱말} {표기} 선언의 iknow 목록에 다음을 덧붙이세요: {}",
-                            목록.join(", ")
+                            "{word} {notation} 선언의 iknow 목록에 다음을 덧붙이세요: {}",
+                            list.join(", ")
                         )
                     } else {
                         format!(
-                            "{낱말} {표기} 선언 줄 끝에 다음을 추가하세요: // iknow {}",
-                            목록.join(", ")
+                            "{word} {notation} 선언 줄 끝에 다음을 추가하세요: // iknow {}",
+                            list.join(", ")
                         )
                     },
                 }

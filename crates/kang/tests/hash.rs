@@ -26,7 +26,7 @@ use kang::hash;
 /// **이 값들을 고쳐야 할 때는 그것이 breaking change 다.** 소비자 문서의 핀을 전부
 /// 다시 계산해야 하므로 CHANGELOG 에 적고 버전을 올린다.
 #[test]
-fn rev_는_sha256_앞_6자리이며_그_값이_고정이다() {
+fn rev_is_fixed_first_6_of_sha256() {
     assert_eq!(hash::rev(""), "e3b0c4", "빈 입력 — SHA-256 과 절단 자릿수");
     assert_eq!(hash::rev("hello"), "2cf24d", "ascii 한 줄");
     assert_eq!(hash::rev("결제의 방법"), "099357", "UTF-8 바이트");
@@ -49,27 +49,27 @@ fn rev_는_sha256_앞_6자리이며_그_값이_고정이다() {
 /// TypeScript 소비자가 그 형식으로 파싱한다. 자릿수가 흔들리면 그 파서들이 조용히
 /// 어긋난다.
 #[test]
-fn rev_는_항상_6자리_소문자_16진수다() {
+fn rev_is_always_6_lowercase_hex() {
     // 길이가 다른 입력을 섞는다 — 짧은 입력에서 앞자리가 0 이 되는 경우를 포함한다.
-    for 입력 in [
+    for input in [
         "",
         "a",
         "결제",
         "긴 본문\n여러 줄\n\n계속",
         &"x".repeat(10_000),
     ] {
-        let 핀 = hash::rev(입력);
-        assert_eq!(핀.len(), 6, "6자리여야 한다: {핀:?}");
+        let pin = hash::rev(input);
+        assert_eq!(pin.len(), 6, "6자리여야 한다: {pin:?}");
         assert!(
-            핀.chars().all(|글자| matches!(글자, '0'..='9' | 'a'..='f')),
-            "소문자 16진수여야 한다: {핀:?}"
+            pin.chars().all(|ch| matches!(ch, '0'..='9' | 'a'..='f')),
+            "소문자 16진수여야 한다: {pin:?}"
         );
     }
 }
 
 /// 줄 끝 공백이 제거되어 해시가 동일해야 한다.
 #[test]
-fn 줄_끝_공백은_해시를_바꾸지_않는다() {
+fn trailing_whitespace_does_not_change_hash() {
     let a = "hello\nworld";
     let b = "hello   \nworld  ";
     assert_eq!(hash::rev(a), hash::rev(b));
@@ -77,7 +77,7 @@ fn 줄_끝_공백은_해시를_바꾸지_않는다() {
 
 /// 연속된 빈 줄이 하나로 축약되어 해시가 동일해야 한다.
 #[test]
-fn 연속_빈_줄은_하나로_축약된다() {
+fn consecutive_blank_lines_collapse_to_one() {
     let a = "hello\n\nworld";
     let b = "hello\n\n\n\nworld";
     assert_eq!(hash::rev(a), hash::rev(b));
@@ -85,7 +85,7 @@ fn 연속_빈_줄은_하나로_축약된다() {
 
 /// 본문이 다르면 해시도 달라야 한다.
 #[test]
-fn 본문이_다르면_해시가_다르다() {
+fn different_body_gives_different_hash() {
     let a = "hello\nworld";
     let b = "hello\nkang";
     assert_ne!(hash::rev(a), hash::rev(b));

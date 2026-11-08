@@ -13,7 +13,7 @@
 use std::io::Read;
 
 /// 인덱스를 찾지 못했을 때 위로 훑는 관례 경로.
-pub(crate) const 관례_경로: &str = ".kang/index.tsv";
+pub(crate) const CONVENTIONAL_PATH: &str = ".kang/index.tsv";
 
 /// 인덱스로 받아들이는 최대 크기.
 ///
@@ -23,7 +23,7 @@ pub(crate) const 관례_경로: &str = ".kang/index.tsv";
 ///
 /// **상한을 두는 이유는 크기가 아니라 신뢰다.** `KANG_INDEX` 는 빌드 환경이 주는
 /// 값이고, 그것이 가리키는 대상을 rustc 프로세스 메모리에 통째로 올린다.
-pub(crate) const 인덱스_최대_바이트: u64 = 16 * 1024 * 1024;
+pub(crate) const INDEX_MAX_BYTES: u64 = 16 * 1024 * 1024;
 
 /// 인덱스 경로를 정한다. **매크로와 `build.rs` 의 유일한 탐색 규칙이다.**
 ///
@@ -40,20 +40,20 @@ pub(crate) const 인덱스_최대_바이트: u64 = 16 * 1024 * 1024;
 ///
 /// # 반환값
 /// 찾은 인덱스 경로. 어느 쪽으로도 정하지 못하면 `None`
-pub(crate) fn 인덱스_경로() -> Option<std::path::PathBuf> {
+pub(crate) fn index_path() -> Option<std::path::PathBuf> {
     // 환경 변수가 있으면 그것이 답이다. 파일이 없어도 관례 경로로 넘어가지 않는다 —
     // 넘어가면 "지정한 곳과 다른 곳을 읽었다" 가 된다.
-    if let Some(값) = std::env::var_os("KANG_INDEX") {
-        return Some(std::path::PathBuf::from(값));
+    if let Some(value) = std::env::var_os("KANG_INDEX") {
+        return Some(std::path::PathBuf::from(value));
     }
 
     // cargo 없이 rustc 를 직접 부르면 이 변수가 없다. 그때는 훑을 기준점이 없다.
-    let 기준 = std::env::var_os("CARGO_MANIFEST_DIR")?;
+    let base_dir = std::env::var_os("CARGO_MANIFEST_DIR")?;
 
-    std::path::Path::new(&기준)
+    std::path::Path::new(&base_dir)
         .ancestors()
-        .map(|디렉토리| 디렉토리.join(관례_경로))
-        .find(|후보| 후보.is_file())
+        .map(|dir| dir.join(CONVENTIONAL_PATH))
+        .find(|candidates| candidates.is_file())
 }
 
 /// 인덱스 파일을 읽는다. **정규 파일이 아니거나 상한을 넘으면 읽지 않는다.**
@@ -71,12 +71,12 @@ pub(crate) fn 인덱스_경로() -> Option<std::path::PathBuf> {
 /// # 오류
 /// 읽지 못한 **짧은 사유**. 처방과 위치는 호출자가 붙인다 — 매크로와 `build.rs` 의
 /// 진단 형식이 다르기 때문이다
-pub(crate) fn 인덱스_읽기(경로: &std::path::Path) -> Result<String, String> {
-    let 정보 = 경로.metadata().map_err(|오류| 오류.to_string())?;
+pub(crate) fn read_index(path: &std::path::Path) -> Result<String, String> {
+    let info = path.metadata().map_err(|error| error.to_string())?;
 
     // 정규 파일만 받는다. `metadata` 는 링크를 따라가므로 정규 파일을 가리키는
     // 심볼릭 링크는 통과하고, FIFO·장치 파일·디렉토리는 **열기 전에** 걸린다.
-    if !정보.is_file() {
+    if !info.is_file() {
         return Err(
             "정규 파일이 아닙니다 — FIFO·장치 파일·디렉토리는 인덱스가 될 수 없습니다".to_string(),
         );
@@ -84,25 +84,24 @@ pub(crate) fn 인덱스_읽기(경로: &std::path::Path) -> Result<String, Strin
 
     // 크기를 먼저 본다. 여기서 걸러야 큰 파일을 읽는 비용 자체가 들지 않고,
     // 진단이 실제 크기를 말할 수 있다.
-    if 정보.len() > 인덱스_최대_바이트 {
-        return Err(너무_큼(정보.len()));
+    if info.len() > INDEX_MAX_BYTES {
+        return Err(too_large(info.len()));
     }
 
-    let 파일 = std::fs::File::open(경로).map_err(|오류| 오류.to_string())?;
+    let file = std::fs::File::open(path).map_err(|error| error.to_string())?;
 
     // 크기를 재고 여는 사이에 대상이 바뀔 수 있다. 읽기 자체를 상한으로 묶어
     // 그 틈으로 무한한 입력이 들어오지 못하게 한다. 한 바이트를 더 받는 것은
     // "상한에 딱 맞다" 와 "상한을 넘었다" 를 가르기 위해서다.
-    let mut 내용 = String::new();
-    파일
-        .take(인덱스_최대_바이트 + 1)
-        .read_to_string(&mut 내용)
-        .map_err(|오류| 오류.to_string())?;
-    if 내용.len() as u64 > 인덱스_최대_바이트 {
-        return Err(너무_큼(내용.len() as u64));
+    let mut content = String::new();
+    file.take(INDEX_MAX_BYTES + 1)
+        .read_to_string(&mut content)
+        .map_err(|error| error.to_string())?;
+    if content.len() as u64 > INDEX_MAX_BYTES {
+        return Err(too_large(content.len() as u64));
     }
 
-    Ok(내용)
+    Ok(content)
 }
 
 /// 상한을 넘었다는 사유. 두 자리에서 같은 문장을 쓴다.
@@ -112,24 +111,24 @@ pub(crate) fn 인덱스_읽기(경로: &std::path::Path) -> Result<String, Strin
 ///
 /// # 반환값
 /// 실제 크기와 상한을 담은 한 줄
-pub(crate) fn 너무_큼(크기: u64) -> String {
-    format!("{크기} 바이트로 상한 {인덱스_최대_바이트} 바이트를 넘습니다")
+pub(crate) fn too_large(size: u64) -> String {
+    format!("{size} 바이트로 상한 {INDEX_MAX_BYTES} 바이트를 넘습니다")
 }
 
-/// 인덱스 한 줄을 `(종류, rev, 주소)` 로 가른다.
+/// 인덱스 한 줄을 `(kind, rev, address)` 로 가른다.
 ///
 /// 칸이 셋보다 적은 줄은 버린다 — 빈 줄과 잘린 줄이 조용히 심볼로 읽히지 않게 한다.
 /// **가변 길이 필드가 마지막이라** `splitn(3, '\t')` 가 심볼 이름에 든 탭을 살린다
 /// (V0004 Task 3).
 ///
 /// # 매개변수
-/// - `인덱스`: 인덱스 파일 내용
+/// - `index`: 인덱스 파일 내용
 ///
 /// # 반환값
-/// 줄마다 `(종류, rev, 주소)`
-pub(crate) fn 줄들(인덱스: &str) -> impl Iterator<Item = (&str, &str, &str)> {
-    인덱스.lines().filter_map(|줄| {
-        let mut 칸 = 줄.splitn(3, '\t');
-        Some((칸.next()?, 칸.next()?, 칸.next()?))
+/// 줄마다 `(kind, rev, address)`
+pub(crate) fn lines(index: &str) -> impl Iterator<Item = (&str, &str, &str)> {
+    index.lines().filter_map(|line| {
+        let mut cell = line.splitn(3, '\t');
+        Some((cell.next()?, cell.next()?, cell.next()?))
     })
 }

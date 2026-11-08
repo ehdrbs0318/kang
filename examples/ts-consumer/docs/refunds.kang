@@ -1,5 +1,5 @@
 ---
-description: 환불 정책. 어떤 요청을 받아 주고 어떤 요청을 거절하는지의 유일한 원천이다. 돌려줄 금액을 쪼개는 규칙은 docs/proration 에 있다. src/refund.ts 가 이 문서의 topic 을 애노테이션으로 참조한다.
+description: 환불 정책. 어떤 요청을 받아 주고 어떤 요청을 거절하는지는 이 문서만 정한다. 돌려줄 금액을 쪼개는 규칙은 docs/proration 에 있다. src/refund.ts 가 이 문서의 topic 을 애노테이션으로 참조한다.
 ---
 
 keyword `환불`: 승인이 끝난 결제를 되돌려 구매자에게 대금을 돌려주는 것

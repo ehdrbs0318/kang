@@ -8,7 +8,7 @@
 //! 환경 변수 둘도 추적한다. `KANG_REQUIRE_INDEX` 를 켜고 다시 빌드했을 때 캐시에서
 //! 통과해 버리면 CI 의 게이트가 아무것도 검사하지 않게 된다.
 //!
-//! **인덱스는 매크로와 같은 규칙으로 찾는다** (`src/인덱스_파일.rs`). 여기서 `KANG_INDEX`
+//! **인덱스는 매크로와 같은 규칙으로 찾는다** (`src/index_file.rs`). 여기서 `KANG_INDEX`
 //! 만 추적하면, 관례 경로(`.kang/index.tsv`)로 찾은 인덱스를 매크로가 읽는데 cargo 는
 //! 그 파일을 모르는 상태가 된다 — 한 번 성공한 검증이 영원히 캐시된다.
 //!
@@ -24,9 +24,9 @@ use std::path::{Path, PathBuf};
 // 매크로와 탐색·읽기 규칙을 공유한다. 두 벌이 되면 갈리고, 갈리면 추적이 새는 자리가
 // 생긴다. 컴파일 단위가 갈려 있어도 `#[path]` 로 같은 파일을 각자의 모듈로 삼을 수 있고,
 // 그래야 `rustfmt` 와 rustdoc 이 그 파일에 닿는다.
-#[path = "src/인덱스_파일.rs"]
-mod 인덱스_파일;
-use 인덱스_파일::*;
+#[path = "src/index_file.rs"]
+mod index_file;
+use index_file::*;
 
 /// 제어 문자를 보이는 이스케이프로 바꾼다.
 ///
@@ -47,26 +47,27 @@ use 인덱스_파일::*;
 ///
 /// # 반환값
 /// 제어 문자가 `\n`·`\t`·`\u{..}` 로 바뀐 문자열
-fn 보이게(값: &str) -> String {
-    값.chars()
-        .map(|글자| match 글자 {
+fn visible(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| match ch {
             // 흔한 둘은 이름으로 적는다. 사용자가 무엇이 문제인지 바로 안다.
             '\n' => "\\n".to_string(),
             '\t' => "\\t".to_string(),
             // 나머지 제어 문자는 코드포인트로. 한 줄을 넘지 않는 것이 요점이다.
-            글자 if 글자.is_control() => format!("\\u{{{:04x}}}", 글자 as u32),
-            글자 => 글자.to_string(),
+            ch if ch.is_control() => format!("\\u{{{:04x}}}", ch as u32),
+            ch => ch.to_string(),
         })
         .collect()
 }
 
-/// cargo 지시 하나를 낸다. 값의 제어 문자는 [`보이게`] 가 무력화한다.
+/// cargo 지시 하나를 낸다. 값의 제어 문자는 [`visible`] 가 무력화한다.
 ///
 /// # 매개변수
 /// - `이름`: 지시 이름. 예: `rerun-if-changed`
 /// - `값`: 지시에 실을 값
-fn 지시(이름: &str, 값: &str) {
-    println!("cargo::{이름}={}", 보이게(값));
+fn directive(name: &str, value: &str) {
+    println!("cargo::{name}={}", visible(value));
 }
 
 /// 재빌드 추적 지시를 낸다. 추적할 수 없는 경로는 내지 않고 그 사실을 말한다.
@@ -77,19 +78,19 @@ fn 지시(이름: &str, 값: &str) {
 ///
 /// # 매개변수
 /// - `경로`: 추적에 올릴 파일 경로
-fn 추적(경로: &Path) {
-    let 값 = 경로.display().to_string();
+fn track(path: &Path) {
+    let value = path.display().to_string();
     // 제어 문자가 든 경로는 지시로 낼 수 없다. 무엇을 뺐는지는 말한다.
-    if 값.chars().any(char::is_control) {
-        지시(
+    if value.chars().any(char::is_control) {
+        directive(
             "warning",
             &format!(
-                "제어 문자가 든 경로를 재빌드 추적에서 뺐습니다 ({값}). 그 문서는 고쳐도 재빌드가 걸리지 않습니다 — 이름에서 탭·개행을 빼세요 (kang build 가 K116 으로 같은 것을 막습니다)."
+                "제어 문자가 든 경로를 재빌드 추적에서 뺐습니다 ({value}). 그 문서는 고쳐도 재빌드가 걸리지 않습니다 — 이름에서 탭·개행을 빼세요 (kang build 가 K116 으로 같은 것을 막습니다)."
             ),
         );
         return;
     }
-    지시("rerun-if-changed", &값);
+    directive("rerun-if-changed", &value);
 }
 
 /// 추적 지시를 내고 인덱스 신선도를 본다.
@@ -99,16 +100,16 @@ fn main() {
     println!("cargo::rerun-if-env-changed=KANG_REQUIRE_INDEX");
 
     // 공유 소스를 고쳤을 때 스크립트가 적어도 다시 돌게 한다.
-    println!("cargo::rerun-if-changed=src/인덱스_파일.rs");
+    println!("cargo::rerun-if-changed=src/index_file.rs");
 
     // 매크로가 읽을 그 파일을 그대로 추적한다. 찾지 못하면 추적할 것도 없다 —
     // 그때는 매크로도 인덱스를 못 찾아 warn 을 내고 통과한다.
-    let Some(인덱스) = 인덱스_경로() else {
+    let Some(index) = index_path() else {
         return;
     };
-    추적(&인덱스);
+    track(&index);
 
-    낡은_인덱스_경고(&인덱스);
+    warn_stale_index(&index);
 }
 
 /// 인덱스가 문서보다 낡았으면 경고하고, 문서들을 재빌드 추적에 올린다.
@@ -125,55 +126,55 @@ fn main() {
 /// 그래서 사라진 문서를 위해 따로 추적 지시를 낼 필요가 없다.
 ///
 /// # 매개변수
-/// - `인덱스`: 심볼 인덱스 파일 경로
-fn 낡은_인덱스_경고(인덱스: &Path) {
+/// - `index`: 심볼 인덱스 파일 경로
+fn warn_stale_index(index: &Path) {
     // 읽지 못하는 인덱스는 매크로가 이미 다룬다 (없으면 warn, `KANG_REQUIRE_INDEX` 면
     // 에러). 여기서 겹쳐 말하지 않는다. 정규 파일·상한 검사도 이 안에 있으므로,
     // FIFO 나 장치 파일을 가리켰을 때 이 스크립트가 매달리지 않는다.
-    let Ok(내용) = 인덱스_읽기(인덱스) else {
+    let Ok(content) = read_index(index) else {
         return;
     };
 
-    let Ok(인덱스_시각) = 인덱스.metadata().and_then(|m| m.modified()) else {
+    let Ok(index_mtime) = index.metadata().and_then(|m| m.modified()) else {
         return;
     };
 
-    let Some(루트) = 루트(인덱스) else {
+    let Some(root) = root(index) else {
         return;
     };
 
-    let mut 문서들 = Vec::new();
-    문서_모으기(루트, &mut 문서들);
+    let mut docs = Vec::new();
+    collect_docs(root, &mut docs);
 
-    let mut 낡음 = Vec::new();
+    let mut stale = Vec::new();
     // 문서마다 재빌드 추적을 걸고, 인덱스보다 새로운 것을 모은다.
-    for 문서 in &문서들 {
-        추적(문서);
+    for doc in &docs {
+        track(doc);
         // 시각을 못 읽는 문서는 판정하지 않는다. 읽지 못한 것을 "낡았다" 고 말하면
         // 그 문장이 검증되지 않는 사실이 된다.
-        if 문서
+        if doc
             .metadata()
             .and_then(|m| m.modified())
-            .is_ok_and(|문서_시각| 문서_시각 > 인덱스_시각)
+            .is_ok_and(|doc_mtime| doc_mtime > index_mtime)
         {
-            낡음.push(문서.display().to_string());
+            stale.push(doc.display().to_string());
         }
     }
 
-    if !낡음.is_empty() {
-        낡음.sort();
-        지시(
+    if !stale.is_empty() {
+        stale.sort();
+        directive(
             "warning",
             &format!(
                 "kang 인덱스가 문서보다 낡았습니다 ({}). \
                  이 빌드의 kang 속성은 옛 내용으로 검증됩니다 — kang index {} 를 다시 돌리세요.",
-                낡음.join(", "),
-                인덱스.display()
+                stale.join(", "),
+                index.display()
             ),
         );
     }
 
-    사라진_문서_경고(인덱스, &내용, 루트);
+    warn_missing_docs(index, &content, root);
 }
 
 /// 인덱스가 가리키는 문서 중 사라진 것이 있으면 경고한다.
@@ -184,40 +185,40 @@ fn 낡은_인덱스_경고(인덱스: &Path) {
 /// 가리키는 코드가 초록으로 빌드된다.
 ///
 /// # 매개변수
-/// - `인덱스`: 인덱스 파일 경로 (진단에 적는다)
+/// - `index`: 인덱스 파일 경로 (진단에 적는다)
 /// - `내용`: 인덱스 파일 내용
-/// - `루트`: 문서 경로의 기준이 되는 프로젝트 루트
-fn 사라진_문서_경고(인덱스: &Path, 내용: &str, 루트: &Path) {
-    let mut 사라짐: Vec<String> = Vec::new();
-    let mut 확인함: HashSet<&str> = HashSet::new();
+/// - `root`: 문서 경로의 기준이 되는 프로젝트 루트
+fn warn_missing_docs(index: &Path, content: &str, root: &Path) {
+    let mut vanished: Vec<String> = Vec::new();
+    let mut checked: HashSet<&str> = HashSet::new();
 
     // 인덱스의 심볼을 순회하며 그것을 선언한 문서가 아직 있는지 본다.
-    for (종류, _rev, 주소) in 줄들(내용) {
+    for (kind, _rev, address) in lines(content) {
         // 종류를 모르면 구분자를 모르고, 구분자를 모르면 문서 경로를 자를 수 없다.
-        let Some(문서) = 주소의_문서(종류, 주소) else {
+        let Some(doc) = doc_of_address(kind, address) else {
             continue;
         };
         // 한 문서가 심볼마다 되풀이된다. 같은 경로를 두 번 stat 하지 않는다.
-        if !확인함.insert(문서) {
+        if !checked.insert(doc) {
             continue;
         }
         // 인덱스가 주는 경로는 **존재 확인에만** 쓴다. 내용을 읽지 않으므로 루트 밖을
         // 가리키는 주소가 있어도 여기서 새는 것은 없다.
-        let 경로 = 루트.join(format!("{문서}.kang"));
-        if !경로.is_file() {
-            사라짐.push(경로.display().to_string());
+        let path = root.join(format!("{doc}.kang"));
+        if !path.is_file() {
+            vanished.push(path.display().to_string());
         }
     }
 
-    if !사라짐.is_empty() {
-        사라짐.sort();
-        지시(
+    if !vanished.is_empty() {
+        vanished.sort();
+        directive(
             "warning",
             &format!(
                 "kang 인덱스가 사라진 문서를 가리킵니다 ({}). \
                  이 빌드의 kang 속성은 없는 문서의 옛 심볼로 검증됩니다 — kang index {} 를 다시 돌리세요.",
-                사라짐.join(", "),
-                인덱스.display()
+                vanished.join(", "),
+                index.display()
             ),
         );
     }
@@ -226,16 +227,16 @@ fn 사라진_문서_경고(인덱스: &Path, 내용: &str, 루트: &Path) {
 /// 심볼 주소에서 그것을 선언한 문서 경로를 뗀다.
 ///
 /// 문서와 이름을 잇는 기호가 종류마다 다르다 — keyword 는 `.`, topic 은 `#`,
-/// exception 은 `!` 다 (스펙 4.1, `crates/kang/src/check.rs` 의 `심볼_주소`).
+/// exception 은 `!` 다 (스펙 4.1, `crates/kang/src/check.rs` 의 `symbol_address`).
 ///
 /// # 매개변수
 /// - `종류`: 인덱스의 종류 칸 값
-/// - `주소`: 인덱스의 주소 칸 값
+/// - `address`: 인덱스의 주소 칸 값
 ///
 /// # 반환값
 /// 확장자를 뗀 루트 기준 문서 경로. 종류를 모르거나 구분자가 없으면 `None`
-fn 주소의_문서<'a>(종류: &str, 주소: &'a str) -> Option<&'a str> {
-    let 구분자 = match 종류 {
+fn doc_of_address<'a>(kind: &str, address: &'a str) -> Option<&'a str> {
+    let separator = match kind {
         "keyword" => '.',
         "topic" => '#',
         "exception" => '!',
@@ -243,7 +244,7 @@ fn 주소의_문서<'a>(종류: &str, 주소: &'a str) -> Option<&'a str> {
         // 거짓을 말하는 것보다 아무 말도 하지 않는 것이 낫다.
         _ => return None,
     };
-    주소.split_once(구분자).map(|(문서, _)| 문서)
+    address.split_once(separator).map(|(doc, _)| doc)
 }
 
 /// 인덱스 경로에서 프로젝트 루트를 잡는다.
@@ -255,59 +256,62 @@ fn 주소의_문서<'a>(종류: &str, 주소: &'a str) -> Option<&'a str> {
 /// 벗어날 수 있게 되면 루트를 별도 변수로 받는다.
 ///
 /// # 매개변수
-/// - `인덱스`: 심볼 인덱스 파일 경로
+/// - `index`: 심볼 인덱스 파일 경로
 ///
 /// # 반환값
 /// 프로젝트 루트. 관례 모양이 아니면 `None`
-fn 루트(인덱스: &Path) -> Option<&Path> {
+fn root(index: &Path) -> Option<&Path> {
     // `Path::ends_with` 는 경로 조각 단위로 견주므로 `.kang/index.tsv` 두 조각이
     // 그대로 맞아야 한다 — `my.kang/index.tsv` 같은 것이 통과하지 않는다.
-    if !인덱스.ends_with(관례_경로) {
+    if !index.ends_with(CONVENTIONAL_PATH) {
         return None;
     }
-    인덱스.parent()?.parent()
+    index.parent()?.parent()
 }
 
 /// 루트 아래의 `.kang` 파일을 모은다. 숨은 디렉토리는 파고들지 않는다.
 ///
-/// 컴파일러의 순회(`resolve::수집`)와 달리 `.gitignore` 를 보지 않는다. 여기서 노리는
+/// 컴파일러의 순회(`resolve::collect`)와 달리 `.gitignore` 를 보지 않는다. 여기서 노리는
 /// 것은 "인덱스보다 새로운 문서가 있는가" 하나이고, 무시된 디렉토리의 문서는 인덱스에
 /// 애초에 없으므로 경고가 붙어도 처방(`kang index`)이 같다.
 ///
 /// # 매개변수
 /// - `dir`: 훑을 디렉토리
 /// - `모음`: 찾은 경로를 담을 곳
-fn 문서_모으기(dir: &Path, 모음: &mut Vec<PathBuf>) {
-    let Ok(항목들) = std::fs::read_dir(dir) else {
+fn collect_docs(dir: &Path, collection: &mut Vec<PathBuf>) {
+    let Ok(items) = std::fs::read_dir(dir) else {
         return;
     };
 
     // 디렉토리 항목을 순회하며 하위 디렉토리는 파고들고 `.kang` 파일은 모은다.
-    for 항목 in 항목들.flatten() {
-        let 이름 = 항목.file_name().to_string_lossy().into_owned();
+    for item in items.flatten() {
+        let name = item.file_name().to_string_lossy().into_owned();
         // 숨은 항목과 빌드 산출 디렉토리는 문서가 아니다. `target/` 은 파일이 많아
         // 훑는 비용만 든다 — 컴파일러가 같은 이유로 건너뛴다.
-        if 이름.starts_with('.') || 이름 == "target" {
+        if name.starts_with('.') || name == "target" {
             continue;
         }
 
         // ponytail: `DirEntry` 의 종류는 링크를 따라가지 않으므로 심볼릭 링크는
         // 디렉토리로도 파일로도 세지 않고 건너뛴다. `Path::is_dir()` 을 쓰면 링크
         // 순환에 빠지고 `/` 를 가리키는 링크 하나로 모든 `cargo build` 가 저장소 밖을
-        // 훑는다. 컴파일러의 `resolve::수집` 이 같은 자리에서 같은 선택을 했다 —
+        // 훑는다. 컴파일러의 `resolve::collect` 이 같은 자리에서 같은 선택을 했다 —
         // 링크된 문서는 보이지 않는 대신 순회가 저장소 안에서 끝난다.
-        let Ok(종류) = 항목.file_type() else {
+        let Ok(kind) = item.file_type() else {
             // 종류를 모르면 파고들 수도 셀 수도 없다. 디렉토리라고 단정하면
             // 사라진 평범한 파일에 대해 거짓을 말한다.
             continue;
         };
 
-        let 경로 = 항목.path();
-        if 종류.is_dir() {
-            문서_모으기(&경로, 모음);
-        } else if 종류.is_file() && 경로.extension().is_some_and(|확장자| 확장자 == "kang")
+        let path = item.path();
+        if kind.is_dir() {
+            collect_docs(&path, collection);
+        } else if kind.is_file()
+            && path
+                .extension()
+                .is_some_and(|extension| extension == "kang")
         {
-            모음.push(경로);
+            collection.push(path);
         }
     }
 }

@@ -12,7 +12,7 @@
 //! | `K052` | 한 문서 안에서 같은 로컬 이름이 두 번 묶임 |
 //!
 //! 여기에 더해 **주소가 될 수 없는 이름** 넷을 낸다. 문법 대역(`K100`-`K199`)의 번호를
-//! 쓰지만 그 이름을 보는 층은 문서를 로드하는 이곳뿐이다. 넷 다 [`이름_거부`] 가 만들고,
+//! 쓰지만 그 이름을 보는 층은 문서를 로드하는 이곳뿐이다. 넷 다 [`reject_name`] 가 만들고,
 //! 넷 다 처방이 `[edit]`(이름을 고친다)이다 — 스펙 6.0 의 규칙이다.
 //!
 //! | 코드 | 규칙 | 막지 않으면 |
@@ -56,10 +56,10 @@ impl Project {
     ///
     /// # 반환값
     /// 조각 순으로 정렬된 문서 경로들
-    pub fn 경로들(&self) -> Vec<&DocPath> {
-        let mut 순서: Vec<&DocPath> = self.docs.keys().collect();
-        순서.sort_by(|a, b| a.0.cmp(&b.0));
-        순서
+    pub fn paths(&self) -> Vec<&DocPath> {
+        let mut order: Vec<&DocPath> = self.docs.keys().collect();
+        order.sort_by(|a, b| a.0.cmp(&b.0));
+        order
     }
 }
 
@@ -89,7 +89,7 @@ pub fn find_root(cwd: &Path) -> Result<PathBuf, Diagnostic> {
         // 통째로 K050 을 맞는다.
         .find(|dir| dir.join(".git").exists())
         .map(Path::to_path_buf)
-        .ok_or_else(|| git_저장소_아님(cwd))
+        .ok_or_else(|| not_git_repo(cwd))
 }
 
 /// 루트를 재귀 순회하며 .kang 파일을 전부 읽어 파싱한다.
@@ -106,11 +106,11 @@ pub fn find_root(cwd: &Path) -> Result<PathBuf, Diagnostic> {
 pub fn load(root: &Path) -> (Project, Vec<Diagnostic>) {
     let mut diagnostics: Vec<Diagnostic> = Vec::new();
     let mut files: Vec<PathBuf> = Vec::new();
-    let (무시_어디서나, 무시_루트만) = 무시할_디렉토리(root);
-    수집(
+    let (ignore_anywhere, ignore_root_only) = ignored_dirs(root);
+    collect(
         root,
-        &무시_어디서나,
-        &무시_루트만,
+        &ignore_anywhere,
+        &ignore_root_only,
         &mut files,
         &mut diagnostics,
     );
@@ -121,17 +121,17 @@ pub fn load(root: &Path) -> (Project, Vec<Diagnostic>) {
     let mut docs: HashMap<DocPath, Document> = HashMap::new();
     // 찾아낸 `.kang` 파일을 차례로 읽어 문서로 바꾼다.
     for file in files {
-        // **경로가 UTF-8 이 아니면 읽지 않는다** (`K117`). [`문서경로`] 가 `to_string_lossy`
+        // **경로가 UTF-8 이 아니면 읽지 않는다** (`K117`). [`doc_path`] 가 `to_string_lossy`
         // 로 조각을 만들므로, 서로 다른 잘못된 바이트열 둘이 **같은 `\u{fffd}` 로 접혀**
         // 아래 `docs.insert` 에서 한 문서가 다른 문서를 조용히 덮는다. 게다가 그 이름은
         // CLI 인자로 줄 수도 없어(`main` 이 비 UTF-8 인자를 거부한다) 어떤 명령으로도
         // 가리킬 수 없다. 지금 막지 않으면 문서가 소리 없이 사라진다.
         if file.to_str().is_none() {
-            diagnostics.push(경로_utf8_아님(&file));
+            diagnostics.push(path_not_utf8(&file));
             continue;
         }
 
-        let path = 문서경로(root, &file);
+        let path = doc_path(root, &file);
 
         // **경로 어디든 제어 문자가 있으면 읽지 않는다** (`K116`). 디렉토리 이름은 오늘
         // 구분자를 담아도 되지만(아래) 탭과 개행은 다르다 — 주소는 `index.rs` 가 내는
@@ -139,13 +139,13 @@ pub fn load(root: &Path) -> (Project, Vec<Diagnostic>) {
         // 없다" 는 **심볼 이름**에만 참이다. 주소는 문서 경로를 함께 담으므로
         // `docs/evil\ntopic deadbe forged` 같은 디렉토리 하나로 인덱스에 위조 줄을 심을 수
         // 있고, 매크로는 그 줄을 진짜 핀으로 읽는다. 여기서 막아야 그 전제가 참이 된다.
-        if let Some((조각, 글자)) = path.0.iter().find_map(|조각| {
-            조각
+        if let Some((segment, ch)) = path.0.iter().find_map(|segment| {
+            segment
                 .chars()
-                .find(|글자| 글자.is_control())
-                .map(|글자| (조각, 글자))
+                .find(|ch| ch.is_control())
+                .map(|ch| (segment, ch))
         }) {
-            diagnostics.push(경로_제어_문자(path.clone(), 조각.clone(), 글자));
+            diagnostics.push(path_control_char(path.clone(), segment.clone(), ch));
             continue;
         }
 
@@ -155,20 +155,25 @@ pub fn load(root: &Path) -> (Project, Vec<Diagnostic>) {
         // `main.rs` 의 인자 파서가 이미 "그때 처방은 이름을 고치는 것"(스펙 6.0)이라고
         // 적어 두었으나, 정작 그 이름이 있다는 사실을 아무도 말하지 않고 있었다.
         // 첫 조각만 본다 — `docs/-a` 는 주소가 `-` 로 시작하지 않아 그대로 가리킬 수 있다.
-        if let Some(첫) = path.0.first().filter(|조각| 조각.starts_with('-')).cloned() {
-            diagnostics.push(대시로_시작하는_경로(path, 첫));
+        if let Some(head) = path
+            .0
+            .first()
+            .filter(|segment| segment.starts_with('-'))
+            .cloned()
+        {
+            diagnostics.push(path_starting_with_dash(path, head));
             continue;
         }
 
         // **문서 파일 이름에 주소 구분자가 있으면 읽지 않는다** (스펙 6.0).
         // 마지막 조각만 본다 — 디렉토리 이름의 구분자는 주소를 마지막 `/` 뒤에서 가르는
         // 규칙 덕에 문제가 되지 않으므로 합법이다.
-        if let Some(구분자) = path
+        if let Some(separator) = path
             .0
             .last()
-            .and_then(|이름| 이름.chars().find(|글자| ".#!".contains(*글자)))
+            .and_then(|name| name.chars().find(|ch| ".#!".contains(*ch)))
         {
-            diagnostics.push(문서_이름_구분자(path, 구분자));
+            diagnostics.push(doc_name_separator(path, separator));
             continue;
         }
 
@@ -177,7 +182,7 @@ pub fn load(root: &Path) -> (Project, Vec<Diagnostic>) {
             Ok(bytes) => bytes,
             // 권한이 없거나 읽는 도중 사라진 파일. 삼키면 문서가 조용히 없어진다.
             Err(error) => {
-                diagnostics.push(파일_읽기_실패(&file, path, &error));
+                diagnostics.push(file_read_failed(&file, path, &error));
                 continue;
             }
         };
@@ -186,7 +191,7 @@ pub fn load(root: &Path) -> (Project, Vec<Diagnostic>) {
             Ok(source) => source,
             // kang 문서는 UTF-8 텍스트다. 아니면 파서가 볼 수 있는 것이 없다.
             Err(error) => {
-                diagnostics.push(utf8_아님(&file, path, error.utf8_error().valid_up_to()));
+                diagnostics.push(not_utf8(&file, path, error.utf8_error().valid_up_to()));
                 continue;
             }
         };
@@ -200,7 +205,7 @@ pub fn load(root: &Path) -> (Project, Vec<Diagnostic>) {
                 docs.insert(path, document);
             }
             // 통과하지 못한 문서는 어떤 CLI 명령으로도 출력되지 않는다 (스펙 5절).
-            Err(파싱_진단) => diagnostics.extend(파싱_진단),
+            Err(parse_diagnostics) => diagnostics.extend(parse_diagnostics),
         }
     }
 
@@ -252,20 +257,20 @@ impl SymbolTable {
     pub fn build(project: &Project) -> (SymbolTable, Vec<Diagnostic>) {
         // HashMap 의 나열 순서는 보장되지 않는다. 정렬해야 SymbolId 와 진단 순서가
         // 실행마다 같다.
-        let 순서 = project.경로들();
+        let order = project.paths();
 
         let mut symbols: Vec<Symbol> = Vec::new();
         let mut by_name: HashMap<String, Vec<SymbolId>> = HashMap::new();
-        let mut 문서별: Vec<Vec<SymbolId>> = Vec::new();
+        let mut per_doc: Vec<Vec<SymbolId>> = Vec::new();
 
         // 1단계: 모든 문서의 심볼을 모은다. import 해석은 전부 모인 뒤에야 가능하다.
-        for doc in &순서 {
+        for doc in &order {
             let document = &project.docs[*doc];
-            let mut 내_심볼: Vec<SymbolId> = Vec::new();
+            let mut own_symbols: Vec<SymbolId> = Vec::new();
 
             // keyword 의 해시 입력은 한 줄 정의 텍스트다 (스펙 4.8).
             for keyword in &document.keywords {
-                내_심볼.push(심볼_추가(
+                own_symbols.push(add_symbol(
                     &mut symbols,
                     &mut by_name,
                     Symbol {
@@ -280,7 +285,7 @@ impl SymbolTable {
 
             // topic 의 해시 입력은 헤딩을 포함한 본문이다. 선언 줄은 파서가 이미 뺐다.
             for topic in &document.topics {
-                내_심볼.push(심볼_추가(
+                own_symbols.push(add_symbol(
                     &mut symbols,
                     &mut by_name,
                     Symbol {
@@ -295,7 +300,7 @@ impl SymbolTable {
                 // exception 은 본문이 없다. 의미가 선언 topic 의 맥락에서 나오므로
                 // 그 topic 의 본문을 해시 입력으로 쓴다 (스펙 4.8).
                 for exception in &topic.exceptions {
-                    내_심볼.push(심볼_추가(
+                    own_symbols.push(add_symbol(
                         &mut symbols,
                         &mut by_name,
                         Symbol {
@@ -309,7 +314,7 @@ impl SymbolTable {
                 }
             }
 
-            문서별.push(내_심볼);
+            per_doc.push(own_symbols);
         }
 
         let mut table = SymbolTable {
@@ -320,17 +325,17 @@ impl SymbolTable {
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
         // 2단계: 문서마다 로컬 이름을 묶는다. 자기 선언이 먼저, import 가 나중이다.
-        for (index, doc) in 순서.iter().enumerate() {
+        for (index, doc) in order.iter().enumerate() {
             // 값에 줄 번호를 함께 담는다. 진단이 남의 파일 줄을 가리키지 않게 하려면
             // 심볼의 선언 줄이 아니라 **이 문서에서 묶인 줄**을 알아야 한다.
             // import 로 묶인 이름의 선언 줄은 다른 파일에 있다.
             let mut scope: HashMap<String, (SymbolId, usize)> = HashMap::new();
 
             // 자기 파일이 선언한 심볼들.
-            for &id in &문서별[index] {
+            for &id in &per_doc[index] {
                 let name = table.symbols[id.0].name.clone();
                 let line = table.symbols[id.0].line;
-                이름_묶기(doc, &mut scope, &mut diagnostics, name, line, id);
+                bind_name(doc, &mut scope, &mut diagnostics, name, line, id);
             }
 
             // import 한 심볼들. alias 가 있으면 그 이름으로, 없으면 대상의 정본 이름으로
@@ -344,7 +349,7 @@ impl SymbolTable {
                     .alias
                     .clone()
                     .unwrap_or_else(|| import.target.name.join("."));
-                이름_묶기(doc, &mut scope, &mut diagnostics, name, import.line, id);
+                bind_name(doc, &mut scope, &mut diagnostics, name, import.line, id);
             }
 
             // 줄 번호는 진단을 만드는 동안에만 쓰였으므로 테이블에는 남기지 않는다.
@@ -395,7 +400,7 @@ impl SymbolTable {
     ///
     /// **실측한 이득은 크지 않다.** 문서 400·pending 예외 100·문서당 keyword 80 코퍼스에서
     /// `kang show` 10회가 611ms → 582ms 로 5% 다. 리뷰가 예상한 2.7배는 재현되지 않았고,
-    /// 그 코퍼스에서 시간을 지배하는 것은 `show.rs` 의 `O(예외 × 문서)` 순회다(그 파일의
+    /// 그 코퍼스에서 시간을 지배하는 것은 `show.rs` 의 `O(exception × doc)` 순회다(그 파일의
     /// ponytail 이 이미 적은 천장이다). 그래도 되돌리지 않는다 — 없앤 것은 순수 낭비이고,
     /// 호출부를 한 줄도 고치지 않으며, 되레 clippy 가 잉여 `&` 셋을 잡아 줬다.
     ///
@@ -407,14 +412,14 @@ impl SymbolTable {
     pub fn scope(&self, doc: &DocPath) -> &HashMap<String, SymbolId> {
         // 모르는 문서에도 같은 타입을 돌려주려면 빈 매핑이 어딘가에 살아 있어야 한다.
         // 정적 하나면 충분하다 — 내용이 없으므로 공유해도 구별할 수 없다.
-        static 빈_맵: std::sync::LazyLock<HashMap<String, SymbolId>> =
+        static EMPTY_MAP: std::sync::LazyLock<HashMap<String, SymbolId>> =
             std::sync::LazyLock::new(HashMap::new);
-        self.scopes.get(doc).unwrap_or(&빈_맵)
+        self.scopes.get(doc).unwrap_or(&EMPTY_MAP)
     }
 
     /// 같은 이름으로 선언된 심볼들을 모아 반환한다. iknow 검사에 쓴다.
     ///
-    /// 이름은 전체 경로 기준이다 — `결제`.`상태` 는 `"결제.상태"` 이며
+    /// 이름은 전체 경로 기준이다 — `payment`.`상태` 는 `"결제.상태"` 이며
     /// `구독`.`상태` 와 다른 이름이다 (스펙 4.3).
     ///
     /// # 매개변수
@@ -460,7 +465,7 @@ impl SymbolTable {
 ///
 /// # 반환값
 /// 새로 부여된 식별자
-fn 심볼_추가(
+fn add_symbol(
     symbols: &mut Vec<Symbol>,
     by_name: &mut HashMap<String, Vec<SymbolId>>,
     symbol: Symbol,
@@ -480,7 +485,7 @@ fn 심볼_추가(
 /// - `name`: 묶을 로컬 이름
 /// - `line`: 묶는 줄 번호 (1-based)
 /// - `id`: 묶을 심볼
-fn 이름_묶기(
+fn bind_name(
     doc: &DocPath,
     scope: &mut HashMap<String, (SymbolId, usize)>,
     diagnostics: &mut Vec<Diagnostic>,
@@ -489,16 +494,16 @@ fn 이름_묶기(
     id: SymbolId,
 ) {
     // 먼저 묶인 것을 남긴다. 나중 것으로 덮으면 앞의 선언이 조용히 사라진다.
-    if let Some(&(_, 기존)) = scope.get(&name) {
+    if let Some(&(_, existing)) = scope.get(&name) {
         // 진단은 **파일에 나타난 순서**로 가리킨다. 자기 선언을 import 보다 먼저
         // 도는 것은 컴파일러의 내부 사정이고, 스펙 4.7 은 import 를 파일 최상단에
         // 두라고 하므로 정렬하지 않으면 흔한 배치에서 줄 번호가 거꾸로 나온다.
-        let (앞, 뒤) = if 기존 <= line {
-            (기존, line)
+        let (before, after) = if existing <= line {
+            (existing, line)
         } else {
-            (line, 기존)
+            (line, existing)
         };
-        diagnostics.push(이름_중복(doc, &name, 앞, 뒤));
+        diagnostics.push(duplicate_name(doc, &name, before, after));
         return;
     }
     scope.insert(name, (id, line));
@@ -529,83 +534,83 @@ fn 이름_묶기(
 /// # 반환값
 /// `(모든 깊이에서 건너뛸 이름, 루트에서만 건너뛸 이름)`.
 /// `.gitignore` 가 없으면 둘 다 빈 목록
-fn 무시할_디렉토리(root: &Path) -> (Vec<String>, Vec<String>) {
+fn ignored_dirs(root: &Path) -> (Vec<String>, Vec<String>) {
     // 읽지 못하면 아무것도 무시하지 않는다. 순회가 느려질 뿐 문서가 사라지지는 않는다.
-    let Ok(내용) = std::fs::read_to_string(root.join(".gitignore")) else {
+    let Ok(content) = std::fs::read_to_string(root.join(".gitignore")) else {
         return (Vec::new(), Vec::new());
     };
 
-    let mut 어디서나 = Vec::new();
-    let mut 루트만 = Vec::new();
+    let mut anywhere = Vec::new();
+    let mut root_only = Vec::new();
 
     // 한 줄에 이름 하나만 읽는다. 조각이 둘 이상인 경로 패턴은 이름이 아니므로 버린다.
-    for 줄 in 내용.lines().map(str::trim) {
+    for line in content.lines().map(str::trim) {
         // 빈 줄·주석·부정 패턴은 이 부분집합이 다루지 않는다.
-        if 줄.is_empty() || 줄.starts_with('#') || 줄.starts_with('!') {
+        if line.is_empty() || line.starts_with('#') || line.starts_with('!') {
             continue;
         }
         // 앵커 여부를 먼저 읽는다. 떼고 나면 구별할 수 없다.
-        let 앵커 = 줄.starts_with('/');
-        let 이름 = 줄.trim_start_matches('/').trim_end_matches('/');
+        let anchored = line.starts_with('/');
+        let name = line.trim_start_matches('/').trim_end_matches('/');
         // 남은 것이 이름 하나가 아니면 이 부분집합의 대상이 아니다.
-        if 이름.is_empty() || 이름.contains('/') || 이름.contains('*') {
+        if name.is_empty() || name.contains('/') || name.contains('*') {
             continue;
         }
         // 앵커된 패턴은 루트의 그 이름 하나만 가리킨다.
-        if 앵커 {
-            루트만.push(이름.to_string());
+        if anchored {
+            root_only.push(name.to_string());
         } else {
-            어디서나.push(이름.to_string());
+            anywhere.push(name.to_string());
         }
     }
 
-    (어디서나, 루트만)
+    (anywhere, root_only)
 }
 
 /// 루트 아래를 재귀 순회하며 `.kang` 파일 경로를 모은다.
 ///
 /// # 매개변수
 /// - `dir`: 순회할 디렉토리
-/// - `무시`: 어느 깊이에서든 파고들지 않을 디렉토리 이름들. [`무시할_디렉토리`] 가 만든다
-/// - `무시_루트만`: 루트에서만 건너뛸 이름들. 재귀 호출에는 빈 조각을 넘긴다 —
+/// - `무시`: 어느 깊이에서든 파고들지 않을 디렉토리 이름들. [`ignored_dirs`] 가 만든다
+/// - `ignore_root_only`: 루트에서만 건너뛸 이름들. 재귀 호출에는 빈 조각을 넘긴다 —
 ///   그것이 `/target` 같은 앵커 패턴을 루트 하나로 묶는 방법이다
 /// - `files`: 찾은 파일 경로를 모을 곳
 /// - `diagnostics`: 진단을 모을 곳
-fn 수집(
+fn collect(
     dir: &Path,
-    무시: &[String],
-    무시_루트만: &[String],
+    ignore: &[String],
+    ignore_root_only: &[String],
     files: &mut Vec<PathBuf>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
-    let 읽기 = match std::fs::read_dir(dir) {
+    let read = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
         // 디렉토리를 열지 못하면 그 아래 문서가 통째로 보이지 않는다. 조용히 넘기면
         // 사용자는 문서가 없는 것과 구분할 수 없다.
         Err(error) => {
-            diagnostics.push(디렉토리_읽기_실패(dir, &error));
+            diagnostics.push(dir_read_failed(dir, &error));
             return;
         }
     };
 
-    // 항목을 먼저 모아 정렬한다. `수집` 은 `files.sort()` 보다 앞서 돌면서 진단을
+    // 항목을 먼저 모아 정렬한다. `collect` 은 `files.sort()` 보다 앞서 돌면서 진단을
     // 직접 밀어 넣으므로, 여기서 정렬하지 않으면 읽을 수 없는 형제 디렉토리가 둘
     // 이상일 때 **진단 순서가 실행마다 뒤집힌다.**
     let mut entries: Vec<std::fs::DirEntry> = Vec::new();
-    for entry in 읽기 {
+    for entry in read {
         match entry {
             Ok(entry) => entries.push(entry),
-            Err(error) => diagnostics.push(디렉토리_읽기_실패(dir, &error)),
+            Err(error) => diagnostics.push(dir_read_failed(dir, &error)),
         }
     }
     entries.sort_by_key(std::fs::DirEntry::path);
 
     // 디렉토리 항목을 순회하며 하위 디렉토리는 파고들고 `.kang` 파일은 모은다.
     for entry in entries {
-        let 이름 = entry.file_name().to_string_lossy().into_owned();
+        let name = entry.file_name().to_string_lossy().into_owned();
 
         // 숨은 항목은 사용자의 문서가 아니다. `.git` 을 통째로 훑는 낭비도 여기서 막힌다.
-        if 이름.starts_with('.') {
+        if name.starts_with('.') {
             continue;
         }
 
@@ -615,8 +620,8 @@ fn 수집(
         //
         // 앵커 목록은 이 호출이 루트일 때만 비어 있지 않다. 재귀는 빈 조각을 넘기므로
         // `/target` 은 루트의 그것 하나만 걸리고 `docs/target/` 은 걸리지 않는다.
-        if 무시.iter().any(|무시할| 무시할 == &이름)
-            || 무시_루트만.iter().any(|무시할| 무시할 == &이름)
+        if ignore.iter().any(|ignored| ignored == &name)
+            || ignore_root_only.iter().any(|ignored| ignored == &name)
         {
             continue;
         }
@@ -626,7 +631,7 @@ fn 수집(
             // 이 시점에는 그 항목이 파일인지 디렉토리인지 모른다. 디렉토리라고
             // 단정한 진단을 내면 사라진 평범한 파일에 대해 거짓을 말한다.
             Err(error) => {
-                diagnostics.push(항목_종류_확인_실패(&entry.path(), &error));
+                diagnostics.push(entry_kind_check_failed(&entry.path(), &error));
                 continue;
             }
         };
@@ -638,7 +643,7 @@ fn 수집(
         if kind.is_dir() {
             // 앵커 목록은 넘기지 않는다. `/target` 은 루트의 그것 하나만 가리키므로
             // 하위 디렉토리에서는 그 이름이 평범한 문서 디렉토리일 수 있다.
-            수집(&entry.path(), 무시, &[], files, diagnostics);
+            collect(&entry.path(), ignore, &[], files, diagnostics);
         } else if kind.is_file() && entry.path().extension().is_some_and(|ext| ext == "kang") {
             files.push(entry.path());
         }
@@ -653,26 +658,26 @@ fn 수집(
 ///
 /// # 반환값
 /// 확장자를 뗀 루트 기준 문서 경로
-fn 문서경로(root: &Path, file: &Path) -> DocPath {
-    // 폴백을 두지 않는다. 접두사가 없다면 `수집` 이 루트 밖을 훑었다는 뜻이고,
+fn doc_path(root: &Path, file: &Path) -> DocPath {
+    // 폴백을 두지 않는다. 접두사가 없다면 `collect` 이 루트 밖을 훑었다는 뜻이고,
     // 그때 절대 경로를 문서 경로로 삼으면 틀린 주소가 조용히 프로젝트에 들어간다.
-    let 상대 = file
+    let relative = file
         .strip_prefix(root)
         .expect("수집 이 root 아래에서만 경로를 모으므로 접두사가 항상 붙는다");
     // ponytail: UTF-8 이 아닌 파일 이름은 대체 문자로 바뀌어 원본과 어긋난다.
     // DocPath 가 String 인 한 그렇고, 그런 이름의 문서는 백틱 주소로 쓸 수도 없다.
     // 실제로 나타나면 DocPath 를 OsString 기반으로 올린다.
-    let mut 조각: Vec<String> = 상대
+    let mut segment: Vec<String> = relative
         .components()
         .map(|component| component.as_os_str().to_string_lossy().into_owned())
         .collect();
     // 마지막 조각의 `.kang` 확장자를 뗀다. 호출자가 확장자를 이미 확인했다.
-    if let Some(last) = 조각.last_mut()
+    if let Some(last) = segment.last_mut()
         && let Some(stem) = last.strip_suffix(".kang")
     {
         *last = stem.to_string();
     }
-    DocPath(조각)
+    DocPath(segment)
 }
 
 /// 문서가 아닌 대상을 가리키는 [`DocPath`] 를 만든다.
@@ -689,7 +694,7 @@ fn 문서경로(root: &Path, file: &Path) -> DocPath {
 ///
 /// # 반환값
 /// 전체 경로 문자열 하나를 담은 [`DocPath`]
-fn 경로_그대로(path: &Path) -> DocPath {
+fn path_as_is(path: &Path) -> DocPath {
     DocPath(vec![path.display().to_string()])
 }
 
@@ -707,7 +712,7 @@ fn 경로_그대로(path: &Path) -> DocPath {
 ///
 /// # 반환값
 /// 셸에 그대로 붙여 넣을 수 있는 인용된 문자열
-pub(crate) fn 셸_인용(value: &str) -> String {
+pub(crate) fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', r"'\''"))
 }
 
@@ -718,14 +723,14 @@ pub(crate) fn 셸_인용(value: &str) -> String {
 ///
 /// # 반환값
 /// `K050` 진단
-fn git_저장소_아님(cwd: &Path) -> Diagnostic {
+fn not_git_repo(cwd: &Path) -> Diagnostic {
     Diagnostic {
         severity: Severity::Error,
         code: "K050",
         message: "kang 프로젝트 루트를 찾지 못했습니다. 프로젝트 루트는 git 저장소 루트입니다."
             .to_string(),
         locations: vec![Location {
-            doc: 경로_그대로(cwd),
+            doc: path_as_is(cwd),
             line: 0,
             // 대안은 여기 적는다 — 그것은 지시이지 실행할 명령이 아니다.
             note: "이 디렉토리에서 위로 올라가며 .git 을 찾았지만 없었습니다. 이미 있는 git 저장소를 루트로 쓰려면 그 저장소 안의 디렉토리로 이동해 다시 실행하세요".to_string(),
@@ -750,7 +755,7 @@ fn git_저장소_아님(cwd: &Path) -> Diagnostic {
 ///
 /// # 반환값
 /// `K051` 진단
-fn 파일_읽기_실패(file: &Path, path: DocPath, error: &std::io::Error) -> Diagnostic {
+fn file_read_failed(file: &Path, path: DocPath, error: &std::io::Error) -> Diagnostic {
     Diagnostic {
         severity: Severity::Error,
         code: "K051",
@@ -764,7 +769,7 @@ fn 파일_읽기_실패(file: &Path, path: DocPath, error: &std::io::Error) -> D
             kind: FixKind::Shell,
             doc: None,
             // `action` 은 명령만이다. 무엇을 왜 확인하는지는 `message` 와 note 가 말한다.
-            action: format!("ls -l {}", 셸_인용(&file.display().to_string())),
+            action: format!("ls -l {}", shell_quote(&file.display().to_string())),
         }],
     }
 }
@@ -781,18 +786,18 @@ fn 파일_읽기_실패(file: &Path, path: DocPath, error: &std::io::Error) -> D
 /// - `message`: 무엇이 틀렸나
 /// - `note`: 그 자리에 대한 설명
 /// - `action`: 무엇을 고쳐야 하나
-/// - `주소로_쓸_수_있나`: `[edit]` 이 이 문서를 지목해도 되는가. `K117` 만 `false` 다 —
+/// - `addressable`: `[edit]` 이 이 문서를 지목해도 되는가. `K117` 만 `false` 다 —
 ///   경로가 UTF-8 이 아니면 주소를 만들 수 없는 것이 그 진단의 본체다
 ///
 /// # 반환값
 /// 그 코드의 진단
-fn 이름_거부(
+fn reject_name(
     code: &'static str,
     doc: DocPath,
     message: String,
     note: String,
     action: String,
-    주소로_쓸_수_있나: bool,
+    addressable: bool,
 ) -> Diagnostic {
     Diagnostic {
         severity: Severity::Error,
@@ -806,7 +811,7 @@ fn 이름_거부(
         }],
         fixes: vec![Fix {
             kind: FixKind::Edit,
-            doc: 주소로_쓸_수_있나.then_some(doc),
+            doc: addressable.then_some(doc),
             action,
         }],
     }
@@ -829,11 +834,11 @@ fn 이름_거부(
 ///
 /// # 반환값
 /// `K113` 진단
-fn 문서_이름_구분자(path: DocPath, 구분자: char) -> Diagnostic {
+fn doc_name_separator(path: DocPath, separator: char) -> Diagnostic {
     let message = format!(
-        "문서 파일 이름에 주소 구분자 `{구분자}` 가 있습니다 — {path}. 이 문서는 CLI 주소로 가리킬 수 없어 kang bless·kang refs 가 받지 못하고, 이 문서의 심볼을 import 하면 핀을 붙일 방법이 없어 빌드가 error 에 머뭅니다 (스펙 6.0)."
+        "문서 파일 이름에 주소 구분자 `{separator}` 가 있습니다 — {path}. 이 문서는 CLI 주소로 가리킬 수 없어 kang bless·kang refs 가 받지 못하고, 이 문서의 심볼을 import 하면 핀을 붙일 방법이 없어 빌드가 error 에 머뭅니다 (스펙 6.0)."
     );
-    이름_거부(
+    reject_name(
         "K113",
         path,
         message,
@@ -859,11 +864,11 @@ fn 문서_이름_구분자(path: DocPath, 구분자: char) -> Diagnostic {
 ///
 /// # 반환값
 /// `K118` 진단
-fn 대시로_시작하는_경로(path: DocPath, 첫: String) -> Diagnostic {
+fn path_starting_with_dash(path: DocPath, head: String) -> Diagnostic {
     let message = format!(
-        "문서 경로의 첫 조각이 `-` 로 시작합니다 — `{첫}`. 이 주소는 CLI 인자로 주면 플래그로 읽혀 kang show·kang refs·kang bless 가 받지 못하므로 읽지 않습니다 (스펙 6.0)."
+        "문서 경로의 첫 조각이 `-` 로 시작합니다 — `{head}`. 이 주소는 CLI 인자로 주면 플래그로 읽혀 kang show·kang refs·kang bless 가 받지 못하므로 읽지 않습니다 (스펙 6.0)."
     );
-    이름_거부(
+    reject_name(
         "K118",
         path,
         message,
@@ -892,12 +897,12 @@ fn 대시로_시작하는_경로(path: DocPath, 첫: String) -> Diagnostic {
 ///
 /// # 반환값
 /// `K116` 진단
-fn 경로_제어_문자(path: DocPath, 조각: String, 글자: char) -> Diagnostic {
+fn path_control_char(path: DocPath, segment: String, ch: char) -> Diagnostic {
     let message = format!(
-        "문서 경로에 제어 문자 U+{:04X} 가 있습니다 — 조각 `{조각}`. 이 경로는 kang index 가 내는 탭 구분 인덱스의 한 줄을 여러 줄로 쪼개 위조 항목을 만들 수 있어 읽지 않습니다 (스펙 6.0).",
-        글자 as u32
+        "문서 경로에 제어 문자 U+{:04X} 가 있습니다 — 조각 `{segment}`. 이 경로는 kang index 가 내는 탭 구분 인덱스의 한 줄을 여러 줄로 쪼개 위조 항목을 만들 수 있어 읽지 않습니다 (스펙 6.0).",
+        ch as u32
     );
-    이름_거부(
+    reject_name(
         "K116",
         path,
         message,
@@ -910,7 +915,7 @@ fn 경로_제어_문자(path: DocPath, 조각: String, 글자: char) -> Diagnost
 /// 문서 파일이 UTF-8 이 아니라는 진단을 만든다.
 ///
 /// fix 가 편집이 아니라 셸인 이유: 이 파일은 텍스트로 열리지 않으므로 에디터로
-/// 고칠 수 없고, 형제 진단인 [`파일_읽기_실패`] 와 같은 `K051` 이므로 같은 모양이어야 한다.
+/// 고칠 수 없고, 형제 진단인 [`file_read_failed`] 와 같은 `K051` 이므로 같은 모양이어야 한다.
 ///
 /// # 매개변수
 /// - `file`: 그 파일의 전체 경로
@@ -919,9 +924,9 @@ fn 경로_제어_문자(path: DocPath, 조각: String, 글자: char) -> Diagnost
 ///
 /// # 반환값
 /// `K051` 진단
-fn utf8_아님(file: &Path, path: DocPath, valid_up_to: usize) -> Diagnostic {
-    let 원본 = 셸_인용(&file.display().to_string());
-    let 임시 = 셸_인용(&format!("{}.utf8", file.display()));
+fn not_utf8(file: &Path, path: DocPath, valid_up_to: usize) -> Diagnostic {
+    let original = shell_quote(&file.display().to_string());
+    let temp = shell_quote(&format!("{}.utf8", file.display()));
     Diagnostic {
         severity: Severity::Error,
         code: "K051",
@@ -934,7 +939,7 @@ fn utf8_아님(file: &Path, path: DocPath, valid_up_to: usize) -> Diagnostic {
         // 그렇다고 컴파일러가 후보를 단정하면 안 된다 — 한국어 밖 문서에서 자신 있게
         // 틀린 답을 내게 된다. 판단이 소비자에게 있다는 사실만 말한다.
         message: format!(
-            "문서 파일이 UTF-8 이 아닙니다 — {path}. fix 의 file --mime-encoding 은 원본 인코딩을 추정할 뿐이므로 그 값이 맞는지 확인한 뒤 -f 에 넣어 변환하세요: iconv -f <원본 인코딩> -t UTF-8 {원본} > {임시} && mv {임시} {원본}"
+            "문서 파일이 UTF-8 이 아닙니다 — {path}. fix 의 file --mime-encoding 은 원본 인코딩을 추정할 뿐이므로 그 값이 맞는지 확인한 뒤 -f 에 넣어 변환하세요: iconv -f <원본 인코딩> -t UTF-8 {original} > {temp} && mv {temp} {original}"
         ),
         locations: vec![Location {
             doc: path,
@@ -945,7 +950,7 @@ fn utf8_아님(file: &Path, path: DocPath, valid_up_to: usize) -> Diagnostic {
         fixes: vec![Fix {
             kind: FixKind::Shell,
             doc: None,
-            action: format!("file --mime-encoding {원본}"),
+            action: format!("file --mime-encoding {original}"),
         }],
     }
 }
@@ -958,7 +963,7 @@ fn utf8_아님(file: &Path, path: DocPath, valid_up_to: usize) -> Diagnostic {
 ///
 /// # 반환값
 /// `K051` 진단
-fn 디렉토리_읽기_실패(dir: &Path, error: &std::io::Error) -> Diagnostic {
+fn dir_read_failed(dir: &Path, error: &std::io::Error) -> Diagnostic {
     Diagnostic {
         severity: Severity::Error,
         code: "K051",
@@ -967,7 +972,7 @@ fn 디렉토리_읽기_실패(dir: &Path, error: &std::io::Error) -> Diagnostic 
             dir.display()
         ),
         locations: vec![Location {
-            doc: 경로_그대로(dir),
+            doc: path_as_is(dir),
             line: 0,
             note: format!("운영체제가 알린 원인: {error}"),
         }],
@@ -975,7 +980,7 @@ fn 디렉토리_읽기_실패(dir: &Path, error: &std::io::Error) -> Diagnostic 
             kind: FixKind::Shell,
             doc: None,
             // `action` 은 명령만이다.
-            action: format!("ls -ld {}", 셸_인용(&dir.display().to_string())),
+            action: format!("ls -ld {}", shell_quote(&dir.display().to_string())),
         }],
     }
 }
@@ -986,7 +991,7 @@ fn 디렉토리_읽기_실패(dir: &Path, error: &std::io::Error) -> Diagnostic 
 /// 문제이고 처방은 재인코딩이다. 이쪽은 **이름**이 문제이고 처방은 이름 바꾸기다 —
 /// 내용은 멀쩡할 수 있다.
 ///
-/// 막지 않으면 두 가지가 조용히 일어난다. [`문서경로`] 가 `to_string_lossy` 를 쓰므로
+/// 막지 않으면 두 가지가 조용히 일어난다. [`doc_path`] 가 `to_string_lossy` 를 쓰므로
 /// 서로 다른 잘못된 바이트열이 같은 `\u{fffd}` 조각으로 접혀 **한 문서가 다른 문서를
 /// 덮고**, 그렇게 만들어진 이름은 CLI 인자로 줄 수도 없어(`main` 이 비 UTF-8 인자를
 /// 거부한다) 어떤 명령으로도 가리킬 수 없다.
@@ -999,10 +1004,10 @@ fn 디렉토리_읽기_실패(dir: &Path, error: &std::io::Error) -> Diagnostic 
 ///
 /// # 반환값
 /// `K117` 진단
-fn 경로_utf8_아님(file: &Path) -> Diagnostic {
-    이름_거부(
+fn path_not_utf8(file: &Path) -> Diagnostic {
+    reject_name(
         "K117",
-        경로_그대로(file),
+        path_as_is(file),
         format!("문서 파일 경로가 UTF-8 이 아닙니다 — {}. 이 이름은 CLI 주소로 가리킬 수 없고, 잘못된 바이트가 대체 문자로 접혀 다른 문서와 같은 주소가 될 수 있어 읽지 않습니다 (스펙 6.0).", file.display()),
         "이 문서의 파일 경로. 표시된 이름은 잘못된 바이트를 대체 문자로 바꾼 것이라 실제 이름과 다를 수 있습니다".to_string(),
         "이 파일의 이름을 UTF-8 로 바꾸세요. 이 문서를 가리키던 import 주소도 함께 고칩니다".to_string(),
@@ -1021,7 +1026,7 @@ fn 경로_utf8_아님(file: &Path) -> Diagnostic {
 ///
 /// # 반환값
 /// `K051` 진단
-fn 항목_종류_확인_실패(path: &Path, error: &std::io::Error) -> Diagnostic {
+fn entry_kind_check_failed(path: &Path, error: &std::io::Error) -> Diagnostic {
     Diagnostic {
         severity: Severity::Error,
         code: "K051",
@@ -1030,7 +1035,7 @@ fn 항목_종류_확인_실패(path: &Path, error: &std::io::Error) -> Diagnosti
             path.display()
         ),
         locations: vec![Location {
-            doc: 경로_그대로(path),
+            doc: path_as_is(path),
             line: 0,
             note: format!("운영체제가 알린 원인: {error}"),
         }],
@@ -1038,7 +1043,7 @@ fn 항목_종류_확인_실패(path: &Path, error: &std::io::Error) -> Diagnosti
             kind: FixKind::Shell,
             doc: None,
             // `action` 은 명령만이다.
-            action: format!("ls -l {}", 셸_인용(&path.display().to_string())),
+            action: format!("ls -l {}", shell_quote(&path.display().to_string())),
         }],
     }
 }
@@ -1053,7 +1058,7 @@ fn 항목_종류_확인_실패(path: &Path, error: &std::io::Error) -> Diagnosti
 ///
 /// # 반환값
 /// `K052` 진단
-fn 이름_중복(doc: &DocPath, name: &str, 앞: usize, 뒤: usize) -> Diagnostic {
+fn duplicate_name(doc: &DocPath, name: &str, before: usize, after: usize) -> Diagnostic {
     Diagnostic {
         severity: Severity::Error,
         code: "K052",
@@ -1065,12 +1070,12 @@ fn 이름_중복(doc: &DocPath, name: &str, 앞: usize, 뒤: usize) -> Diagnosti
         locations: vec![
             Location {
                 doc: doc.clone(),
-                line: 앞,
+                line: before,
                 note: format!("여기서 `{name}` 이 묶였습니다"),
             },
             Location {
                 doc: doc.clone(),
-                line: 뒤,
+                line: after,
                 note: format!("여기서도 `{name}` 이 묶였습니다"),
             },
         ],

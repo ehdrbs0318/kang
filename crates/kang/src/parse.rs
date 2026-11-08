@@ -52,7 +52,7 @@ pub fn parse_document(path: DocPath, source: &str) -> Result<Document, Vec<Diagn
     let description = match description {
         Some(value) => value,
         None => {
-            diagnostics.push(description_없음(&path, frontmatter_line));
+            diagnostics.push(missing_description(&path, frontmatter_line));
             String::new()
         }
     };
@@ -65,7 +65,7 @@ pub fn parse_document(path: DocPath, source: &str) -> Result<Document, Vec<Diagn
     // topic 밖 내용 진단이 `diagnostics` 안에서 차지한 자리. 위반 줄을 전부 그 하나의
     // `locations` 에 모은다 — 빈 줄 유무로 진단 개수가 달라지면 사용자가 보기에 같은
     // 서문인데 개수가 다르다.
-    let mut topic_밖_진단: Option<usize> = None;
+    let mut outside_topic_diagnostic: Option<usize> = None;
 
     // frontmatter 다음 줄부터 끝까지 순회하며 keyword 선언과 topic 을 모은다.
     for (index, raw) in lines.iter().enumerate().skip(body_start) {
@@ -76,16 +76,16 @@ pub fn parse_document(path: DocPath, source: &str) -> Result<Document, Vec<Diagn
         // 판정은 이 한 곳에서만 한다. 아래 분기들보다 앞에 두되 줄을 소비하지는 않으므로,
         // 펜스·헤딩·선언의 기존 처리는 그대로 이어진다.
         // 펜스 갱신 **전에** 보므로 여는 줄만 걸리고 안쪽 줄은 그 블록에 딸린 것으로 본다.
-        if topics.is_empty() && fence_open.is_none() && !topic_밖_허용(trimmed) {
-            match topic_밖_진단 {
+        if topics.is_empty() && fence_open.is_none() && !allowed_outside_topic(trimmed) {
+            match outside_topic_diagnostic {
                 // 두 번째부터는 같은 진단에 위치만 보탠다. 서문 열 줄에 진단 열 개는 소음이고,
                 // 첫 줄만 가리키면 어디서 끝나는지 알 수 없다.
                 Some(index) => diagnostics[index]
                     .locations
-                    .push(topic_밖_위치(&path, line_no, false)),
+                    .push(outside_topic_location(&path, line_no, false)),
                 None => {
-                    topic_밖_진단 = Some(diagnostics.len());
-                    diagnostics.push(topic_밖_내용(&path, line_no));
+                    outside_topic_diagnostic = Some(diagnostics.len());
+                    diagnostics.push(content_outside_topic(&path, line_no));
                 }
             }
         }
@@ -125,14 +125,14 @@ pub fn parse_document(path: DocPath, source: &str) -> Result<Document, Vec<Diagn
             // 폴백이 없으므로 여기의 두 판정이 유일한 방어선이다.
             if heading_text.contains('`') {
                 // 백틱이 든 이름은 CLI 인자로 주소를 댈 수 없다 (스펙 6.0).
-                diagnostics.push(헤딩_백틱(&path, name, line_no));
+                diagnostics.push(heading_backtick(&path, name, line_no));
             } else if name.is_empty() {
                 // 이름이 없는 topic 도 같은 이유로 주소를 댈 수 없다.
-                diagnostics.push(헤딩_이름_없음(&path, line_no));
+                diagnostics.push(heading_name_missing(&path, line_no));
             } else if name.contains('/') {
-                // 헤딩 이름은 백틱을 쓰지 않으므로 [`백틱_검사`] 를 거치지 않는다.
+                // 헤딩 이름은 백틱을 쓰지 않으므로 [`check_backticks`] 를 거치지 않는다.
                 // topic 이름의 `/` 를 막는 자리는 여기뿐이다 (스펙 6.0 `:415`).
-                diagnostics.push(이름_슬래시(&path, name, line_no));
+                diagnostics.push(name_slash(&path, name, line_no));
             }
 
             // modifier 는 선언이지 서술이 아니므로 본문에서도 빠진다 (스펙 4.8).
@@ -142,7 +142,7 @@ pub fn parse_document(path: DocPath, source: &str) -> Result<Document, Vec<Diagn
 
             // topic 헤딩은 `// uncoded` 를 받을 수 있는 유일한 자리다 (스펙 4.5).
             let (uncoded, iknow) = match modifier {
-                Some(text) => match 백틱_검사(&path, text, line_no)
+                Some(text) => match check_backticks(&path, text, line_no)
                     .and_then(|_| parse_modifier(&path, text, line_no, true))
                 {
                     Ok(parsed) => parsed,
@@ -183,17 +183,17 @@ pub fn parse_document(path: DocPath, source: &str) -> Result<Document, Vec<Diagn
         // 하나짜리 문서를 깨지 않는다. 문법 오류가 든 줄까지 잡아야 하면 `import ` 뒤에
         // 백틱이 있고 **그 문서에 최상단 import 블록이 아예 없을 때만** 으로 좁힌다.
         if let Some(rest) = trimmed.strip_prefix("import ") {
-            let 선언 = parse_import_line(&path, rest, line_no);
+            let declaration = parse_import_line(&path, rest, line_no);
             if topics.is_empty() {
-                match 선언 {
+                match declaration {
                     Ok(import) => imports.push(import),
                     Err(diagnostic) => diagnostics.push(diagnostic),
                 }
                 continue;
             }
             // 첫 topic 뒤인데 선언으로 읽힌다. 자리가 틀린 선언이다.
-            if 선언.is_ok() {
-                diagnostics.push(import_자리_오류(&path, line_no));
+            if declaration.is_ok() {
+                diagnostics.push(import_position_error(&path, line_no));
                 continue;
             }
             // 선언으로 읽히지 않으므로 산문이다. 아래 본문 처리로 흘려보낸다.
@@ -213,7 +213,7 @@ pub fn parse_document(path: DocPath, source: &str) -> Result<Document, Vec<Diagn
             // exception 의 의미는 그것을 선언한 topic 의 맥락에서 나오고 rev 핀도
             // 그 topic 의 해시다 (스펙 4.8). topic 밖에서는 선언이 성립하지 않는다.
             let Some(topic) = topics.last_mut() else {
-                diagnostics.push(선언_위치_오류(
+                diagnostics.push(declaration_position_error(
                     &path,
                     line_no,
                     "exception 은 topic 안에서만 선언할 수 있습니다. 이 선언은 어떤 topic 의 맥락에도 속하지 않습니다.".to_string(),
@@ -230,7 +230,7 @@ pub fn parse_document(path: DocPath, source: &str) -> Result<Document, Vec<Diagn
         // cover 선언도 마찬가지다.
         if let Some(rest) = trimmed.strip_prefix("cover ") {
             let Some(topic) = topics.last_mut() else {
-                diagnostics.push(선언_위치_오류(
+                diagnostics.push(declaration_position_error(
                     &path,
                     line_no,
                     "cover 는 topic 안에서만 선언할 수 있습니다. 이 선언은 어떤 topic 의 맥락에도 속하지 않습니다.".to_string(),
@@ -247,7 +247,7 @@ pub fn parse_document(path: DocPath, source: &str) -> Result<Document, Vec<Diagn
         // 나머지 줄은 현재 topic 의 본문이다. topic 밖의 줄은 위에서 이미 K112 로 걸렸으므로
         // 짝 검사를 덧붙이지 않는다 — 존재할 수 없는 줄에 진단을 하나 더 얹는 소음이다.
         // 백틱을 쓰면서 topic 밖에 놓일 수 있는 줄은 import 와 keyword 뿐이고,
-        // 그 둘은 각자의 파서가 백틱_검사 를 부른다.
+        // 그 둘은 각자의 파서가 check_backticks 를 부른다.
         let Some(topic) = topics.last_mut() else {
             continue;
         };
@@ -255,7 +255,7 @@ pub fn parse_document(path: DocPath, source: &str) -> Result<Document, Vec<Diagn
 
         // 본문의 백틱 쌍은 전부 심볼 참조다 (스펙 4.2). 선언부와 **같은** 검사를 받는다 —
         // 두 벌로 두면 짝·빈 쌍·`/` 판정이 자리마다 갈라진다.
-        match 백틱_검사(&path, raw, line_no) {
+        match check_backticks(&path, raw, line_no) {
             Ok(symbols) => topic
                 .refs
                 .extend(symbols.into_iter().map(|symbol| (symbol, line_no))),
@@ -265,7 +265,7 @@ pub fn parse_document(path: DocPath, source: &str) -> Result<Document, Vec<Diagn
 
     // 닫히지 않은 펜스는 나머지 줄을 통째로 삼켜 topic 분할과 참조 수집을 조용히 끈다.
     if let Some((line, _)) = fence_open {
-        diagnostics.push(펜스_미종료(&path, line));
+        diagnostics.push(unclosed_fence(&path, line));
     }
 
     // 진단이 하나라도 있으면 Document 를 만들지 않는다. 통과하지 못한 문서는 출력되지 않는다.
@@ -302,7 +302,7 @@ fn parse_frontmatter(
     let open = lines.iter().position(|line| !line.trim().is_empty());
 
     let Some(open) = open.filter(|&index| lines[index].trim() == "---") else {
-        return Err(frontmatter_없음(path));
+        return Err(missing_frontmatter(path));
     };
 
     // 여는 `---` 다음에서 닫는 `---` 를 찾는다.
@@ -315,7 +315,7 @@ fn parse_frontmatter(
     let Some(close) = close else {
         // 블록이 없는 경우와 fix 가 달라야 한다. 여기서 새 블록을 만들라고 하면
         // 그대로 적용했을 때 열린 `---` 이 남아 문서가 더 망가진다.
-        return Err(frontmatter_미종료(path, open + 1));
+        return Err(unclosed_frontmatter(path, open + 1));
     };
 
     // ponytail: frontmatter 는 `키: 값` 한 줄 형식만 해석한다. 스펙 3절이 정의한 키가
@@ -350,11 +350,11 @@ fn parse_keyword_line(path: &DocPath, rest: &str, line_no: usize) -> Result<Keyw
 
     // 이름과 정의 양쪽의 백틱이 모두 닫혀 있어야 구분자를 신뢰할 수 있다.
     // 빈 백틱 쌍은 가리키는 심볼이 없다. 이름·정의·상세 어디에 있든 마찬가지다.
-    백틱_검사(path, rest, line_no)?;
+    check_backticks(path, rest, line_no)?;
 
     // 이름 뒤의 `:` 가 이름과 정의를 가른다. 정의 안의 `:` 에 걸리면 안 되므로 첫 번째만 본다.
     let Some(colon) = find_outside_backticks(rest, ":") else {
-        return Err(keyword_문법_오류(
+        return Err(keyword_syntax_error(
             path,
             line_no,
             "keyword 선언에 한 줄 정의가 없습니다.".to_string(),
@@ -368,7 +368,7 @@ fn parse_keyword_line(path: &DocPath, rest: &str, line_no: usize) -> Result<Keyw
     // `colon` 은 백틱 밖에서 찾았으므로 그 앞은 반드시 균형이 맞는다.
     let names = scan_symbols(name_part).expect("백틱 밖의 `:` 앞은 균형이 맞는다");
     if names.is_empty() {
-        return Err(keyword_문법_오류(
+        return Err(keyword_syntax_error(
             path,
             line_no,
             "keyword 이름이 백틱으로 감싸여 있지 않습니다.".to_string(),
@@ -380,9 +380,9 @@ fn parse_keyword_line(path: &DocPath, rest: &str, line_no: usize) -> Result<Keyw
     // 이 **exit 0 으로** `결제.수단` 이 되고 `blah` 는 어디에도 남지 않는다. 조용히 다른
     // 뜻으로 읽는 것은 거부보다 나쁘다 — 사용자는 자기가 쓴 것이 무엇이 되었는지 모른다.
     // [`parse_symbol_ref`] 가 주소에 대해 하는 것과 같은 대조다.
-    let canonical = 백틱_결합(&names, ".");
+    let canonical = join_backticked(&names, ".");
     if canonical != name_part.trim() {
-        return Err(keyword_문법_오류(
+        return Err(keyword_syntax_error(
             path,
             line_no,
             format!(
@@ -413,7 +413,7 @@ fn parse_keyword_line(path: &DocPath, rest: &str, line_no: usize) -> Result<Keyw
             // 끝의 백틱이 이스케이프된 것이면 심볼을 닫은 것이 아니다 — 그것을 세면
             // 줄 끝에 `\`` 하나를 붙이는 것만으로 이 검사를 우회할 수 있다.
             if tail_symbols.len() != 1 || !tail.ends_with('`') || tail.ends_with("\\`") {
-                return Err(keyword_문법_오류(
+                return Err(keyword_syntax_error(
                     path,
                     line_no,
                     "상세 topic 마커 뒤에 텍스트가 남아 있습니다. 마커는 줄 끝에만 올 수 있습니다."
@@ -426,7 +426,7 @@ fn parse_keyword_line(path: &DocPath, rest: &str, line_no: usize) -> Result<Keyw
     };
 
     if definition.is_empty() {
-        return Err(keyword_문법_오류(
+        return Err(keyword_syntax_error(
             path,
             line_no,
             "keyword 선언에 한 줄 정의가 없습니다.".to_string(),
@@ -446,7 +446,7 @@ fn parse_keyword_line(path: &DocPath, rest: &str, line_no: usize) -> Result<Keyw
     // keyword 선언은 `// uncoded` 를 받지 않는다 — 대응 코드 유무는 topic 의 속성이다.
     let iknow = match modifier {
         Some(text) => {
-            백틱_검사(path, text, line_no)?;
+            check_backticks(path, text, line_no)?;
             parse_modifier(path, text, line_no, false)?.1
         }
         None => Vec::new(),
@@ -479,25 +479,25 @@ fn parse_keyword_line(path: &DocPath, rest: &str, line_no: usize) -> Result<Keyw
 /// 대상·별칭·핀 문법이 맞지 않으면 `K109` 진단
 fn parse_import_line(path: &DocPath, rest: &str, line_no: usize) -> Result<Import, Diagnostic> {
     // import 줄의 심볼 주소는 백틱으로 쓰므로 짝 검사를 반드시 받아야 한다.
-    백틱_검사(path, rest, line_no)?;
+    check_backticks(path, rest, line_no)?;
     let rest = rest.trim();
 
     // `rev "<핀>"` 은 줄 끝의 선택 토큰이다. 백틱 밖에서만 찾아 별칭 안의 낱말과 구분한다.
     let (rest, rev) = match find_outside_backticks(rest, " rev ") {
         Some(at) => {
-            let 원문 = rest[at + " rev ".len()..].trim();
+            let source = rest[at + " rev ".len()..].trim();
             // 핀은 큰따옴표로 감싼 값 **하나**다. 벗긴 값에 따옴표가 남으면 뒤에 토큰이
             // 더 붙어 있다는 뜻이고, 그대로 담으면 그 텍스트가 통째로 해시에 섞인다.
-            let Some(value) = 원문
+            let Some(value) = source
                 .strip_prefix('"')
                 .and_then(|value| value.strip_suffix('"'))
                 .filter(|value| !value.contains('"'))
             else {
-                return Err(import_문법_오류(
+                return Err(import_syntax_error(
                     path,
                     line_no,
                     format!(
-                        "rev 핀 {원문} 을 큰따옴표로 감싼 값 하나로 읽을 수 없습니다. rev 는 줄 끝에 오고 `as` 는 그 앞에 옵니다."
+                        "rev 핀 {source} 을 큰따옴표로 감싼 값 하나로 읽을 수 없습니다. rev 는 줄 끝에 오고 `as` 는 그 앞에 옵니다."
                     ),
                 ));
             };
@@ -510,8 +510,8 @@ fn parse_import_line(path: &DocPath, rest: &str, line_no: usize) -> Result<Impor
     let (target, alias) = match find_outside_backticks(rest, " as ") {
         Some(at) => {
             let alias = rest[at + " as ".len()..].trim();
-            let Some(name) = 백틱_이름_하나(alias) else {
-                return Err(import_문법_오류(
+            let Some(name) = single_backtick_name(alias) else {
+                return Err(import_syntax_error(
                     path,
                     line_no,
                     format!("as 뒤의 별칭 \"{alias}\" 이 백틱으로 감싼 이름 하나가 아닙니다."),
@@ -523,7 +523,7 @@ fn parse_import_line(path: &DocPath, rest: &str, line_no: usize) -> Result<Impor
     };
 
     let target = parse_symbol_ref(target.trim())
-        .map_err(|message| import_문법_오류(path, line_no, message))?;
+        .map_err(|message| import_syntax_error(path, line_no, message))?;
 
     Ok(Import {
         target,
@@ -553,17 +553,17 @@ fn parse_exception_line(
 ) -> Result<Exception, Diagnostic> {
     // modifier 를 먼저 가른다. iknow 대상의 백틱이 선언 문법 검사에 섞이면 안 된다.
     let (declaration, modifier) = split_modifier(rest);
-    백틱_검사(path, declaration, line_no)?;
+    check_backticks(path, declaration, line_no)?;
     let declaration = declaration.trim();
 
     // `pending` 은 선택 토큰이다. 떼고 나면 나머지는 백틱 이름 하나여야 한다 —
     // 그 밖의 텍스트가 남으면 조용히 사라지므로 error 다.
-    let (이름_부분, pending) = match declaration.strip_suffix(" pending") {
+    let (name_part, pending) = match declaration.strip_suffix(" pending") {
         Some(head) => (head, true),
         None => (declaration, false),
     };
-    let Some(name) = 백틱_이름_하나(이름_부분) else {
-        return Err(선언_문법_오류(
+    let Some(name) = single_backtick_name(name_part) else {
+        return Err(declaration_syntax_error(
             path,
             line_no,
             format!(
@@ -575,7 +575,7 @@ fn parse_exception_line(
     // exception 선언도 `// iknow` 를 받는 세 자리 중 하나다 (스펙 4.4).
     let iknow = match modifier {
         Some(text) => {
-            백틱_검사(path, text, line_no)?;
+            check_backticks(path, text, line_no)?;
             parse_modifier(path, text, line_no, false)?.1
         }
         None => Vec::new(),
@@ -605,12 +605,12 @@ fn parse_exception_line(
 /// # 오류
 /// 백틱 짝이 맞지 않으면 `K104`, 빈 백틱 쌍이면 `K108`, 선언 문법이 맞지 않으면 `K111` 진단
 fn parse_cover_line(path: &DocPath, rest: &str, line_no: usize) -> Result<String, Diagnostic> {
-    백틱_검사(path, rest, line_no)?;
+    check_backticks(path, rest, line_no)?;
 
     // modifier 를 먼저 가려낸다. 그러지 않으면 iknow 대상의 백틱까지 선언에 섞여
     // "대상은 하나입니다" 라는 엉뚱한 원인을 대게 된다 — 사용자가 쓴 대상은 하나다.
     if split_modifier(rest).1.is_some() {
-        return Err(선언_문법_오류(
+        return Err(declaration_syntax_error(
             path,
             line_no,
             "cover 에는 modifier 를 붙일 수 없습니다. `// iknow` 는 keyword 선언·topic 헤딩·exception 선언 세 자리에만 붙습니다 (스펙 4.4)."
@@ -621,8 +621,8 @@ fn parse_cover_line(path: &DocPath, rest: &str, line_no: usize) -> Result<String
     let declaration = rest.trim();
 
     // 대상은 백틱으로 감싼 이름 하나다. 뒤에 텍스트가 남으면 조용히 버리지 않는다.
-    백틱_이름_하나(declaration).ok_or_else(|| {
-        선언_문법_오류(
+    single_backtick_name(declaration).ok_or_else(|| {
+        declaration_syntax_error(
             path,
             line_no,
             format!("cover 선언 \"{declaration}\" 이 `이름` 형식이 아닙니다. 대상은 하나입니다."),
@@ -652,7 +652,7 @@ fn parse_modifier(
     // `// uncoded` 는 대응 코드가 없는 것이 정상인 topic 을 표시한다 (스펙 4.5).
     if text == "uncoded" {
         if !allow_uncoded {
-            return Err(modifier_문법_오류(
+            return Err(modifier_syntax_error(
                 path,
                 line_no,
                 "`// uncoded` 는 topic 헤딩에만 붙습니다.".to_string(),
@@ -669,7 +669,7 @@ fn parse_modifier(
             targets.trim()
         }
         _ => {
-            return Err(modifier_문법_오류(
+            return Err(modifier_syntax_error(
                 path,
                 line_no,
                 format!("알 수 없는 modifier 입니다: \"{text}\""),
@@ -679,7 +679,7 @@ fn parse_modifier(
 
     // 대상이 없는 `iknow` 는 아무것도 인지하지 않는다.
     if targets.is_empty() {
-        return Err(modifier_문법_오류(
+        return Err(modifier_syntax_error(
             path,
             line_no,
             "`// iknow` 에 대상이 없습니다.".to_string(),
@@ -698,7 +698,7 @@ fn parse_modifier(
         let piece = piece.trim();
         // 빈 자리를 그대로 넘기면 원문에 없는 `""` 를 가리켜 고칠 자리를 못 찾게 한다.
         if piece.is_empty() {
-            return Err(modifier_문법_오류(
+            return Err(modifier_syntax_error(
                 path,
                 line_no,
                 "`// iknow` 의 대상 목록에 빈 자리가 있습니다. 쉼표가 겹쳤거나 마지막 대상 뒤에 쉼표가 남았습니다."
@@ -707,7 +707,7 @@ fn parse_modifier(
         }
         iknow.push(
             parse_symbol_ref(piece)
-                .map_err(|message| modifier_문법_오류(path, line_no, message))?,
+                .map_err(|message| modifier_syntax_error(path, line_no, message))?,
         );
         match next {
             Some(next) => rest = next,
@@ -774,8 +774,8 @@ fn parse_symbol_ref(text: &str) -> Result<SymbolRef, String> {
     // 자리가 틀린 구분자일 수도 있어서 원인을 특정하면 진단이 거짓말을 한다.
     let canonical = format!(
         "{}{separator}{}",
-        백틱_결합(&doc, "/"),
-        백틱_결합(&name, ".")
+        join_backticked(&doc, "/"),
+        join_backticked(&name, ".")
     );
     if canonical != text {
         return Err(format!(
@@ -798,7 +798,7 @@ fn parse_symbol_ref(text: &str) -> Result<SymbolRef, String> {
 ///
 /// # 반환값
 /// `` `a`/`b` `` 형태의 문자열
-fn 백틱_결합(names: &[String], separator: &str) -> String {
+fn join_backticked(names: &[String], separator: &str) -> String {
     names
         .iter()
         .map(|name| format!("`{name}`"))
@@ -818,19 +818,19 @@ fn 백틱_결합(names: &[String], separator: &str) -> String {
 ///
 /// # 오류
 /// 짝이 맞지 않으면 `K104`, 빈 쌍이 있으면 `K108` 진단
-fn 백틱_검사(path: &DocPath, text: &str, line_no: usize) -> Result<Vec<String>, Diagnostic> {
+fn check_backticks(path: &DocPath, text: &str, line_no: usize) -> Result<Vec<String>, Diagnostic> {
     let Some(symbols) = scan_symbols(text) else {
-        return Err(백틱_짝_없음(path, line_no));
+        return Err(unmatched_backtick(path, line_no));
     };
     // 빈 백틱 쌍은 가리키는 심볼이 없다.
     if symbols.iter().any(String::is_empty) {
-        return Err(빈_심볼(path, line_no));
+        return Err(empty_symbol(path, line_no));
     }
     // `/` 가 든 이름은 CLI 주소로 가리킬 수 없다 (스펙 6.0 `:415`). 선언과 참조를 함께
     // 여기서 막는다 — 선언만 막으면 어느 문서도 그 이름을 선언할 수 없으므로 `K001` 이
     // 언제나 "이 문서에서 선언하세요" 를 처방하고, 그대로 적용하면 선언 자리의 진단이 난다.
-    if let Some(이름) = symbols.iter().find(|이름| 이름.contains('/')) {
-        return Err(이름_슬래시(path, 이름, line_no));
+    if let Some(name) = symbols.iter().find(|name| name.contains('/')) {
+        return Err(name_slash(path, name, line_no));
     }
     Ok(symbols)
 }
@@ -846,7 +846,7 @@ fn 백틱_검사(path: &DocPath, text: &str, line_no: usize) -> Result<Vec<Strin
 ///
 /// # 반환값
 /// topic 밖에 있어도 `K112` 를 내지 않는 줄이면 참
-fn topic_밖_허용(trimmed: &str) -> bool {
+fn allowed_outside_topic(trimmed: &str) -> bool {
     trimmed.is_empty()
         // `##` 는 여기서 topic 을 여니 밖이 아니다. `###` 이하는 topic 을 열지 못한다.
         || trimmed
@@ -878,7 +878,7 @@ fn split_modifier(text: &str) -> (&str, Option<&str>) {
     while let Some(offset) = find_outside_backticks(&text[base..], "//") {
         let at = base + offset;
         let candidate = text[at + 2..].trim();
-        if text[..at].ends_with(char::is_whitespace) && modifier_낱말(candidate) {
+        if text[..at].ends_with(char::is_whitespace) && is_modifier_word(candidate) {
             return (&text[..at], Some(candidate));
         }
         base = at + 2;
@@ -898,7 +898,7 @@ fn split_modifier(text: &str) -> (&str, Option<&str>) {
 ///
 /// # 반환값
 /// `uncoded` 나 `iknow` 낱말로 시작하면 참
-fn modifier_낱말(candidate: &str) -> bool {
+fn is_modifier_word(candidate: &str) -> bool {
     ["uncoded", "iknow"].into_iter().any(|word| {
         candidate
             .strip_prefix(word)
@@ -915,7 +915,7 @@ fn modifier_낱말(candidate: &str) -> bool {
 ///
 /// # 반환값
 /// 백틱 쌍 하나로 정확히 감싸여 있으면 그 안의 이름. 아니면 `None`
-fn 백틱_이름_하나(text: &str) -> Option<String> {
+fn single_backtick_name(text: &str) -> Option<String> {
     let names = scan_symbols(text)?;
     match names.as_slice() {
         [name] if text == format!("`{name}`") => Some(name.clone()),
@@ -1021,7 +1021,7 @@ fn push_body_line(topic: &mut Topic, raw: &str) {
 ///
 /// # 반환값
 /// `K101` 진단
-fn frontmatter_없음(path: &DocPath) -> Diagnostic {
+fn missing_frontmatter(path: &DocPath) -> Diagnostic {
     Diagnostic {
         severity: Severity::Error,
         code: "K101",
@@ -1050,7 +1050,7 @@ fn frontmatter_없음(path: &DocPath) -> Diagnostic {
 ///
 /// # 반환값
 /// `K101` 진단
-fn frontmatter_미종료(path: &DocPath, line: usize) -> Diagnostic {
+fn unclosed_frontmatter(path: &DocPath, line: usize) -> Diagnostic {
     Diagnostic {
         severity: Severity::Error,
         code: "K101",
@@ -1078,7 +1078,7 @@ fn frontmatter_미종료(path: &DocPath, line: usize) -> Diagnostic {
 ///
 /// # 반환값
 /// `K106` 진단
-fn 펜스_미종료(path: &DocPath, line: usize) -> Diagnostic {
+fn unclosed_fence(path: &DocPath, line: usize) -> Diagnostic {
     Diagnostic {
         severity: Severity::Error,
         code: "K106",
@@ -1105,7 +1105,7 @@ fn 펜스_미종료(path: &DocPath, line: usize) -> Diagnostic {
 ///
 /// # 반환값
 /// `K107` 진단
-fn 헤딩_이름_없음(path: &DocPath, line: usize) -> Diagnostic {
+fn heading_name_missing(path: &DocPath, line: usize) -> Diagnostic {
     Diagnostic {
         severity: Severity::Error,
         code: "K107",
@@ -1133,7 +1133,7 @@ fn 헤딩_이름_없음(path: &DocPath, line: usize) -> Diagnostic {
 ///
 /// # 반환값
 /// `K108` 진단
-fn 빈_심볼(path: &DocPath, line: usize) -> Diagnostic {
+fn empty_symbol(path: &DocPath, line: usize) -> Diagnostic {
     Diagnostic {
         severity: Severity::Error,
         code: "K108",
@@ -1160,7 +1160,7 @@ fn 빈_심볼(path: &DocPath, line: usize) -> Diagnostic {
 ///
 /// # 반환값
 /// `K102` 진단
-fn description_없음(path: &DocPath, line: usize) -> Diagnostic {
+fn missing_description(path: &DocPath, line: usize) -> Diagnostic {
     Diagnostic {
         severity: Severity::Error,
         code: "K102",
@@ -1187,7 +1187,7 @@ fn description_없음(path: &DocPath, line: usize) -> Diagnostic {
 ///
 /// # 반환값
 /// `K103` 진단
-fn keyword_문법_오류(path: &DocPath, line: usize, message: String) -> Diagnostic {
+fn keyword_syntax_error(path: &DocPath, line: usize, message: String) -> Diagnostic {
     Diagnostic {
         severity: Severity::Error,
         code: "K103",
@@ -1214,7 +1214,7 @@ fn keyword_문법_오류(path: &DocPath, line: usize, message: String) -> Diagno
 ///
 /// # 반환값
 /// `K109` 진단
-fn import_문법_오류(path: &DocPath, line: usize, message: String) -> Diagnostic {
+fn import_syntax_error(path: &DocPath, line: usize, message: String) -> Diagnostic {
     Diagnostic {
         severity: Severity::Error,
         code: "K109",
@@ -1241,7 +1241,7 @@ fn import_문법_오류(path: &DocPath, line: usize, message: String) -> Diagnos
 ///
 /// # 반환값
 /// `K110` 진단
-fn modifier_문법_오류(path: &DocPath, line: usize, message: String) -> Diagnostic {
+fn modifier_syntax_error(path: &DocPath, line: usize, message: String) -> Diagnostic {
     Diagnostic {
         severity: Severity::Error,
         code: "K110",
@@ -1268,8 +1268,8 @@ fn modifier_문법_오류(path: &DocPath, line: usize, message: String) -> Diagn
 ///
 /// # 반환값
 /// `K111` 진단
-fn 선언_위치_오류(path: &DocPath, line: usize, message: String) -> Diagnostic {
-    선언_오류(
+fn declaration_position_error(path: &DocPath, line: usize, message: String) -> Diagnostic {
+    declaration_error(
         path,
         line,
         message,
@@ -1288,8 +1288,8 @@ fn 선언_위치_오류(path: &DocPath, line: usize, message: String) -> Diagnos
 ///
 /// # 반환값
 /// `K111` 진단
-fn 선언_문법_오류(path: &DocPath, line: usize, message: String) -> Diagnostic {
-    선언_오류(
+fn declaration_syntax_error(path: &DocPath, line: usize, message: String) -> Diagnostic {
+    declaration_error(
         path,
         line,
         message,
@@ -1307,7 +1307,7 @@ fn 선언_문법_오류(path: &DocPath, line: usize, message: String) -> Diagnos
 ///
 /// # 반환값
 /// `K111` 진단
-fn 선언_오류(path: &DocPath, line: usize, message: String, action: String) -> Diagnostic {
+fn declaration_error(path: &DocPath, line: usize, message: String, action: String) -> Diagnostic {
     Diagnostic {
         severity: Severity::Error,
         code: "K111",
@@ -1334,7 +1334,7 @@ fn 선언_오류(path: &DocPath, line: usize, message: String, action: String) -
 ///
 /// # 반환값
 /// 줄과 역할 설명을 담은 [`Location`]
-fn topic_밖_위치(path: &DocPath, line: usize, first: bool) -> Location {
+fn outside_topic_location(path: &DocPath, line: usize, first: bool) -> Location {
     Location {
         doc: path.clone(),
         line,
@@ -1361,7 +1361,7 @@ fn topic_밖_위치(path: &DocPath, line: usize, first: bool) -> Location {
 ///
 /// # 반환값
 /// `K114` 진단
-fn import_자리_오류(path: &DocPath, line: usize) -> Diagnostic {
+fn import_position_error(path: &DocPath, line: usize) -> Diagnostic {
     Diagnostic {
         severity: Severity::Error,
         code: "K114",
@@ -1392,13 +1392,13 @@ fn import_자리_오류(path: &DocPath, line: usize) -> Diagnostic {
 ///
 /// # 반환값
 /// `K112` 진단
-fn topic_밖_내용(path: &DocPath, line: usize) -> Diagnostic {
+fn content_outside_topic(path: &DocPath, line: usize) -> Diagnostic {
     Diagnostic {
         severity: Severity::Error,
         code: "K112",
         message: "topic 밖에는 내용을 둘 수 없습니다. 이 내용은 어떤 rev 해시에도 들어가지 않고 kang show 로도 볼 수 없습니다."
             .to_string(),
-        locations: vec![topic_밖_위치(path, line, true)],
+        locations: vec![outside_topic_location(path, line, true)],
         fixes: vec![Fix {
             kind: FixKind::Edit,
             doc: Some(path.clone()),
@@ -1418,7 +1418,7 @@ fn topic_밖_내용(path: &DocPath, line: usize) -> Diagnostic {
 ///
 /// # 반환값
 /// `K105` 진단
-fn 헤딩_백틱(path: &DocPath, heading: &str, line: usize) -> Diagnostic {
+fn heading_backtick(path: &DocPath, heading: &str, line: usize) -> Diagnostic {
     Diagnostic {
         severity: Severity::Error,
         code: "K105",
@@ -1457,12 +1457,12 @@ fn 헤딩_백틱(path: &DocPath, heading: &str, line: usize) -> Diagnostic {
 ///
 /// # 반환값
 /// `K115` 진단
-fn 이름_슬래시(path: &DocPath, 이름: &str, line: usize) -> Diagnostic {
+fn name_slash(path: &DocPath, name: &str, line: usize) -> Diagnostic {
     Diagnostic {
         severity: Severity::Error,
         code: "K115",
         message: format!(
-            "심볼 이름에 `/` 가 있습니다 — `{이름}`. CLI 주소는 마지막 `/` 뒤에서 문서와 심볼을 가르므로(스펙 6.0) 이 이름은 주소로 가리킬 수 없고, 이 심볼을 import 하면 `K020` 의 유일한 fix 인 kang bless 가 사용법 오류(종료 코드 2)로 끝나 빌드가 error 에 머뭅니다."
+            "심볼 이름에 `/` 가 있습니다 — `{name}`. CLI 주소는 마지막 `/` 뒤에서 문서와 심볼을 가르므로(스펙 6.0) 이 이름은 주소로 가리킬 수 없고, 이 심볼을 import 하면 `K020` 의 유일한 fix 인 kang bless 가 사용법 오류(종료 코드 2)로 끝나 빌드가 error 에 머뭅니다."
         ),
         locations: vec![Location {
             doc: path.clone(),
@@ -1474,7 +1474,7 @@ fn 이름_슬래시(path: &DocPath, 이름: &str, line: usize) -> Diagnostic {
             kind: FixKind::Edit,
             doc: Some(path.clone()),
             action: format!(
-                "이름 \"{이름}\" 에서 `/` 를 빼세요. 이 이름을 선언한 줄과 가리키는 줄을 함께 고칩니다"
+                "이름 \"{name}\" 에서 `/` 를 빼세요. 이 이름을 선언한 줄과 가리키는 줄을 함께 고칩니다"
             ),
         }],
     }
@@ -1488,7 +1488,7 @@ fn 이름_슬래시(path: &DocPath, 이름: &str, line: usize) -> Diagnostic {
 ///
 /// # 반환값
 /// `K104` 진단
-fn 백틱_짝_없음(path: &DocPath, line: usize) -> Diagnostic {
+fn unmatched_backtick(path: &DocPath, line: usize) -> Diagnostic {
     Diagnostic {
         severity: Severity::Error,
         code: "K104",

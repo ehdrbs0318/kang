@@ -95,7 +95,7 @@ pub struct KeywordName(pub Vec<String>);
 /// **`Copy` 다.** 필드가 없어 비용이 없고, 없으면 이 타입을 두 번 쓰는 자리마다
 /// (주소 조립 + [`SymbolRef`] 구성) 그림자 enum 을 만들게 된다 — 실제로 `index.rs` 가
 /// 그렇게 했고, 그 사본이 종류→문자열 매핑을 두 벌로 만들었다.
-#[kang::keyword("CONTEXT.심볼", rev = "6c37e8")]
+#[kang::keyword("CONTEXT.심볼", rev = "f58576")]
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum SymbolKind {
     /// 도메인 특수 용어 선언.

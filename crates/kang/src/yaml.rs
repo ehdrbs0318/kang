@@ -100,7 +100,7 @@ impl Emitter {
         // 한 줄짜리 인용 스칼라로 떨어진다.
         if body
             .chars()
-            .any(|c| (c.is_control() && c != '\n' && c != '\t') || 줄_구분자(c))
+            .any(|c| (c.is_control() && c != '\n' && c != '\t') || is_line_separator(c))
         {
             self.lines.push(format!("{key}: {}", scalar(body)));
             return;
@@ -108,7 +108,7 @@ impl Emitter {
 
         // 개행으로 끝나는 본문은 split 이 마지막에 빈 조각을 하나 더 낸다. 그 조각은
         // 줄이 아니라 마지막 줄의 끝이므로 버린다 — chomping 지시자가 그 자리를 대신한다.
-        let 줄들 = body.strip_suffix('\n').unwrap_or(body).split('\n');
+        let lines = body.strip_suffix('\n').unwrap_or(body).split('\n');
         let chomping = if !body.ends_with('\n') {
             "-"
         } else if body.ends_with("\n\n") {
@@ -120,11 +120,11 @@ impl Emitter {
         self.lines.push(format!("{key}: |2{chomping}"));
         // 본문 줄을 두 칸 들여써 넣는다. 빈 줄은 들여쓰지 않는다 — 공백만 남은 줄은
         // 눈에 보이지 않는 차이를 만들고, 빈 줄은 들여쓰기 없이도 블록의 내용이다.
-        for 줄 in 줄들 {
-            self.lines.push(if 줄.is_empty() {
+        for line in lines {
+            self.lines.push(if line.is_empty() {
                 String::new()
             } else {
-                format!("  {줄}")
+                format!("  {line}")
             });
         }
     }
@@ -150,16 +150,16 @@ impl Emitter {
             // `block`·`seq`·`map`·`value` 중 어느 것도 빈 첫 줄을 만들지 않지만,
             // 이 모듈이 "짝 어긋남이 구조적으로 불가능" 하다고 말하는 유일한 예외 자리다.
             debug_assert!(
-                item.lines.first().is_none_or(|첫| !첫.is_empty()),
+                item.lines.first().is_none_or(|head| !head.is_empty()),
                 "목록 항목의 첫 줄은 비어 있을 수 없다"
             );
-            for (자리, 줄) in item.lines.into_iter().enumerate() {
-                self.lines.push(if 줄.is_empty() {
+            for (position, line) in item.lines.into_iter().enumerate() {
+                self.lines.push(if line.is_empty() {
                     String::new()
-                } else if 자리 == 0 {
-                    format!("  - {줄}")
+                } else if position == 0 {
+                    format!("  - {line}")
                 } else {
-                    format!("    {줄}")
+                    format!("    {line}")
                 });
             }
         }
@@ -179,11 +179,11 @@ impl Emitter {
 
         self.lines.push(format!("{key}:"));
         // 자식의 줄을 통째로 두 칸 들여쓴다.
-        for 줄 in body.lines {
-            self.lines.push(if 줄.is_empty() {
+        for line in body.lines {
+            self.lines.push(if line.is_empty() {
                 String::new()
             } else {
-                format!("  {줄}")
+                format!("  {line}")
             });
         }
     }
@@ -204,7 +204,7 @@ impl Emitter {
 ///
 /// 인용을 유발하는 것은 **구조를 깨는 표기**와 **다른 타입으로 읽히는 표기** 둘이다.
 ///
-/// - 빈 문자열, 앞뒤 공백, 제어 문자 (개행 포함), 줄 구분자 ([`줄_구분자`])
+/// - 빈 문자열, 앞뒤 공백, 제어 문자 (개행 포함), 줄 구분자 ([`is_line_separator`])
 /// - 지시자로 시작 (`- ? : , [ ] { } # & * ! | > ' " % @ \` \` 와 역슬래시)
 /// - `: ` 를 포함하거나 `:` 로 끝남 — **한글 description 의 위험 지점이다.**
 ///   `결제: 대금을 지불하는 행위` 를 그대로 두면 그 자리에서 매핑이 하나 더 생긴다
@@ -229,13 +229,13 @@ impl Emitter {
 /// # 반환값
 /// 그대로 쓸 수 있는 평문, 또는 큰따옴표로 감싸고 이스케이프한 문자열
 pub fn scalar(s: &str) -> String {
-    let 타입으로_읽힘 = matches!(
+    let read_as_type = matches!(
         s.to_ascii_lowercase().as_str(),
         "null" | "nil" | "~" | "true" | "false" | "yes" | "no" | "on" | "off"
     ) || s.starts_with(|c: char| c.is_ascii_digit())
         || s.starts_with(['+', '.']);
 
-    let 인용 = s.is_empty()
+    let quoted = s.is_empty()
         || s.trim() != s
         || s.starts_with([
             '-', '?', ':', ',', '[', ']', '{', '}', '#', '&', '*', '!', '|', '>', '\'', '"', '%',
@@ -247,33 +247,33 @@ pub fn scalar(s: &str) -> String {
         // `=` 는 YAML 1.1 의 value 키다. PyYAML 의 SafeConstructor 에 그 태그의 생성자가
         // 없어 **문서 전체**가 거부된다. 정확히 이 한 글자일 때만이므로 `docs/h.=` 는 평문이다.
         || s == "="
-        || s.chars().any(|c| c.is_control() || 줄_구분자(c))
-        || 타입으로_읽힘;
+        || s.chars().any(|c| c.is_control() || is_line_separator(c))
+        || read_as_type;
 
-    if !인용 {
+    if !quoted {
         return s.to_string();
     }
 
-    let mut 결과 = String::with_capacity(s.len() + 2);
-    결과.push('"');
+    let mut result = String::with_capacity(s.len() + 2);
+    result.push('"');
     // 큰따옴표 안에서 뜻이 달라지는 문자만 이스케이프한다. 그 밖의 문자는 UTF-8 그대로다.
     for c in s.chars() {
         match c {
-            '\\' => 결과.push_str("\\\\"),
-            '"' => 결과.push_str("\\\""),
-            '\n' => 결과.push_str("\\n"),
-            '\t' => 결과.push_str("\\t"),
-            '\r' => 결과.push_str("\\r"),
+            '\\' => result.push_str("\\\\"),
+            '"' => result.push_str("\\\""),
+            '\n' => result.push_str("\\n"),
+            '\t' => result.push_str("\\t"),
+            '\r' => result.push_str("\\r"),
             // 그 밖의 제어 문자는 눈에 보이지 않으므로 코드로 적는다.
-            c if c.is_control() => 결과.push_str(&format!("\\x{:02x}", c as u32)),
+            c if c.is_control() => result.push_str(&format!("\\x{:02x}", c as u32)),
             // U+2028·U+2029 는 두 자리 `\x` 로 적을 수 없다. 이스케이프하지 않으면
             // 큰따옴표 안에서도 줄바꿈으로 읽혀 인용이 그 자리에서 끊긴다.
-            c if 줄_구분자(c) => 결과.push_str(&format!("\\u{:04x}", c as u32)),
-            c => 결과.push(c),
+            c if is_line_separator(c) => result.push_str(&format!("\\u{:04x}", c as u32)),
+            c => result.push(c),
         }
     }
-    결과.push('"');
-    결과
+    result.push('"');
+    result
 }
 
 /// 이 문자를 YAML 파서가 줄바꿈으로 읽는가.
@@ -289,6 +289,6 @@ pub fn scalar(s: &str) -> String {
 ///
 /// # 반환값
 /// 줄 구분자면 `true`
-fn 줄_구분자(c: char) -> bool {
+fn is_line_separator(c: char) -> bool {
     matches!(c, '\u{2028}' | '\u{2029}')
 }

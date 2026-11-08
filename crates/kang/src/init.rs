@@ -24,35 +24,35 @@ use std::path::{Path, PathBuf};
 
 /// Claude 스킬의 내용. **컴파일 타임에 바이너리에 임베드한다** — 릴리즈된 바이너리는
 /// 저장소 파일에 접근할 수 없으므로 런타임에 찾을 곳이 없다.
-const 스킬: &str = include_str!("skill.md");
+const SKILL: &str = include_str!("skill.md");
 
 /// 스킬 파일의 루트 기준 경로. **스킬 내용의 유일한 사본**이며 나머지 둘이 이것을 가리킨다.
-const 스킬_경로: &str = ".claude/skills/kang/SKILL.md";
+const SKILL_PATH: &str = ".claude/skills/kang/SKILL.md";
 
 /// Codex 용 진입점. 내용을 복제하지 않고 스킬을 가리키기만 한다 — 두 파일에 복제하면
 /// kang 이 막으려는 SoT 분열이 kang 자신의 도구에서 일어난다.
-const AGENTS_섹션: &str = "## kang
+const AGENTS_SECTION: &str = "## kang
 
-이 프로젝트의 문서는 kang 으로 유지보수된다. 문서를 읽거나 쓰기 전에
-`.claude/skills/kang/SKILL.md` 를 읽어라. 사용법의 사본은 그 파일 하나뿐이다.
+이 프로젝트의 문서는 kang 으로 관리한다. 문서를 읽거나 쓰기 전에
+`.claude/skills/kang/SKILL.md` 를 읽는다. 사용법은 그 파일에만 있다.
 ";
 
 /// Claude 용 한 줄 진입점 (스펙 6.1). 스킬을 가리키기만 한다.
-const CLAUDE_줄: &str = "이 프로젝트의 문서는 kang 으로 유지보수된다. `.claude/skills/kang/SKILL.md` 의 kang 스킬을 사용하여야 한다.
+const CLAUDE_LINE: &str = "이 프로젝트의 문서는 kang 으로 관리한다. `.claude/skills/kang/SKILL.md` 의 kang 스킬을 사용한다.
 ";
 
-/// [`CLAUDE_줄`] 의 멱등 판정 접두사.
+/// [`CLAUDE_LINE`] 의 멱등 판정 접두사.
 ///
 /// 줄 전체를 marker 로 삼지 않는다 — 사람이 그 줄에 자기 말을 덧붙이는 것이 이 파일에서
 /// 가장 흔한 편집이고, 그때 안내가 두 번 붙으면 안 된다.
-const CLAUDE_MARKER: &str = "이 프로젝트의 문서는 kang 으로 유지보수된다";
+const CLAUDE_MARKER: &str = "이 프로젝트의 문서는 kang 으로 관리한다";
 
 /// 첫 문서 템플릿. **그 자체로 합법 kang 문서여야 한다** — `init` 직후의 `kang build` 가
 /// 실패하면 사용자의 첫 경험이 "도구가 만든 파일이 도구를 통과하지 못한다" 다.
 ///
 /// 그래서 본문의 백틱은 이 문서가 선언한 keyword 하나뿐이고(스펙 4.2), 안내문은 전부
 /// topic 안에 있고(스펙 3절), import 가 없으므로 rev 핀도 필요하지 않다(스펙 4.8).
-const 예제_문서: &str = "---
+const EXAMPLE_DOC: &str = "---
 description: kang 이 만든 첫 문서. 이 프로젝트의 실제 정책으로 바꾸세요.
 ---
 
@@ -93,12 +93,12 @@ topic 밖에는 내용을 둘 수 없습니다. 문서 제목도 서문도 두�
 /// 다시 실행하면 만들어진 것을 건너뛴다
 pub fn init(root: &Path) -> Result<Vec<PathBuf>, String> {
     // marker 는 전부 그 내용 안의 한 줄이다. 어긋나면 두 번 실행할 때 두 번 붙는다.
-    let mut 산출물: Vec<(&str, &str, &str)> = vec![
+    let mut outputs: Vec<(&str, &str, &str)> = vec![
         // 스킬 파일의 frontmatter `name` 을 marker 로 삼는다. Claude 가 스킬을 찾는 키이므로
         // 사람이 본문을 고쳐도 남아 있고, 첫 줄인 `---` 은 어느 마크다운에나 있어 못 쓴다.
-        (스킬_경로, "name: kang", 스킬),
-        ("AGENTS.md", "## kang", AGENTS_섹션),
-        ("CLAUDE.md", CLAUDE_MARKER, CLAUDE_줄),
+        (SKILL_PATH, "name: kang", SKILL),
+        ("AGENTS.md", "## kang", AGENTS_SECTION),
+        ("CLAUDE.md", CLAUDE_MARKER, CLAUDE_LINE),
     ];
 
     // 이미 kang 을 쓰는 프로젝트에 예제 템플릿을 더하면 쓰레기가 생긴다 (스펙 6.1).
@@ -114,35 +114,36 @@ pub fn init(root: &Path) -> Result<Vec<PathBuf>, String> {
     //
     // ponytail: `.kang` 을 찾는 재귀 순회가 이미 [`resolve::load`] 에 있으므로 그것을
     // 그대로 쓴다. 파싱까지 하는 것은 필요한 일보다 많지만, 순회를 두 번 적으면 두 곳이
-    // 갈라진다. 순회 비용이 문제가 되면 `수집` 을 공개한다.
-    let 예제 = "docs/example.kang";
-    let (프로젝트, 진단들) = resolve::load(root);
-    let 예제_필요 = 프로젝트.docs.is_empty() && 진단들.is_empty() && !root.join(예제).exists();
-    if 예제_필요 {
-        산출물.push((예제, "description:", 예제_문서));
+    // 갈라진다. 순회 비용이 문제가 되면 `collect` 을 공개한다.
+    let example = "docs/example.kang";
+    let (project, diagnostics) = resolve::load(root);
+    let needs_example =
+        project.docs.is_empty() && diagnostics.is_empty() && !root.join(example).exists();
+    if needs_example {
+        outputs.push((example, "description:", EXAMPLE_DOC));
     }
 
-    let mut 만든것: Vec<PathBuf> = Vec::new();
+    let mut created: Vec<PathBuf> = Vec::new();
     // 산출물을 차례로 처리한다. 하나가 실패하면 그 앞은 이미 만들어진 채로 남는다.
-    for (상대, marker, 내용) in 산출물 {
-        let path = root.join(상대);
-        match ensure_section(&path, marker, 내용)? {
+    for (relative, marker, content) in outputs {
+        let path = root.join(relative);
+        match ensure_section(&path, marker, content)? {
             // 만든 것을 이름으로 말한다. "만들었습니다" 만으로는 사용자가 확인할 수 없다.
             true => {
-                eprintln!("만들었습니다: {상대}");
-                만든것.push(path);
+                eprintln!("만들었습니다: {relative}");
+                created.push(path);
             }
             // 건너뛴 것을 만들었다고 하면 검증하면 거짓이다.
-            false => eprintln!("이미 kang 안내가 있어 건너뜁니다: {상대}"),
+            false => eprintln!("이미 kang 안내가 있어 건너뜁니다: {relative}"),
         }
     }
 
     // 만들지 않은 것도 말한다. 침묵하면 사용자는 예제가 생겼다고 믿는다.
-    if !예제_필요 {
-        eprintln!("이미 .kang 문서가 있어 건너뜁니다: {예제}");
+    if !needs_example {
+        eprintln!("이미 .kang 문서가 있어 건너뜁니다: {example}");
     }
 
-    Ok(만든것)
+    Ok(created)
 }
 
 /// 파일이 없으면 만들고, 있으면 marker 로 시작하는 섹션이 없을 때만 덧붙인다.
@@ -172,18 +173,18 @@ pub fn init(root: &Path) -> Result<Vec<PathBuf>, String> {
 ///
 /// # 오류
 /// 파일을 읽지 못하거나 디렉토리를 만들지 못하거나 쓰지 못하면 그 사정
-fn ensure_section(path: &Path, marker: &str, 내용: &str) -> Result<bool, String> {
+fn ensure_section(path: &Path, marker: &str, content: &str) -> Result<bool, String> {
     // 없는 파일은 빈 파일과 같게 다룬다 — 만드는 경우와 덧붙이는 경우가 한 갈래가 된다.
-    let 기존 = match std::fs::read_to_string(path) {
-        Ok(기존) => 기존,
-        Err(오류) if 오류.kind() == std::io::ErrorKind::NotFound => String::new(),
+    let existing = match std::fs::read_to_string(path) {
+        Ok(existing) => existing,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
         // 권한이 없거나, UTF-8 이 아니거나, 중간 경로가 파일이라 디렉토리로 들어갈 수
         // 없는 경우(`ENOTDIR`). 삼키면 남의 파일을 못 읽은 채 덧붙인다.
-        Err(오류) => return Err(format!("{} 를 읽지 못했습니다 — {오류}", path.display())),
+        Err(error) => return Err(format!("{} 를 읽지 못했습니다 — {error}", path.display())),
     };
 
     // 이미 안내가 있으면 아무것도 하지 않는다.
-    if 기존.lines().any(|줄| 줄.starts_with(marker)) {
+    if existing.lines().any(|line| line.starts_with(marker)) {
         return Ok(false);
     }
 
@@ -191,12 +192,12 @@ fn ensure_section(path: &Path, marker: &str, 내용: &str) -> Result<bool, Strin
     // 그것은 문서가 틀린 것이 아니므로 환경 오류다.
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
-            .map_err(|오류| format!("{} 를 만들지 못했습니다 — {오류}", parent.display()))?;
+            .map_err(|error| format!("{} 를 만들지 못했습니다 — {error}", parent.display()))?;
     }
 
     // 기존 파일이 개행으로 끝나지 않으면 섹션이 그 마지막 줄에 달라붙는다. 빈 줄 하나를
     // 사이에 두는 것은 마크다운에서 섹션 경계이기도 하다.
-    let 앞 = match (기존.is_empty(), 기존.ends_with('\n')) {
+    let before = match (existing.is_empty(), existing.ends_with('\n')) {
         (true, _) => "",
         (false, true) => "\n",
         (false, false) => "\n\n",
@@ -209,7 +210,11 @@ fn ensure_section(path: &Path, marker: &str, 내용: &str) -> Result<bool, Strin
     //
     // 쓰기는 `bless` 와 같은 함수를 쓴다. 원자성 규약의 두 번째 사본을 만들면 한쪽만
     // 고쳐지는 날이 온다.
-    crate::bless::쓰기_원자적으로(path, &format!("{기존}{앞}{내용}"), "kang-init.tmp")?;
+    crate::bless::write_atomically(
+        path,
+        &format!("{existing}{before}{content}"),
+        "kang-init.tmp",
+    )?;
 
     Ok(true)
 }

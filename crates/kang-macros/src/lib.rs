@@ -29,7 +29,7 @@
 //! (V0004 Task 3). 인덱스 파서는 V0001 §10.1 의 허용 의존성 목록에 없으므로 손으로 쓴다.
 
 use proc_macro::TokenStream;
-use proc_macro2::TokenStream as 토큰들;
+use proc_macro2::TokenStream as Tokens;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -38,9 +38,9 @@ use syn::{Ident, LitStr, Token};
 
 // 인덱스를 찾고 읽는 규칙은 `build.rs` 와 공유한다. 두 벌이 되면 갈리고, 갈리면
 // `build.rs` 가 추적하지 않는 인덱스를 이쪽이 읽는다 — 그때 검증이 영원히 캐시된다.
-#[path = "인덱스_파일.rs"]
-mod 인덱스_파일;
-use 인덱스_파일::*;
+#[path = "index_file.rs"]
+mod index_file;
+use index_file::*;
 
 /// kang topic 을 참조한다.
 ///
@@ -57,7 +57,7 @@ use 인덱스_파일::*;
 /// 원본 아이템 그대로. 검증이 실패하면 그 앞에 `compile_error!` 가 붙는다
 #[proc_macro_attribute]
 pub fn topic(attr: TokenStream, item: TokenStream) -> TokenStream {
-    확장("topic", attr.into(), item.into()).into()
+    expand("topic", attr.into(), item.into()).into()
 }
 
 /// kang keyword 를 참조한다.
@@ -75,7 +75,7 @@ pub fn topic(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// 원본 아이템 그대로. 검증이 실패하면 그 앞에 `compile_error!` 가 붙는다
 #[proc_macro_attribute]
 pub fn keyword(attr: TokenStream, item: TokenStream) -> TokenStream {
-    확장("keyword", attr.into(), item.into()).into()
+    expand("keyword", attr.into(), item.into()).into()
 }
 
 /// kang exception 을 커버하는 구현임을 표시한다.
@@ -96,7 +96,7 @@ pub fn keyword(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// 원본 아이템 그대로. 검증이 실패하면 그 앞에 `compile_error!` 가 붙는다
 #[proc_macro_attribute]
 pub fn covers(attr: TokenStream, item: TokenStream) -> TokenStream {
-    확장("exception", attr.into(), item.into()).into()
+    expand("exception", attr.into(), item.into()).into()
 }
 
 /// 세 매크로가 공유하는 본체.
@@ -110,33 +110,33 @@ pub fn covers(attr: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// # 반환값
 /// 성공하면 `item` 그대로, 실패하면 `compile_error!` + `item`
-fn 확장(종류: &str, attr: 토큰들, item: 토큰들) -> 토큰들 {
+fn expand(kind: &str, attr: Tokens, item: Tokens) -> Tokens {
     // 인자 형식이 어긋나면 인덱스를 볼 이유가 없다. syn 의 기본 문면("expected `,`")
     // 만으로는 무엇을 적어야 하는지 알 수 없으므로 형식 안내를 함께 낸다.
-    let 파서: fn(ParseStream) -> syn::Result<(LitStr, LitStr)> = 인자;
-    let (주소, 핀) = match 파서.parse2(attr) {
-        Ok(값) => 값,
-        Err(오류) => {
-            let 문장 = format!("{오류} — {}", 형식_안내(종류));
-            return 붙여(syn::Error::new(오류.span(), 문장), item);
+    let parser: fn(ParseStream) -> syn::Result<(LitStr, LitStr)> = args;
+    let (address, pin) = match parser.parse2(attr) {
+        Ok(value) => value,
+        Err(error) => {
+            let message = format!("{error} — {}", format_hint(kind));
+            return attach(syn::Error::new(error.span(), message), item);
         }
     };
 
-    match 인덱스() {
-        Ok((경로, 표)) => match 검사(표, 종류, &주소.value(), &핀.value(), 경로) {
+    match index() {
+        Ok((path, table)) => match check(table, kind, &address.value(), &pin.value(), path) {
             Ok(()) => item,
             // 위치는 주소 리터럴에 붙인다. rustc 가 파일·줄·밑줄을 그려 주므로
             // 진단이 좌표를 직접 적지 않는다 (ADR-0003).
-            Err(문장) => 붙여(syn::Error::new(주소.span(), 문장), item),
+            Err(message) => attach(syn::Error::new(address.span(), message), item),
         },
         // 인덱스가 없어도 통과시킨다 (V0004 B3) — 부트스트랩이 가능해야 한다.
         // `KANG_REQUIRE_INDEX` 가 켜지면 그 부재가 컴파일 에러다. **꼬리 문장이 warn 과
         // 다르다** — 여기서는 통과하지 않았으므로 "검증되지 않습니다" 가 거짓이다.
-        Err(사유) if 필수() => {
-            let 문장 = format!(
-                "{사유}  `KANG_REQUIRE_INDEX` 가 켜져 있어 인덱스 부재가 컴파일 에러입니다."
+        Err(reason) if required() => {
+            let message = format!(
+                "{reason}  `KANG_REQUIRE_INDEX` 가 켜져 있어 인덱스 부재가 컴파일 에러입니다."
             );
-            붙여(syn::Error::new(주소.span(), 문장), item)
+            attach(syn::Error::new(address.span(), message), item)
         }
         // warn 은 로더가 한 번만 냈다. 여기서 또 내면 속성 개수만큼 반복된다.
         Err(_) => item,
@@ -154,10 +154,10 @@ fn 확장(종류: &str, attr: 토큰들, item: 토큰들) -> 토큰들 {
 ///
 /// # 반환값
 /// `compile_error!` 뒤에 `item` 이 그대로 이어진 토큰
-fn 붙여(오류: syn::Error, item: 토큰들) -> 토큰들 {
-    let mut 결과 = 오류.to_compile_error();
-    결과.extend(item);
-    결과
+fn attach(error: syn::Error, item: Tokens) -> Tokens {
+    let mut result = error.to_compile_error();
+    result.extend(item);
+    result
 }
 
 /// 속성 인자 `"<주소>", rev = "<핀>"` 를 가른다.
@@ -170,24 +170,24 @@ fn 붙여(오류: syn::Error, item: 토큰들) -> 토큰들 {
 ///
 /// # 오류
 /// 형식이 어긋나면 그 자리의 [`syn::Error`]
-fn 인자(입력: ParseStream) -> syn::Result<(LitStr, LitStr)> {
-    let 주소: LitStr = 입력.parse()?;
-    입력.parse::<Token![,]>()?;
-    let 이름: Ident = 입력.parse()?;
+fn args(input: ParseStream) -> syn::Result<(LitStr, LitStr)> {
+    let address: LitStr = input.parse()?;
+    input.parse::<Token![,]>()?;
+    let name: Ident = input.parse()?;
     // `rev` 외의 키는 받지 않는다. 조용히 무시하면 핀 없는 참조가 검증을 통과한다.
-    if 이름 != "rev" {
-        return Err(syn::Error::new(이름.span(), "`rev` 만 받습니다"));
+    if name != "rev" {
+        return Err(syn::Error::new(name.span(), "`rev` 만 받습니다"));
     }
-    입력.parse::<Token![=]>()?;
-    let 핀: LitStr = 입력.parse()?;
-    Ok((주소, 핀))
+    input.parse::<Token![=]>()?;
+    let pin: LitStr = input.parse()?;
+    Ok((address, pin))
 }
 
-/// 주소로 심볼을 찾는 표. 값은 `(종류, rev)` 다.
+/// 주소로 심볼을 찾는 표. 값은 `(kind, rev)` 다.
 ///
 /// **주소가 열쇠 하나로 충분하다** — 문서와 이름을 잇는 구분자가 종류마다 달라
 /// (`.`·`#`·`!`) 한 주소가 두 종류일 수 없기 때문이다 (스펙 4.1).
-type 심볼표 = HashMap<String, (String, String)>;
+type SymbolMap = HashMap<String, (String, String)>;
 
 /// 인덱스 텍스트를 주소 표로 옮긴다. **한 컴파일에 한 번만 돈다.**
 ///
@@ -195,70 +195,75 @@ type 심볼표 = HashMap<String, (String, String)>;
 /// 같은 훑기를 두 번 한다. 파싱 결과를 캐시하면 속성마다 해시 조회 한 번이다.
 ///
 /// # 매개변수
-/// - `인덱스`: 인덱스 파일 내용
+/// - `index`: 인덱스 파일 내용
 ///
 /// # 반환값
-/// 주소 → `(종류, rev)` 표
-fn 파싱(인덱스: &str) -> 심볼표 {
-    let mut 표 = 심볼표::new();
+/// 주소 → `(kind, rev)` 표
+fn parse(index: &str) -> SymbolMap {
+    let mut table = SymbolMap::new();
     // 인덱스 줄을 순회하며 주소를 열쇠로 담는다. 같은 주소가 두 번 나오면 **앞선 줄을
     // 남긴다** — 텍스트를 `find` 로 훑던 이전 판정과 같은 선택이다.
-    for (종류, rev, 주소) in 줄들(인덱스) {
-        표.entry(주소.to_string())
-            .or_insert_with(|| (종류.to_string(), rev.to_string()));
+    for (kind, rev, address) in lines(index) {
+        table
+            .entry(address.to_string())
+            .or_insert_with(|| (kind.to_string(), rev.to_string()));
     }
-    표
+    table
 }
 
 /// 주소와 핀을 인덱스에 비춰 본다. 세 매크로의 유일한 판정이다.
 ///
 /// # 매개변수
-/// - `표`: [`파싱`] 이 낸 주소 표
+/// - `표`: [`parse`] 이 낸 주소 표
 /// - `종류`: 속성이 주장하는 종류
-/// - `주소`: 속성이 가리키는 심볼 주소
-/// - `핀`: 속성에 적힌 rev
-/// - `인덱스_경로`: 진단에 적을 인덱스 위치
+/// - `address`: 속성이 가리키는 심볼 주소
+/// - `pin`: 속성에 적힌 rev
+/// - `index_path`: 진단에 적을 인덱스 위치
 ///
 /// # 오류
 /// 어긋나면 스펙 5.1.1 의 세 요소(무엇이 틀렸나 / 어디인가 / 어떻게 고치나)를 담은 문장
-fn 검사(
-    표: &심볼표, 종류: &str, 주소: &str, 핀: &str, 인덱스_경로: &Path
+fn check(
+    table: &SymbolMap,
+    kind: &str,
+    address: &str,
+    pin: &str,
+    index_path: &Path,
 ) -> Result<(), String> {
-    let 위치 = 인덱스_경로.display();
+    let location = index_path.display();
 
     // 주소가 없으면 종류를 볼 것도 없다.
-    let Some((실제종류, 실제)) = 표.get(주소) else {
+    let Some((actual_kind, actual)) = table.get(address) else {
         return Err(format!(
-            "kang 심볼이 인덱스에 없습니다 — {종류} `{주소}`\n\
-             \n  인덱스 {위치}\n\
-             \n  이 주소로 선언된 {종류} 이 인덱스에 없습니다. 인덱스가 낡았거나 주소가 틀렸습니다.\n\
+            "kang 심볼이 인덱스에 없습니다 — {kind} `{address}`\n\
+             \n  인덱스 {location}\n\
+             \n  이 주소로 선언된 {kind} 이 인덱스에 없습니다. 인덱스가 낡았거나 주소가 틀렸습니다.\n\
              \n  fix (인덱스가 낡았을 때):\n    [shell] kang index {}\n\
              \n  fix (주소가 틀렸을 때):\n    [edit] 이 속성의 주소를 문서가 선언한 심볼로 바꾸거나, 그 심볼을 문서에 선언하세요\n",
-            셸_인용(&위치.to_string())
+            shell_quote(&location.to_string())
         ));
     };
 
     // 종류까지 맞으면 남은 판정은 핀 하나다.
-    if 실제종류 == 종류 {
-        if 실제 == 핀 {
+    if actual_kind == kind {
+        if actual == pin {
             return Ok(());
         }
         return Err(format!(
-            "kang rev 핀이 대상의 현재 내용과 다릅니다 — {종류} `{주소}`\n\
-             \n  핀 {핀}, 현재 {실제}\n  인덱스 {위치}\n\
+            "kang rev 핀이 대상의 현재 내용과 다릅니다 — {kind} `{address}`\n\
+             \n  핀 {pin}, 현재 {actual}\n  인덱스 {location}\n\
              \n  참조한 뒤 대상 문서가 바뀌었습니다. 이 코드가 여전히 맞는지 확인한 뒤 핀을 갱신하세요.\n\
-             \n  fix:\n    [edit] 이 속성의 rev = \"{핀}\" 을 rev = \"{실제}\" 으로 바꾸세요\n"
+             \n  fix:\n    [edit] 이 속성의 rev = \"{pin}\" 을 rev = \"{actual}\" 으로 바꾸세요\n"
         ));
     }
 
     // 주소는 있는데 종류가 다른 경우. 주소의 구분자와 속성 이름이 어긋난 것이며,
     // 이때 "심볼이 없다" 고 말하면 사용자가 있는 심볼을 찾아 헤맨다.
     Err(format!(
-        "kang 심볼의 종류가 다릅니다 — `{주소}` 는 {종류} 가 아니라 {실제종류} 입니다\n\
-         \n  인덱스 {위치}\n\
+        "kang 심볼의 종류가 다릅니다 — `{address}` 는 {kind} 가 아니라 {actual_kind} 입니다\n\
+         \n  인덱스 {location}\n\
          \n  주소의 구분자와 속성 이름이 어긋났습니다. keyword 는 `.`, topic 은 `#`, exception 은 `!` 로 잇습니다.\n\
-         \n  fix:\n    [edit] `#[kang::{}(\"{주소}\", rev = \"{실제}\")]` 로 바꾸세요\n",
-        속성_이름(실제종류)
+         \n  fix:\n    [edit] `#[kang::{}(\"{address}\", rev = \"{actual}\")]` 로 바꾸세요\n",
+        attr_name(actual_kind)
     ))
 }
 
@@ -271,13 +276,9 @@ fn 검사(
 ///
 /// # 반환값
 /// `#[kang::…]` 에 적는 이름
-fn 속성_이름(종류: &str) -> &str {
+fn attr_name(kind: &str) -> &str {
     // exception 을 가리키는 속성은 `covers` 다. 나머지는 종류 이름과 같다.
-    if 종류 == "exception" {
-        "covers"
-    } else {
-        종류
-    }
+    if kind == "exception" { "covers" } else { kind }
 }
 
 /// 속성 인자 형식 안내. 파싱이 실패했을 때 붙는 처방이다.
@@ -287,16 +288,16 @@ fn 속성_이름(종류: &str) -> &str {
 ///
 /// # 반환값
 /// 올바른 속성 한 줄
-fn 형식_안내(종류: &str) -> String {
+fn format_hint(kind: &str) -> String {
     format!(
         "kang 속성은 `#[kang::{}(\"<주소>\", rev = \"<핀>\")]` 형태입니다",
-        속성_이름(종류)
+        attr_name(kind)
     )
 }
 
 /// 셸에 그대로 붙일 수 있게 인용한다.
 ///
-/// `crates/kang/src/resolve.rs` 의 `셸_인용` 과 같은 규약이다. 크레이트가 갈려 있어
+/// `crates/kang/src/resolve.rs` 의 `shell_quote` 과 같은 규약이다. 크레이트가 갈려 있어
 /// 한 줄을 다시 쓴다 — 인덱스 파서를 손으로 쓰는 것과 같은 이유다 (V0001 §10.1).
 ///
 /// # 매개변수
@@ -304,8 +305,8 @@ fn 형식_안내(종류: &str) -> String {
 ///
 /// # 반환값
 /// 단일 인용부호로 감싼 문자열
-fn 셸_인용(값: &str) -> String {
-    format!("'{}'", 값.replace('\'', r"'\''"))
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', r"'\''"))
 }
 
 /// `KANG_REQUIRE_INDEX` 가 켜졌는지.
@@ -314,7 +315,7 @@ fn 셸_인용(값: &str) -> String {
 ///
 /// # 반환값
 /// 인덱스 부재를 컴파일 에러로 올려야 하면 `true`
-fn 필수() -> bool {
+fn required() -> bool {
     std::env::var_os("KANG_REQUIRE_INDEX").is_some()
 }
 
@@ -327,50 +328,50 @@ fn 필수() -> bool {
 /// 다시 훑게 되어 비용이 `속성 수 × 인덱스 줄 수` 가 된다.
 ///
 /// # 반환값
-/// `(인덱스 경로, 주소 표)` 또는 읽지 못한 사정
-fn 인덱스() -> &'static Result<(PathBuf, 심볼표), String> {
-    static 캐시: OnceLock<Result<(PathBuf, 심볼표), String>> = OnceLock::new();
-    캐시.get_or_init(|| {
-        let 결과 = 읽기().map(|(경로, 내용)| (경로, 파싱(&내용)));
-        // warn 은 여기서 한 번만 낸다. `필수()` 면 `확장` 이 에러로 내므로 겹쳐 말하지 않는다.
+/// `(index path, address table)` 또는 읽지 못한 사정
+fn index() -> &'static Result<(PathBuf, SymbolMap), String> {
+    static CACHE: OnceLock<Result<(PathBuf, SymbolMap), String>> = OnceLock::new();
+    CACHE.get_or_init(|| {
+        let result = read().map(|(path, content)| (path, parse(&content)));
+        // warn 은 여기서 한 번만 낸다. `required()` 면 `expand` 이 에러로 내므로 겹쳐 말하지 않는다.
         //
         // **꼬리 문장이 모드마다 다르다.** 통과시킬 때만 "검증되지 않습니다" 가 참이다 —
         // 에러로 세운 빌드에 그 말을 붙이면 진단이 거짓을 말한다.
-        if let Err(사유) = &결과
-            && !필수()
+        if let Err(reason) = &result
+            && !required()
         {
             eprintln!(
-                "warning: {사유} 이 빌드에서 kang 속성은 검증되지 않습니다. \
+                "warning: {reason} 이 빌드에서 kang 속성은 검증되지 않습니다. \
                  `KANG_REQUIRE_INDEX` 를 켜면 컴파일 에러가 됩니다."
             );
         }
-        결과
+        result
     })
 }
 
 /// 인덱스 파일을 찾아 읽는다.
 ///
-/// 탐색과 읽기 규칙은 `build.rs` 와 공유한다 ([`인덱스_경로`]·[`인덱스_읽기`]). 여기서
+/// 탐색과 읽기 규칙은 `build.rs` 와 공유한다 ([`index_path`]·[`read_index`]). 여기서
 /// 하는 일은 그 결과에 스펙 5.1.1 의 처방을 입히는 것뿐이다.
 ///
 /// # 반환값
-/// `(인덱스 경로, 내용)`
+/// `(index path, content)`
 ///
 /// # 오류
 /// 찾지 못했거나 읽지 못한 사정. 둘은 다른 사실이므로 다른 문장을 쓴다 —
 /// 경로를 아는데 "찾지 못했다" 고 말하면 진단이 거짓이 된다
-fn 읽기() -> Result<(PathBuf, String), String> {
-    let 경로 = 인덱스_경로().ok_or_else(안내)?;
-    인덱스_읽기(&경로)
-        .map(|내용| (경로.clone(), 내용))
-        .map_err(|사유| {
+fn read() -> Result<(PathBuf, String), String> {
+    let path = index_path().ok_or_else(hint)?;
+    read_index(&path)
+        .map(|content| (path.clone(), content))
+        .map_err(|reason| {
             // 경로는 안다. 그러므로 처방의 인덱스 경로도 **그 경로** 다 — 관례 경로를
             // 적으면 `KANG_INDEX` 가 다른 곳을 가리키는 프로젝트에서 엉뚱한 곳에 쓴다.
             format!(
-                "kang 심볼 인덱스를 읽지 못했습니다 ({}) — {사유}.\n\
+                "kang 심볼 인덱스를 읽지 못했습니다 ({}) — {reason}.\n\
                  \n  fix:\n    [shell] kang index {}\n",
-                경로.display(),
-                셸_인용(&경로.display().to_string())
+                path.display(),
+                shell_quote(&path.display().to_string())
             )
         })
 }
@@ -382,11 +383,11 @@ fn 읽기() -> Result<(PathBuf, String), String> {
 ///
 /// # 반환값
 /// 무엇이 없고 어떻게 만드는지 담은 문장
-fn 안내() -> String {
+fn hint() -> String {
     format!(
-        "kang 심볼 인덱스를 찾지 못했습니다 — `KANG_INDEX` 가 없고 상위 디렉토리에 `{관례_경로}` 도 없습니다.\n\
+        "kang 심볼 인덱스를 찾지 못했습니다 — `KANG_INDEX` 가 없고 상위 디렉토리에 `{CONVENTIONAL_PATH}` 도 없습니다.\n\
          \n  fix:\n    [shell] kang index {}\n  (프로젝트 루트에서 실행하세요)\n",
-        셸_인용(관례_경로)
+        shell_quote(CONVENTIONAL_PATH)
     )
 }
 
@@ -396,12 +397,12 @@ mod tests {
     use quote::quote;
 
     /// 세 종류가 다 든 인덱스. `exception` 의 rev 가 선언 topic 과 같은 것이 정상이다.
-    const 인덱스_예: &str = "keyword\t8f4efc\tdocs/a.결제\n\
+    const INDEX_EXAMPLE: &str = "keyword\t8f4efc\tdocs/a.결제\n\
                              topic\tcc9e1c\tdocs/a#결제의 기본\n\
                              exception\tcc9e1c\tdocs/a!해외 결제\n";
 
     /// 진단에 적을 인덱스 경로.
-    fn 경로_예() -> PathBuf {
+    fn example_path() -> PathBuf {
         PathBuf::from("/w/.kang/index.tsv")
     }
 
@@ -412,243 +413,259 @@ mod tests {
     ///
     /// # 반환값
     /// 만들어진 디렉토리 경로
-    fn 임시_디렉토리(이름: &str) -> PathBuf {
-        let 경로 = std::env::temp_dir().join(format!("kang-macros-{}-{이름}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&경로);
-        std::fs::create_dir_all(&경로).expect("임시 디렉토리를 만들 수 있어야 한다");
-        경로
+    fn temp_dir(name: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!("kang-macros-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&path);
+        std::fs::create_dir_all(&path).expect("임시 디렉토리를 만들 수 있어야 한다");
+        path
     }
 
     #[test]
-    fn 핀이_같으면_통과한다() {
-        let 표 = 파싱(인덱스_예);
+    fn passes_when_pins_match() {
+        let table = parse(INDEX_EXAMPLE);
         assert_eq!(
-            검사(&표, "topic", "docs/a#결제의 기본", "cc9e1c", &경로_예()),
+            check(
+                &table,
+                "topic",
+                "docs/a#결제의 기본",
+                "cc9e1c",
+                &example_path()
+            ),
             Ok(())
         );
         assert_eq!(
-            검사(&표, "keyword", "docs/a.결제", "8f4efc", &경로_예()),
+            check(&table, "keyword", "docs/a.결제", "8f4efc", &example_path()),
             Ok(())
         );
         assert_eq!(
-            검사(&표, "exception", "docs/a!해외 결제", "cc9e1c", &경로_예()),
+            check(
+                &table,
+                "exception",
+                "docs/a!해외 결제",
+                "cc9e1c",
+                &example_path()
+            ),
             Ok(())
         );
     }
 
     #[test]
-    fn 핀이_다르면_두_핀과_고칠_방법을_말한다() {
-        let 오류 = 검사(
-            &파싱(인덱스_예),
+    fn mismatched_pins_report_both_pins_and_fix() {
+        let error = check(
+            &parse(INDEX_EXAMPLE),
             "topic",
             "docs/a#결제의 기본",
             "a3f9c1",
-            &경로_예(),
+            &example_path(),
         )
         .expect_err("핀이 다르면 실패해야 한다");
         assert!(
-            오류.contains("rev 핀이 대상의 현재 내용과 다릅니다"),
-            "{오류}"
+            error.contains("rev 핀이 대상의 현재 내용과 다릅니다"),
+            "{error}"
         );
-        assert!(오류.contains("docs/a#결제의 기본"), "{오류}");
-        assert!(오류.contains("핀 a3f9c1, 현재 cc9e1c"), "{오류}");
-        assert!(오류.contains("/w/.kang/index.tsv"), "{오류}");
+        assert!(error.contains("docs/a#결제의 기본"), "{error}");
+        assert!(error.contains("핀 a3f9c1, 현재 cc9e1c"), "{error}");
+        assert!(error.contains("/w/.kang/index.tsv"), "{error}");
         assert!(
-            오류.contains(r#"[edit] 이 속성의 rev = "a3f9c1" 을 rev = "cc9e1c" 으로 바꾸세요"#),
-            "{오류}"
+            error.contains(r#"[edit] 이 속성의 rev = "a3f9c1" 을 rev = "cc9e1c" 으로 바꾸세요"#),
+            "{error}"
         );
     }
 
     #[test]
-    fn 심볼이_없으면_인덱스를_다시_내는_명령을_준다() {
-        let 오류 = 검사(
-            &파싱(인덱스_예),
+    fn missing_symbol_suggests_reindex_command() {
+        let error = check(
+            &parse(INDEX_EXAMPLE),
             "topic",
             "docs/a#없는 것",
             "cc9e1c",
-            &경로_예(),
+            &example_path(),
         )
         .expect_err("없는 심볼은 실패해야 한다");
-        assert!(오류.contains("kang 심볼이 인덱스에 없습니다"), "{오류}");
-        assert!(오류.contains("docs/a#없는 것"), "{오류}");
+        assert!(error.contains("kang 심볼이 인덱스에 없습니다"), "{error}");
+        assert!(error.contains("docs/a#없는 것"), "{error}");
         assert!(
-            오류.contains("[shell] kang index '/w/.kang/index.tsv'"),
-            "{오류}"
+            error.contains("[shell] kang index '/w/.kang/index.tsv'"),
+            "{error}"
         );
     }
 
     #[test]
-    fn 종류만_다르면_실제_종류와_고친_속성을_준다() {
-        let 오류 = 검사(
-            &파싱(인덱스_예),
+    fn kind_mismatch_reports_actual_kind_and_fixed_attribute() {
+        let error = check(
+            &parse(INDEX_EXAMPLE),
             "topic",
             "docs/a.결제",
             "8f4efc",
-            &경로_예(),
+            &example_path(),
         )
         .expect_err("종류가 다르면 실패해야 한다");
-        assert!(오류.contains("종류가 다릅니다"), "{오류}");
-        assert!(오류.contains("topic 가 아니라 keyword 입니다"), "{오류}");
+        assert!(error.contains("종류가 다릅니다"), "{error}");
+        assert!(error.contains("topic 가 아니라 keyword 입니다"), "{error}");
         assert!(
-            오류.contains(
+            error.contains(
                 r#"[edit] `#[kang::keyword("docs/a.결제", rev = "8f4efc")]` 로 바꾸세요"#
             ),
-            "{오류}"
+            "{error}"
         );
     }
 
     #[test]
-    fn exception_의_처방은_covers_속성이다() {
-        let 오류 = 검사(
-            &파싱(인덱스_예),
+    fn exception_remedy_is_covers_attribute() {
+        let error = check(
+            &parse(INDEX_EXAMPLE),
             "topic",
             "docs/a!해외 결제",
             "cc9e1c",
-            &경로_예(),
+            &example_path(),
         )
         .expect_err("종류가 다르면 실패해야 한다");
-        assert!(오류.contains("`#[kang::covers("), "{오류}");
+        assert!(error.contains("`#[kang::covers("), "{error}");
     }
 
     #[test]
-    fn 이름에_탭이_있어도_주소가_온전하다() {
+    fn address_is_intact_even_if_name_has_tab() {
         // 심볼 이름의 탭은 오늘 합법이다 (V0004 Task 3 J1). 가변 길이 필드가
         // 마지막이라 `splitn(3, '\t')` 가 이름 안의 탭을 살린다.
-        let 인덱스 = "keyword\t8f4efc\tdocs/a.앞\t뒤\n";
+        let index = "keyword\t8f4efc\tdocs/a.앞\t뒤\n";
         assert_eq!(
-            검사(
-                &파싱(인덱스),
+            check(
+                &parse(index),
                 "keyword",
                 "docs/a.앞\t뒤",
                 "8f4efc",
-                &경로_예()
+                &example_path()
             ),
             Ok(())
         );
     }
 
     #[test]
-    fn 칸이_모자란_줄은_심볼로_읽지_않는다() {
-        assert_eq!(줄들("\n칸하나\nk\tr\n").count(), 0);
+    fn line_with_too_few_columns_is_not_read_as_symbol() {
+        assert_eq!(lines("\n칸하나\nk\tr\n").count(), 0);
     }
 
     #[test]
-    fn 인용부호가_든_경로도_그대로_실행할_수_있다() {
-        assert_eq!(셸_인용("a'b"), r"'a'\''b'");
+    fn path_with_quotes_runs_as_is() {
+        assert_eq!(shell_quote("a'b"), r"'a'\''b'");
     }
 
     #[test]
-    fn 정규_파일이_아니거나_상한을_넘는_인덱스는_읽지_않는다() {
+    fn skips_non_regular_or_oversized_index() {
         // `KANG_INDEX` 가 FIFO 나 `/dev/zero` 를 가리키면 rustc 가 매달리거나 메모리를
         // 다 쓴다. **읽기 전에** 거절해야 하고, 그 판정 자리가 여기다.
-        let 디렉토리 = 임시_디렉토리("인덱스_읽기");
+        let dir = temp_dir("인덱스_읽기");
 
         // 디렉토리는 정규 파일이 아니다. FIFO·장치 파일과 같은 갈래로 걸린다 —
         // 그 둘은 테스트에서 만들면 열리는 순간 매달리므로 이것으로 대신 잰다.
-        let 사유 = 인덱스_읽기(&디렉토리).expect_err("디렉토리는 거절해야 한다");
-        assert!(사유.contains("정규 파일이 아닙니다"), "{사유}");
+        let reason = read_index(&dir).expect_err("디렉토리는 거절해야 한다");
+        assert!(reason.contains("정규 파일이 아닙니다"), "{reason}");
 
         // 상한을 넘는 파일. `set_len` 은 희소 파일을 만들므로 디스크를 쓰지 않는다.
-        let 큰_파일 = 디렉토리.join("큰.tsv");
-        std::fs::File::create(&큰_파일)
+        let large_file = dir.join("큰.tsv");
+        std::fs::File::create(&large_file)
             .expect("파일을 만들 수 있어야 한다")
-            .set_len(인덱스_최대_바이트 + 1)
+            .set_len(INDEX_MAX_BYTES + 1)
             .expect("크기를 정할 수 있어야 한다");
-        let 사유 = 인덱스_읽기(&큰_파일).expect_err("상한을 넘으면 거절해야 한다");
-        assert!(사유.contains("상한"), "{사유}");
+        let reason = read_index(&large_file).expect_err("상한을 넘으면 거절해야 한다");
+        assert!(reason.contains("상한"), "{reason}");
         assert!(
-            사유.contains(&(인덱스_최대_바이트 + 1).to_string()),
-            "{사유}"
+            reason.contains(&(INDEX_MAX_BYTES + 1).to_string()),
+            "{reason}"
         );
 
         // 평범한 인덱스는 그대로 읽힌다.
-        let 작은_파일 = 디렉토리.join("index.tsv");
-        std::fs::write(&작은_파일, 인덱스_예).expect("파일을 쓸 수 있어야 한다");
+        let small_file = dir.join("index.tsv");
+        std::fs::write(&small_file, INDEX_EXAMPLE).expect("파일을 쓸 수 있어야 한다");
         assert_eq!(
-            인덱스_읽기(&작은_파일).expect("정규 파일은 읽어야 한다"),
-            인덱스_예
+            read_index(&small_file).expect("정규 파일은 읽어야 한다"),
+            INDEX_EXAMPLE
         );
 
-        let _ = std::fs::remove_dir_all(&디렉토리);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn 속성이_많아도_인덱스를_한_번만_훑는다() {
+    fn scans_index_once_for_many_attributes() {
         // **비용이 자릿수로 갈린다.** 파싱 결과를 캐시하면 속성마다 해시 조회 한 번이라
         // 총 비용이 `인덱스 줄 수 + 속성 수` 다. 속성마다 텍스트를 다시 훑으면
-        // `인덱스 줄 수 × 속성 수` — 아래 수치로 8×10^7 줄 방문이다. `검사` 를 텍스트
+        // `인덱스 줄 수 × 속성 수` — 아래 수치로 8×10^7 줄 방문이다. `check` 를 텍스트
         // 훑기로 되돌려 실측하니 11.5 초였고, 표로 판정하는 지금은 0.04 초다.
         // 상한 2 초는 그 사이를 넉넉히 가른다 — 느린 기계에서도 초록이 흔들리지 않는다.
-        const 줄_수: usize = 20_000;
-        const 조회_수: usize = 4_000;
+        const LINE_COUNT: usize = 20_000;
+        const LOOKUP_COUNT: usize = 4_000;
 
-        let mut 원본 = String::new();
+        let mut original = String::new();
         // 큰 인덱스를 만든다. 마지막 줄에 가까울수록 선형 훑기의 비용이 커진다.
-        for i in 0..줄_수 {
-            원본.push_str(&format!("topic\tcc9e1c\tdocs/a#항목 {i}\n"));
+        for i in 0..LINE_COUNT {
+            original.push_str(&format!("topic\tcc9e1c\tdocs/a#항목 {i}\n"));
         }
 
-        let 시작 = std::time::Instant::now();
-        let 표 = 파싱(&원본);
+        let start = std::time::Instant::now();
+        let table = parse(&original);
         // 속성 하나마다 한 번씩 판정한다. 뒤쪽 심볼만 골라 선형 훑기를 최악으로 만든다.
-        for i in (줄_수 - 조회_수)..줄_수 {
+        for i in (LINE_COUNT - LOOKUP_COUNT)..LINE_COUNT {
             assert_eq!(
-                검사(
-                    &표,
+                check(
+                    &table,
                     "topic",
                     &format!("docs/a#항목 {i}"),
                     "cc9e1c",
-                    &경로_예()
+                    &example_path()
                 ),
                 Ok(())
             );
         }
-        let 걸린_시간 = 시작.elapsed();
+        let elapsed = start.elapsed();
 
         assert!(
-            걸린_시간 < std::time::Duration::from_secs(2),
-            "인덱스 {줄_수} 줄에 조회 {조회_수} 번이 {걸린_시간:?} 걸렸다 — 속성마다 다시 훑고 있다"
+            elapsed < std::time::Duration::from_secs(2),
+            "인덱스 {LINE_COUNT} 줄에 조회 {LOOKUP_COUNT} 번이 {elapsed:?} 걸렸다 — 속성마다 다시 훑고 있다"
         );
     }
 
     /// 인자 파서를 함수 포인터로 집는다. `LitStr` 은 `Debug` 를 구현하지 않으므로
     /// (syn 의 `extra-traits` 를 켜지 않았다) 결과는 `map(|_| ())` 로 눌러 본다.
-    fn 파서() -> fn(ParseStream) -> syn::Result<(LitStr, LitStr)> {
-        인자
+    fn parser() -> fn(ParseStream) -> syn::Result<(LitStr, LitStr)> {
+        args
     }
 
     #[test]
-    fn 인자를_주소와_핀으로_가른다() {
-        let (주소, 핀) = 파서()
+    fn splits_args_into_address_and_pin() {
+        let (address, pin) = parser()
             .parse2(quote! { "docs/a#결제의 기본", rev = "cc9e1c" })
             .expect("올바른 인자는 파싱되어야 한다");
-        assert_eq!(주소.value(), "docs/a#결제의 기본");
-        assert_eq!(핀.value(), "cc9e1c");
+        assert_eq!(address.value(), "docs/a#결제의 기본");
+        assert_eq!(pin.value(), "cc9e1c");
     }
 
     #[test]
-    fn rev_가_아닌_키는_거절한다() {
-        let 오류 = 파서()
+    fn rejects_non_rev_key() {
+        let error = parser()
             .parse2(quote! { "docs/a.결제", pin = "8f4efc" })
             .map(|_| ())
             .expect_err("`rev` 외의 키는 거절해야 한다");
-        assert!(오류.to_string().contains("`rev` 만 받습니다"), "{오류}");
+        assert!(error.to_string().contains("`rev` 만 받습니다"), "{error}");
     }
 
     #[test]
-    fn 핀이_없으면_거절한다() {
-        assert!(파서().parse2(quote! { "docs/a.결제" }).is_err());
+    fn rejects_missing_pin() {
+        assert!(parser().parse2(quote! { "docs/a.결제" }).is_err());
     }
 
     #[test]
-    fn 진단을_붙여도_원본_아이템은_그대로다() {
+    fn item_is_unchanged_when_diagnostic_is_attached() {
         // 런타임 비용 0 의 근거. 성공 경로는 `item` 그 자체이고, 토큰이 뒤틀릴 수 있는
         // 유일한 자리가 진단을 붙이는 경로다.
-        let 아이템 = quote! { #[derive(Clone)] pub struct S<T: Copy> where T: Send { pub a: T } };
-        let 결과 = 붙여(
+        let item_tokens =
+            quote! { #[derive(Clone)] pub struct S<T: Copy> where T: Send { pub a: T } };
+        let result = attach(
             syn::Error::new(proc_macro2::Span::call_site(), "x"),
-            아이템.clone(),
+            item_tokens.clone(),
         );
-        assert!(결과.to_string().ends_with(&아이템.to_string()), "{결과}");
+        assert!(
+            result.to_string().ends_with(&item_tokens.to_string()),
+            "{result}"
+        );
     }
 }

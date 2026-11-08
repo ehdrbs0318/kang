@@ -36,7 +36,7 @@ use std::path::Path;
 /// 줄 번호를 쓰지 않는다 (ADR-0003).
 #[kang::topic(
     "docs/adr/0003-symbolic-addressing-not-line-numbers#지속되는 주소는 심볼로 지정한다",
-    rev = "229423"
+    rev = "fc0da7"
 )]
 pub struct ImportAddress {
     /// 가리키는 심볼.
@@ -67,49 +67,49 @@ impl ImportAddress {
     /// 구분자가 없거나 문서 경로·심볼 이름이 비어 있으면 그 사정을 담은 문장
     pub fn parse(s: &str) -> Result<ImportAddress, String> {
         // 마지막 `/` 뒤가 문서 이름과 심볼 이름이고, 그 앞은 전부 디렉토리다.
-        let (디렉토리, 마지막) = s.rsplit_once('/').unwrap_or(("", s));
+        let (dir, last) = s.rsplit_once('/').unwrap_or(("", s));
 
-        let Some((at, 구분자, kind)) = [
+        let Some((at, separator, kind)) = [
             ('.', SymbolKind::Keyword),
             ('#', SymbolKind::Topic),
             ('!', SymbolKind::Exception),
         ]
         .into_iter()
-        .filter_map(|(구분자, kind)| 마지막.find(구분자).map(|at| (at, 구분자, kind)))
+        .filter_map(|(separator, kind)| last.find(separator).map(|at| (at, separator, kind)))
         .min_by_key(|&(at, _, _)| at) else {
             return Err(format!(
                 "심볼 주소가 아닙니다: {s}. 문서 경로와 심볼을 keyword 는 . , topic 은 # , exception 은 ! 로 이어 적으세요. 예: kang bless docs/B --import 'docs/A.결제'"
             ));
         };
 
-        let 문서명 = &마지막[..at];
-        let 이름 = &마지막[at + 구분자.len_utf8()..];
+        let doc_name = &last[..at];
+        let name = &last[at + separator.len_utf8()..];
         // 문서 이름이나 심볼 이름이 비면 어느 심볼도 가리키지 못한다. 그대로 두면
         // "그런 심볼이 없습니다" 라는 엉뚱한 원인을 말하게 된다.
-        if 문서명.is_empty() {
+        if doc_name.is_empty() {
             return Err(format!("심볼 주소에 문서 이름이 없습니다: {s}"));
         }
-        if 이름.is_empty() {
+        if name.is_empty() {
             return Err(format!("심볼 주소에 심볼 이름이 없습니다: {s}"));
         }
 
         // 빈 조각은 버린다 — `docs//A.결제` 나 `/docs/A.결제` 가 없는 경로 조각을 만들지
         // 않게 한다.
-        let mut 조각: Vec<String> = 디렉토리
+        let mut segment: Vec<String> = dir
             .split('/')
-            .filter(|조각| !조각.is_empty())
+            .filter(|segment| !segment.is_empty())
             .map(str::to_string)
             .collect();
-        조각.push(문서명.to_string());
+        segment.push(doc_name.to_string());
 
         Ok(ImportAddress {
             target: SymbolRef {
-                doc: DocPath(조각),
+                doc: DocPath(segment),
                 // 계층을 갖는 것은 keyword 뿐이다 (스펙 4.3). topic·exception 이름의
                 // `.` 은 이름의 일부다.
                 name: match kind {
-                    SymbolKind::Keyword => 이름.split('.').map(str::to_string).collect(),
-                    _ => vec![이름.to_string()],
+                    SymbolKind::Keyword => name.split('.').map(str::to_string).collect(),
+                    _ => vec![name.to_string()],
                 },
                 kind,
             },
@@ -163,25 +163,27 @@ pub fn bless(
     }
 
     // 대상이 없으면 해시할 것이 없다. 핀을 지어내면 `K021` 이 영원히 남는다.
-    let Some(대상) = table.resolve(&addr.target) else {
+    let Some(target) = table.resolve(&addr.target) else {
         return Err(
             "import 대상 심볼이 없습니다. 대상 문서와 이름을 확인하세요 — kang list 로 문서를, kang keywords 로 키워드를 볼 수 있습니다.".to_string()
         );
     };
     // 핀 계산은 `hash::rev` 하나가 담당한다. `check_revs` 가 비교하는 값과 같은
     // 함수·같은 입력이어야 방금 넣은 핀을 build 가 거부하지 않는다.
-    let 새_핀 = hash::rev(table.hash_source(대상));
+    let new_pin = hash::rev(table.hash_source(target));
 
     // [`DocPath`] 의 Display 는 `/` 로 잇는다. 조각을 하나씩 join 하지 않는 이유는
     // 마지막 조각에 `.` 이 든 문서(`docs/a.b`)에서 확장자 API 가 이름을 잘라내서다.
-    let 파일 = root.join(format!("{doc}.kang"));
-    let 원문 = std::fs::read_to_string(&파일)
-        .map_err(|오류| format!("문서 파일을 읽지 못했습니다 ({}) — {오류}", 파일.display()))?;
+    let file = root.join(format!("{doc}.kang"));
+    let source = std::fs::read_to_string(&file)
+        .map_err(|error| format!("문서 파일을 읽지 못했습니다 ({}) — {error}", file.display()))?;
 
     // 고칠 줄을 **방금 읽은 바이트**에서 다시 찾는다. BOM 은 디코딩 아티팩트이므로
     // 로더와 같은 방법으로 벗긴다 — 줄 1 안에 있으므로 줄 번호는 달라지지 않는다.
-    let Ok(현재) = parse_document(doc.clone(), 원문.strip_prefix('\u{feff}').unwrap_or(&원문))
-    else {
+    let Ok(current) = parse_document(
+        doc.clone(),
+        source.strip_prefix('\u{feff}').unwrap_or(&source),
+    ) else {
         return Err(
             "문서 파일을 다시 읽었더니 파싱되지 않습니다. kang 이 도는 중에 파일이 바뀐 것으로 보이니 kang build 로 다시 확인하세요.".to_string()
         );
@@ -190,42 +192,42 @@ pub fn bless(
     // 줄 단위로 다시 조립한다. 오프셋을 직접 다루지 않으므로 한 파일에서 여러 자리를
     // 고쳐도 뒤의 자리가 밀리지 않는다. `split_inclusive` 는 줄 끝 문자를 조각에
     // 남기므로 `\r\n` 과 파일 끝 개행 유무가 그대로 보존된다.
-    let mut 줄들: Vec<String> = 원문.split_inclusive('\n').map(str::to_string).collect();
-    let mut 고친_줄 = 0;
+    let mut lines: Vec<String> = source.split_inclusive('\n').map(str::to_string).collect();
+    let mut fixed_lines = 0;
     // 이 문서의 import 를 훑어 주소가 가리키는 것을 전부 찾는다.
-    for import in &현재.imports {
+    for import in &current.imports {
         // 이름이 아니라 심볼로 맞춘다. `` `결제`.`상태` `` 와 `결제.상태` 는 같은 심볼이다.
-        if table.resolve(&import.target) != Some(대상) {
+        if table.resolve(&import.target) != Some(target) {
             continue;
         }
         // 줄 번호는 1-based 이고 이 원문과 같은 바이트에서 나왔으므로 범위 안이다.
         // 그래도 인덱싱으로 패닉하지 않는다 — 파일을 쓰는 층이다.
-        let 자리 = import.line - 1;
-        let Some(줄) = 줄들.get(자리) else {
+        let position = import.line - 1;
+        let Some(line) = lines.get(position) else {
             return Err(format!(
                 "{}번째 줄을 파일에서 찾지 못했습니다. kang build 로 다시 확인하세요.",
                 import.line
             ));
         };
-        줄들[자리] = 핀_박기(줄, import.rev.as_deref(), &새_핀)?;
-        고친_줄 += 1;
+        lines[position] = stamp_pin(line, import.rev.as_deref(), &new_pin)?;
+        fixed_lines += 1;
     }
 
     // 없는 import 를 조용히 성공으로 돌려주면 에이전트는 핀을 붙였다고 믿고 같은
     // error 를 다시 만난다.
-    if 고친_줄 == 0 {
+    if fixed_lines == 0 {
         return Err(
             "그 문서에 이 import 가 없습니다. 문서 최상단의 import 줄과 주소가 같은 심볼을 가리켜야 합니다.".to_string()
         );
     }
 
-    let 새_원문 = 줄들.concat();
+    let new_source = lines.concat();
     // 이미 맞는 핀이면 쓰지 않는다. 두 번째 bless 는 파일을 바꾸지 않는다.
-    if 새_원문 == 원문 {
+    if new_source == source {
         return Ok(false);
     }
 
-    쓰기_원자적으로(&파일, &새_원문, "kang.bless")?;
+    write_atomically(&file, &new_source, "kang.bless")?;
     Ok(true)
 }
 
@@ -237,8 +239,8 @@ pub fn bless(
 ///
 /// # 매개변수
 /// - `줄`: 줄 끝 문자를 포함한 원문 한 줄
-/// - `옛_핀`: 파서가 읽어낸 기존 핀 값. 없으면 `None`
-/// - `새_핀`: 넣을 핀 값
+/// - `old_pin`: 파서가 읽어낸 기존 핀 값. 없으면 `None`
+/// - `new_pin`: 넣을 핀 값
 ///
 /// # 반환값
 /// 핀만 바뀐 같은 줄
@@ -246,23 +248,23 @@ pub fn bless(
 /// # 오류
 /// 파서가 읽은 기존 핀이 줄 끝에서 발견되지 않으면 (파서와 이 함수가 어긋난 경우)
 /// 그 사정을 담은 문장
-fn 핀_박기(줄: &str, 옛_핀: Option<&str>, 새_핀: &str) -> Result<String, String> {
+fn stamp_pin(line: &str, old_pin: Option<&str>, new_pin: &str) -> Result<String, String> {
     // 줄 끝 공백과 줄 끝 문자를 잘라 두었다가 그대로 다시 붙인다.
-    let 몸통 = 줄.trim_end();
-    let 꼬리 = &줄[몸통.len()..];
+    let inner_body = line.trim_end();
+    let tail = &line[inner_body.len()..];
 
-    match 옛_핀 {
+    match old_pin {
         // 기존 핀은 줄의 마지막 토큰이다 (파서가 그 뒤에 아무것도 오지 못하게 한다).
-        Some(옛) => {
-            let Some(앞) = 몸통.strip_suffix(&format!("\"{옛}\"")) else {
+        Some(old) => {
+            let Some(before) = inner_body.strip_suffix(&format!("\"{old}\"")) else {
                 return Err(format!(
-                    "이 줄의 끝에서 기존 rev 핀 {옛} 을 찾지 못했습니다. 파일이 kang 실행 중에 바뀌었을 수 있습니다."
+                    "이 줄의 끝에서 기존 rev 핀 {old} 을 찾지 못했습니다. 파일이 kang 실행 중에 바뀌었을 수 있습니다."
                 ));
             };
-            Ok(format!("{앞}\"{새_핀}\"{꼬리}"))
+            Ok(format!("{before}\"{new_pin}\"{tail}"))
         }
         // 핀이 없으면 줄 끝에 덧붙인다 (스펙 4.7 의 `rev "<해시>"` 는 줄 끝 토큰이다).
-        None => Ok(format!("{몸통} rev \"{새_핀}\"{꼬리}")),
+        None => Ok(format!("{inner_body} rev \"{new_pin}\"{tail}")),
     }
 }
 
@@ -308,63 +310,61 @@ fn 핀_박기(줄: &str, 옛_핀: Option<&str>, 새_핀: &str) -> Result<String,
 /// # 매개변수
 /// - `파일`: 바꿔 쓸 파일
 /// - `내용`: 새 내용 전체
-/// - `임시_확장자`: 같은 디렉토리에 만들 임시 파일의 확장자
+/// - `temp_ext`: 같은 디렉토리에 만들 임시 파일의 확장자
 ///
 /// # 오류
 /// 임시 파일을 쓰지 못하거나 옮기지 못하면 그 사정을 담은 문장.
 /// **실패한 경로를 지목한다** — 멀쩡한 파일을 지목하면 사용자가 엉뚱한 곳을 뒤진다
-pub fn 쓰기_원자적으로(
-    파일: &Path, 내용: &str, 임시_확장자: &str
-) -> Result<(), String> {
-    let 임시 = 파일.with_extension(임시_확장자);
+pub fn write_atomically(file: &Path, content: &str, temp_ext: &str) -> Result<(), String> {
+    let temp = file.with_extension(temp_ext);
 
     // 이미 있는 자리는 열지 않는다. 겹친 실행이거나 심어 둔 링크이거나 둘 중 하나이며,
     // 어느 쪽이든 따라가면 안 된다. 그 자리를 지우지도 않는다 — 남의 파일일 수 있다.
-    let 열기 = std::fs::OpenOptions::new()
+    let open_result = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
-        .open(&임시);
-    let mut 손잡이 = match 열기 {
-        Ok(손잡이) => 손잡이,
-        Err(오류) if 오류.kind() == std::io::ErrorKind::AlreadyExists => {
+        .open(&temp);
+    let mut handle = match open_result {
+        Ok(handle) => handle,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
             return Err(format!(
                 "임시 파일이 이미 있습니다 ({}) — 같은 문서를 겨냥한 다른 kang 이 돌고 \
                  있거나, 그 자리에 파일이 심어져 있습니다. 돌고 있는 것이 없다면 지우고 \
                  다시 실행하세요",
-                임시.display()
+                temp.display()
             ));
         }
-        Err(오류) => {
+        Err(error) => {
             return Err(format!(
-                "임시 파일을 만들지 못했습니다 ({}) — {오류}",
-                임시.display()
+                "임시 파일을 만들지 못했습니다 ({}) — {error}",
+                temp.display()
             ));
         }
     };
 
     // 실패한 자리에 임시 파일이 남으면 사용자 저장소에 쓰레기가 쌓인다.
-    if let Err(오류) = 손잡이.write_all(내용.as_bytes()) {
-        drop(손잡이);
-        let _ = std::fs::remove_file(&임시);
+    if let Err(error) = handle.write_all(content.as_bytes()) {
+        drop(handle);
+        let _ = std::fs::remove_file(&temp);
         return Err(format!(
-            "임시 파일에 쓰지 못했습니다 ({}) — {오류}",
-            임시.display()
+            "임시 파일에 쓰지 못했습니다 ({}) — {error}",
+            temp.display()
         ));
     }
-    drop(손잡이);
+    drop(handle);
 
     // mode 를 못 옮기는 것은 편집을 포기할 이유가 아니다. 핀을 넣는 것이 주 목적이고
     // 권한은 사용자가 다시 줄 수 있다.
-    if let Ok(메타) = std::fs::metadata(파일) {
-        let _ = std::fs::set_permissions(&임시, 메타.permissions());
+    if let Ok(metadata) = std::fs::metadata(file) {
+        let _ = std::fs::set_permissions(&temp, metadata.permissions());
     }
 
-    if let Err(오류) = std::fs::rename(&임시, 파일) {
-        let _ = std::fs::remove_file(&임시);
+    if let Err(error) = std::fs::rename(&temp, file) {
+        let _ = std::fs::remove_file(&temp);
         return Err(format!(
-            "임시 파일을 제자리로 옮기지 못했습니다 ({} → {}) — {오류}",
-            임시.display(),
-            파일.display()
+            "임시 파일을 제자리로 옮기지 못했습니다 ({} → {}) — {error}",
+            temp.display(),
+            file.display()
         ));
     }
 

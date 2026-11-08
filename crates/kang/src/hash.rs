@@ -42,7 +42,7 @@ pub fn normalize(text: &str) -> String {
 ///
 /// # 반환값
 /// SHA-256 해시값의 앞 6자리 hex 문자열
-#[kang::keyword("CONTEXT.rev 핀", rev = "29c60b")]
+#[kang::keyword("CONTEXT.rev 핀", rev = "718dd2")]
 pub fn rev(text: &str) -> String {
     let normalized = normalize(text);
 
