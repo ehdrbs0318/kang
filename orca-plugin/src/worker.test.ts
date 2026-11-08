@@ -89,7 +89,7 @@ test('workspace 밖을 가리키는 symlink 는 읽지 않고 열지 않는다',
 	}
 })
 
-test('요청 하나가 읽는 파일 크기의 합이 64 MiB 를 넘으면 kang.locate 는 인덱스가 없는 것으로 답한다', async () => {
+test('한 workspace 에서 읽는 파일 크기의 합이 한도를 넘으면 kang.locate 는 그 workspace 를 건너뛴다', async () => {
 	const root = mkdtempSync(join(tmpdir(), 'kang-worker-budget-'))
 	let worker: Awaited<ReturnType<typeof mountWorker>> | undefined
 	try {
@@ -114,5 +114,48 @@ test('요청 하나가 읽는 파일 크기의 합이 64 MiB 를 넘으면 kang.
 		// 검사가 실패해도 worker 를 내리고 임시 폴더를 지운다.
 		await worker?.deactivate()
 		rmSync(root, { recursive: true })
+	}
+})
+
+test('읽은 양이 한도를 넘은 workspace 만 건너뛰고 다른 workspace 에서 찾는다', async () => {
+	const big = mkdtempSync(join(tmpdir(), 'kang-worker-big-'))
+	const small = mkdtempSync(join(tmpdir(), 'kang-worker-small-'))
+	let worker: Awaited<ReturnType<typeof mountWorker>> | undefined
+	try {
+		const text = '---\ndescription: d\n---\n\n## t\n'
+		const doc = (path: string, hash: string) => ({ path, description: '', hash, scope: [] })
+		const paths = ['b1', 'b2', 'b3', 'b4']
+		// big 은 20 MiB sparse 문서 네 개를 가리켜 한도를 넘는다. small 은 문서 하나뿐이다.
+		for (const path of paths) {
+			writeFileSync(join(big, `${path}.kang`), '')
+			truncateSync(join(big, `${path}.kang`), 20 * 1024 * 1024)
+		}
+		for (const [root, extra] of [[big, paths], [small, []]] as const) {
+			writeFileSync(join(root, 'A.kang'), text)
+			mkdirSync(join(root, '.kang'))
+			const index = { kang: 'graph/1', docs: [doc('A', docHash(text)), ...extra.map((p) => doc(p, '0'.repeat(64)))], keywords: [], edges: [] }
+			writeFileSync(join(root, '.kang/graph.kang.json'), JSON.stringify(index))
+		}
+		const h = mockHost({
+			capabilities: ['workspace:read', 'workspace:write'],
+			results: {
+				'workspace.list': {
+					workspaces: [
+						{ id: 'big', kind: 'worktree', name: 'big', path: big, branch: 'main', hostId: 'local' },
+						{ id: 'small', kind: 'worktree', name: 'small', path: small, branch: 'main', hostId: 'local' },
+					],
+					truncated: false,
+				},
+				'workspace.readContext': null,
+			},
+		})
+		worker = await mountWorker(main, { host: h })
+		const result = await worker.request('kang.locate', { text })
+		assert.equal(result.status === 'ok' && result.workspaceId, 'small')
+	} finally {
+		// 검사가 실패해도 worker 를 내리고 임시 폴더를 지운다.
+		await worker?.deactivate()
+		rmSync(big, { recursive: true })
+		rmSync(small, { recursive: true })
 	}
 })

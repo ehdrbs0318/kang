@@ -278,3 +278,20 @@ test('normalize 는 공백 뒤에 글자가 오는 긴 줄도 100ms 안에 끝�
 	const elapsed = performance.now() - started
 	assert.ok(elapsed < 100, `${elapsed}ms`)
 })
+
+test('.git 파일의 gitdir 줄에 긴 공백이 있어도 100ms 안에 같은 저장소로 본다', () => {
+	const index = graph({ A: DOC_A })
+	const fs = fakeFs({
+		'/r/a/.git/HEAD': 'x',
+		'/r/a/.kang/graph.kang.json': index,
+		'/r/a/A.kang': DOC_A,
+		'/r/wt/.git': `gitdir: ../a/.git/worktrees/wt${' '.repeat(20000)}x\n`,
+		'/r/wt/.kang/graph.kang.json': index,
+		'/r/wt/A.kang': DOC_A,
+	})
+	const started = performance.now()
+	const result = locate(DOC_A, [ws('w1', '/r/a'), ws('w2', '/r/wt')], null, fs)
+	const elapsed = performance.now() - started
+	assert.ok(elapsed < 100, `${elapsed}ms`)
+	assert.equal(result.status === 'ok' && result.workspaceId, 'w1')
+})
