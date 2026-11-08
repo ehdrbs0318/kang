@@ -235,3 +235,54 @@ test('lookupRef 는 scope 에 없는 참조에 undefined 를 돌려준다', () =
 	assert.equal(lookupRef(scope, 'docs/A.결제'), undefined)
 	assert.equal(lookupRef([], 'A 결제'), undefined)
 })
+
+test('[참고]: 로 시작하는 줄은 컴파일러처럼 본문 글자이고, 그 줄의 참조도 링크다', () => {
+	const html = render('## t\n\n[참고]: `결제`\n\n[근거]: `docs`/`A` "제목"\n')
+	assert.ok(html.includes('<p>[참고]: <a class="kang-ref" data-ref="결제">결제</a></p>'), html)
+	assert.ok(html.includes('<p>[근거]: <a class="kang-ref" data-ref="docs/A">docs/A</a> &quot;제목&quot;</p>'), html)
+})
+
+test('### 제목의 // uncoded 는 컴파일러처럼 수식어가 아니라 글자다', () => {
+	const html = render('## t\n\n### 소제목 // uncoded\n')
+	assert.ok(html.includes('<h3>소제목 // uncoded</h3>'), html)
+	assert.ok(!html.includes('kang-badge'), html)
+})
+
+test('앞에 공백이나 탭이 있는 keyword, exception, cover 줄도 컴파일러처럼 선언이다', () => {
+	const html = render('## t\n\n글\n  keyword `카드`: 카드 결제\n\texception `무료` pending\n cover `예외`\n')
+	assert.ok(html.includes('<p>글</p>'), html)
+	assert.ok(html.includes('<div class="kang-term"><strong>카드</strong><span>카드 결제</span></div>'), html)
+	assert.ok(html.includes('<span class="kang-badge">exception</span> 무료 <span class="kang-badge">pending</span>'), html)
+	assert.ok(html.includes('<span class="kang-badge">cover</span> <a class="kang-ref" data-ref="예외">예외</a>'), html)
+})
+
+test('문장 중간의 keyword 낱말은 선언이 아니다', () => {
+	const html = render('## t\n\nA keyword `x`: y\n')
+	assert.ok(html.includes('<p>A keyword <a class="kang-ref" data-ref="x">x</a>: y</p>'), html)
+})
+
+test('## 뒤에 공백이 없거나 4칸 넘게 들여 쓴 ## 줄도 컴파일러처럼 topic 제목이다', () => {
+	const html = render('## t\n\n글\n##붙은 제목\n\n      ## 들여 쓴 제목 // uncoded\n\n###붙은 소제목\n')
+	assert.ok(html.includes('<h2>붙은 제목</h2>'), html)
+	assert.ok(html.includes('<h2>들여 쓴 제목 <span class="kang-badge">uncoded</span></h2>'), html)
+	assert.ok(!html.includes('<h2>붙은 소제목'), html)
+	assert.ok(html.includes('###붙은 소제목'), html)
+})
+
+test('닫히지 않은 펜스는 컴파일러처럼 끝까지 코드이고, 그 안의 제목, 참조, 선언을 읽지 않는다', () => {
+	const view = parseKang('---\ndescription: d\n---\n\n## t\n\n앞\n\n```\n`결제`\n## 아님\nimport `a`.`b`\nkeyword `x`: y\n')
+	assert.deepEqual(view.imports, [])
+	const html = renderBody(view.body)
+	assert.ok(html.includes('<p>앞</p>'), html)
+	assert.ok(html.includes('<pre><code>`결제`\n## 아님\nimport `a`.`b`\nkeyword `x`: y\n</code></pre>'), html)
+	assert.ok(!html.includes('kang-ref'), html)
+	assert.ok(!html.includes('<h2>아님'), html)
+})
+
+test('긴 공백 줄도 100ms 안에 그린다', () => {
+	const spaces = ' '.repeat(40000)
+	const started = performance.now()
+	render(`## t${spaces}x\n\nkeyword \`k\`: a${spaces}b\n\n## u // iknow \`v\`${spaces}w\n\nexception \`e\` // iknow \`v\`${spaces}w\n`)
+	const elapsed = performance.now() - started
+	assert.ok(elapsed < 100, `${elapsed}ms`)
+})

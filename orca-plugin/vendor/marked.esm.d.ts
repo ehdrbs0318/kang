@@ -47,6 +47,7 @@ export type MarkedExtension = {
 		code?(src: string): Token | undefined
 		html?(src: string): Token | undefined
 		lheading?(src: string): Token | undefined
+		def?(src: string): Token | undefined
 	}
 	/** 기본 renderer 의 메소드를 바꾼다. 여기서는 `html` 과 `image` 만 쓴다. */
 	renderer?: {

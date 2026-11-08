@@ -259,3 +259,11 @@ test('pickWorkspace 는 후보가 하나면 그 후보를 고른다', () => {
 	const candidate = { workspace: ws('w1', '/r/a'), path: 'A', gitCommonDir: null }
 	assert.equal(pickWorkspace([candidate], null), candidate)
 })
+
+test('normalize 는 공백 뒤에 글자가 오는 긴 줄도 100ms 안에 끝낸다', () => {
+	const line = `${' '.repeat(40000)}x`
+	const started = performance.now()
+	assert.equal(normalize(`${line}\n${line}  `), `x\n${line}`)
+	const elapsed = performance.now() - started
+	assert.ok(elapsed < 100, `${elapsed}ms`)
+})

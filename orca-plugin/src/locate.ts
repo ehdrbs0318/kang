@@ -40,8 +40,20 @@ const INDEX_PATH = '.kang/graph.kang.json'
 
 /** Rust `char::is_whitespace` 와 같은 공백 문자 묶음이다. U+FEFF 는 넣지 않는다. */
 const WS = '\\t\\n\\v\\f\\r \\u0085\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000'
-const TRAILING = new RegExp(`[${WS}]+$`)
+const SPACE = new RegExp(`[${WS}]`)
 const LEADING = new RegExp(`^[${WS}]+`)
+
+/**
+ * 끝의 공백 문자를 지운다. `[공백]+$` 정규식은 공백 뒤에 글자가 오는 긴 줄에서 자리마다 다시 훑어 느리다. 그래서 끝에서부터 한 번만 훑는다.
+ * @param text 지울 글자
+ * @returns 끝의 공백 문자를 뗀 글자
+ */
+function trimEnd(text: string): string {
+	let end = text.length
+	// 끝에서부터 공백 문자가 아닌 글자를 만날 때까지 줄인다. WS 의 문자는 모두 UTF-16 한 단위다.
+	while (end > 0 && SPACE.test(text[end - 1])) end--
+	return text.slice(0, end)
+}
 
 /**
  * 해시 입력 텍스트를 `crates/kang/src/hash.rs` 의 `normalize` 와 같은 규칙으로 정규화한다.
@@ -54,11 +66,11 @@ export function normalize(text: string): string {
 	const lines: string[] = []
 	// 줄마다 줄 끝 공백을 지우고, 앞 줄도 빈 줄인 빈 줄은 건너뛴다.
 	for (const line of text.split('\n')) {
-		const trimmed = line.replace(TRAILING, '')
+		const trimmed = trimEnd(line)
 		if (trimmed === '' && lines.length > 0 && lines[lines.length - 1] === '') continue
 		lines.push(trimmed)
 	}
-	return lines.join('\n').replace(TRAILING, '').replace(LEADING, '')
+	return trimEnd(lines.join('\n')).replace(LEADING, '')
 }
 
 /**

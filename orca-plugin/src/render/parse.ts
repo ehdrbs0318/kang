@@ -19,12 +19,30 @@ export type KangView = {
 const NAMES = '`[^`\\n]*`(?:[/.#!]`[^`\\n]*`)*'
 const REF = new RegExp(`^${NAMES}`)
 const IMPORT = new RegExp(`^import[ \\t]+(${NAMES})(?:[ \\t]+as[ \\t]+\`([^\`\\n]*)\`)?(?:[ \\t]+rev[ \\t]+"[^"\\n]*")?[ \\t]*(?:\\n|$)`)
-const KEYWORD = /^keyword[ \t]+(`[^`\n]*`(?:\.`[^`\n]*`)*)[ \t]*:[ \t]*(.*)(?:\n|$)/
-const DECL = /^(exception|cover)[ \t]+`([^`\n]*)`([ \t]+pending)?(?:[ \t]*\/\/[ \t]*iknow[ \t]+(.*?))?[ \t]*(?:\n|$)/
-const HEADING = /^(#{1,6})[ \t]+(.*?)[ \t]*\/\/[ \t]*(?:(uncoded)|iknow[ \t]+(.*?))[ \t]*(?:\n|$)/
-const IKNOW = /[ \t]*\/\/[ \t]*iknow[ \t]+(.*)$/
+// 컴파일러처럼 선언 줄과 topic 제목 줄은 앞 공백과 탭을 떼고 읽는다.
+const KEYWORD = /^[ \t]*keyword[ \t]+(`[^`\n]*`(?:\.`[^`\n]*`)*)[ \t]*:[ \t]*(.*)(?:\n|$)/
+// iknow 대상은 줄 끝까지 받고 나중에 앞뒤 공백을 뗀다. `(.*?)[ \t]*` 로 쓰면 긴 공백 줄에서 느려진다.
+const DECL = /^[ \t]*(exception|cover)[ \t]+`([^`\n]*)`([ \t]+pending)?(?:[ \t]*\/\/[ \t]*iknow[ \t]+([^\n]*)|[ \t]*)(?:\n|$)/
+// 컴파일러처럼 `#` 두 개 다음이 `#` 가 아니면 topic 제목이다. 뒤의 공백은 없어도 된다. `###` 이하는 marked 가 그린다.
+const HEADING = /^[ \t]*##(?!#)([^\n]*)(?:\n|$)/
+// 컴파일러처럼 수식어 `//` 앞에는 공백이 있어야 한다. 앞의 공백을 반복으로 찾지 않아야 긴 공백 줄에서 느려지지 않는다.
+const MODIFIER = /[ \t]\/\/[ \t]*(?:(uncoded)[ \t]*|iknow[ \t]+(.*))$/
+const IKNOW = /\/\/[ \t]*iknow[ \t]+(.*)$/
 // 컴파일러처럼 topic 표시의 `#` 앞에는 공백이 있어야 한다. `C#\`lang\`` 의 `#` 는 글자다.
 const TOPIC = new RegExp(` (#${NAMES})[ \\t]*$`)
+
+/**
+ * 확장 tokenizer 의 `start` 로 쓴다. marked 는 첫 글자를 뗀 원문을 주므로 줄 맨 앞은 줄바꿈 바로 다음 자리만 센다.
+ * 그래야 `A keyword` 처럼 문장 중간의 낱말을 선언 줄로 읽지 않는다.
+ * @param src marked 가 준 원문
+ * @param line 줄바꿈 뒤에 올 줄 머리 정규식. 예: `/\n[ \t]*keyword[ \t]+`/`
+ * @returns 그 줄의 첫 글자 위치. 없으면 -1
+ */
+function lineStart(src: string, line: RegExp): number {
+	const at = src.search(line)
+	// 줄을 찾으면 줄바꿈 다음 자리를 돌려준다.
+	return at < 0 ? -1 : at + 1
+}
 
 /**
  * HTML 에서 특별한 뜻이 있는 문자를 문자 참조로 바꾼다.
@@ -147,7 +165,7 @@ const keywordExtension: TokenizerExtension = {
 	 * @param src 남은 원문
 	 * @returns keyword 줄의 첫 시작 위치. 없으면 -1
 	 */
-	start: (src) => src.search(/^keyword[ \t]+`/m),
+	start: (src) => lineStart(src, /\n[ \t]*keyword[ \t]+`/),
 	/**
 	 * 원문 맨 앞을 keyword 줄 token 으로 바꾼다.
 	 * @param src 남은 원문
@@ -158,6 +176,7 @@ const keywordExtension: TokenizerExtension = {
 		// keyword 문법이 아니면 일반 문단으로 둔다.
 		if (!match) return undefined
 		const iknow = IKNOW.exec(match[2])
+		// TOPIC 이 줄 끝 공백을 받으므로 iknow 앞의 공백은 남겨도 된다.
 		const rest = iknow ? match[2].slice(0, iknow.index) : match[2]
 		const topic = TOPIC.exec(rest)
 		const definition = (topic ? rest.slice(0, topic.index) : rest).trim()
@@ -196,7 +215,7 @@ const declExtension: TokenizerExtension = {
 	 * @param src 남은 원문
 	 * @returns exception, cover 줄의 첫 시작 위치. 없으면 -1
 	 */
-	start: (src) => src.search(/^(?:exception|cover)[ \t]+`/m),
+	start: (src) => lineStart(src, /\n[ \t]*(?:exception|cover)[ \t]+`/),
 	/**
 	 * 원문 맨 앞을 exception, cover 줄 token 으로 바꾼다.
 	 * @param src 남은 원문
@@ -215,7 +234,7 @@ const declExtension: TokenizerExtension = {
 			// cover 의 대상은 import 한 exception 이므로 참조로 해석한다. exception 의 이름은 선언이므로 글자다.
 			target: kind === 'cover' ? inline(this, `\`${name}\``) : [],
 			name,
-			iknow: inline(this, iknow ?? ''),
+			iknow: inline(this, iknow?.trim() ?? ''),
 		}
 	},
 	/**
@@ -230,21 +249,39 @@ const declExtension: TokenizerExtension = {
 	},
 }
 
-/** `// uncoded` 나 `// iknow …` 가 붙은 topic 제목이다. 수식어를 배지로 그린다. 수식어가 없는 제목은 marked 가 그린다. */
+/**
+ * topic 제목 줄(`##`)이다. 컴파일러처럼 앞 공백의 길이와 `##` 뒤 공백의 유무를 따지지 않는다.
+ * `// uncoded` 나 `// iknow …` 수식어는 이 자리에서만 배지로 그린다. `###` 이하는 marked 가 글자 그대로 그린다.
+ */
 const headingExtension: TokenizerExtension = {
 	name: 'kangHeading',
 	level: 'block',
 	/**
-	 * 원문 맨 앞을 수식어가 붙은 제목 token 으로 바꾼다.
+	 * marked 가 이 확장을 시도할 위치를 찾는다.
 	 * @param src 남은 원문
-	 * @returns token. 문법이 맞지 않으면 undefined 이고 marked 의 다른 tokenizer 가 받는다
+	 * @returns topic 제목 줄의 첫 시작 위치. 없으면 -1
+	 */
+	start: (src) => lineStart(src, /\n[ \t]*##(?!#)/),
+	/**
+	 * 원문 맨 앞을 topic 제목 token 으로 바꾼다.
+	 * @param src 남은 원문
+	 * @returns token. topic 제목 줄이 아니면 undefined 이고 marked 의 다른 tokenizer 가 받는다
 	 */
 	tokenizer(src) {
 		const match = HEADING.exec(src)
-		// 수식어가 없으면 marked 의 기본 제목이다.
+		// topic 제목 줄이 아니면 marked 의 다른 tokenizer 에 넘긴다.
 		if (!match) return undefined
-		const [raw, hashes, text, uncoded, iknow] = match
-		return { type: 'kangHeading', raw, depth: hashes.length, text, tokens: inline(this, text), uncoded: Boolean(uncoded), iknow: inline(this, iknow ?? '') }
+		const modifier = MODIFIER.exec(match[1])
+		// 수식어가 있으면 제목 글자에서 뗀다.
+		const text = (modifier ? match[1].slice(0, modifier.index) : match[1]).trim()
+		return {
+			type: 'kangHeading',
+			raw: match[0],
+			text,
+			tokens: inline(this, text),
+			uncoded: Boolean(modifier?.[1]),
+			iknow: inline(this, modifier?.[2]?.trim() ?? ''),
+		}
 	},
 	/**
 	 * token 을 HTML 로 그린다.
@@ -252,18 +289,17 @@ const headingExtension: TokenizerExtension = {
 	 * @returns 배지를 단 제목 HTML
 	 */
 	renderer(token) {
-		const tag = `h${token.depth as number}`
 		const uncoded = token.uncoded ? ` ${badge('uncoded')}` : ''
-		return `<${tag}>${this.parser.parseInline(token.tokens!)}${uncoded}${iknowHtml(this, token.iknow as Token[])}</${tag}>\n`
+		return `<h2>${this.parser.parseInline(token.tokens!)}${uncoded}${iknowHtml(this, token.iknow as Token[])}</h2>\n`
 	},
 }
 
 /** kang 확장을 단 marked 인스턴스다. 문서에 쓴 HTML 은 태그가 아니라 글자로 그린다. */
 const kang = new Marked({
 	extensions: [refExtension, importExtension, keywordExtension, declExtension, headingExtension],
-	// 코드 영역은 lex 가 컴파일러 규칙으로 먼저 떼어 낸다. 컴파일러는 들여 쓴 코드, HTML 블록, setext 제목을 모른다. 그래서 네 tokenizer 를 끈다.
+	// 코드 영역은 lex 가 컴파일러 규칙으로 먼저 떼어 낸다. 컴파일러는 들여 쓴 코드, HTML 블록, setext 제목, 링크 정의(`[이름]: 주소`)를 모른다. 그래서 다섯 tokenizer 를 끈다.
 	// undefined 를 돌려주면 그 tokenizer 가 꺼진다. false 를 돌려주면 marked 의 기본 tokenizer 가 대신 읽는다.
-	tokenizer: { fences: () => undefined, code: () => undefined, html: () => undefined, lheading: () => undefined },
+	tokenizer: { fences: () => undefined, code: () => undefined, html: () => undefined, lheading: () => undefined, def: () => undefined },
 	renderer: {
 		/** 문서에 쓴 HTML 을 태그가 아니라 글자로 그린다. `token.text` 는 HTML 원문이고, 돌려주는 값은 escape 한 글자다. */
 		html: (token) => escape(token.text),
