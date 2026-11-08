@@ -6,7 +6,8 @@ import { addStyles, locateNotice, notice, STALE_NOTICE } from '../frame'
 import type { Locate } from '../protocol'
 import { toElements } from './model'
 
-addStyles(new URL('./style.css', import.meta.url).href)
+/** 스타일 파일을 다 읽으면 풀린다. 그래프 영역의 크기가 스타일로 정해지므로, 그래프는 이 promise 뒤에 만든다. */
+const styled = addStyles(new URL('./style.css', import.meta.url).href)
 
 const notices = document.createElement('div')
 notices.className = 'kang-notices'
@@ -17,6 +18,9 @@ tooltip.className = 'kang-tooltip'
 tooltip.hidden = true
 document.body.append(notices, canvas, tooltip)
 
+// 창 크기나 안내 문구 때문에 그래프 영역의 크기가 바뀌면 cytoscape 에 다시 재게 한다. cytoscape 는 창 크기 변화만 스스로 본다.
+new ResizeObserver(() => graph?.resize()).observe(canvas)
+
 /** 지금 그린 그래프다. 새 원문이 오면 지우고 다시 만든다. */
 let graph: Core | null = null
 /** 가장 최근에 받은 원문의 번호다. 늦게 온 `kang.locate` 답이 새 화면을 덮지 않게 한다. */
@@ -25,13 +29,14 @@ let latest = 0
 /**
  * CSS 색 값을 cytoscape 가 읽는 `rgb(...)` 로 바꾼다. Orca 테마는 cytoscape 가 모르는 `oklch()` 같은 형식을 쓸 수 있다.
  * @param name `--orca-*` 변수 이름
- * @returns 변수 색을 1px 에 칠해서 읽은 `rgb(r, g, b)` 문자열. 투명도는 버린다
+ * @returns 변수 색을 1px 에 칠해서 읽은 `rgb(r, g, b)` 문자열. 투명도는 버린다. 변수가 비었으면 회색이다
  */
 function color(name: string): string {
+	const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim()
 	const ctx = document.createElement('canvas').getContext('2d')
-	// 2d context 를 만들 수 없으면 글자색으로 쓸 수 있는 회색을 쓴다.
-	if (!ctx) return 'rgb(128, 128, 128)'
-	ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue(name).trim()
+	// 변수가 비었거나 2d context 를 만들 수 없으면 두 테마 모두에서 읽을 수 있는 회색을 쓴다.
+	if (!value || !ctx) return 'rgb(128, 128, 128)'
+	ctx.fillStyle = value
 	ctx.fillRect(0, 0, 1, 1)
 	const [r, g, b] = ctx.getImageData(0, 0, 1, 1).data
 	return `rgb(${r}, ${g}, ${b})`
@@ -79,13 +84,14 @@ function graphStyle(): StylesheetJson {
  */
 async function show(text: string): Promise<void> {
 	const turn = ++latest
-	let located: Locate | null
+	let located: Locate | null = null
 	try {
 		located = await orca.plugin.request('kang.locate', { text })
 	} catch {
 		// worker 가 없거나 응답하지 않으면 안내 문구만 보여 준다.
-		located = null
 	}
+	// 그래프 영역의 크기가 정해진 뒤에 그린다.
+	await styled
 	// 그 사이에 새 원문이 왔으면 이 결과는 버린다.
 	if (turn !== latest) return
 	draw(located)
@@ -112,9 +118,15 @@ function draw(located: Locate | null): void {
 		container: canvas,
 		elements: toElements(located.docs, located.edges),
 		style: graphStyle(),
-		layout: { name: 'cose' },
 		boxSelectionEnabled: false,
 	})
+	// 애니메이션 없이 배치해서 첫 화면에 바로 그린다. 기본값인 애니메이션 배치로는 Orca 화면 캡처에 빈 화면만 남았다.
+	cy.layout({ name: 'cose', animate: false, nodeDimensionsIncludeLabels: true, nodeRepulsion: 1_000_000, componentSpacing: 120 }).run()
+	// 문서가 적으면 fit 이 크게 확대해서 글자가 너무 커진다. 그때는 실제 크기로 두고 가운데에 놓는다.
+	if (cy.zoom() > 1) {
+		cy.zoom(1)
+		cy.center()
+	}
 	// 점을 누르면 그 문서를 연다. 요청이 실패해도 화면은 그대로 둔다.
 	cy.on('tap', 'node', (event) => {
 		const path = String(event.target.data('id'))

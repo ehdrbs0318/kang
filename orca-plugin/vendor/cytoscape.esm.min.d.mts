@@ -40,16 +40,43 @@ export type Core = {
 	 * @returns 같은 그래프
 	 */
 	style(style: StylesheetJson): Core
+	/**
+	 * 배치 하나를 만든다.
+	 * @param options 배치 이름과 설정. `animate: false` 이면 `run` 이 끝날 때 배치도 끝난다
+	 * @returns `run` 으로 실행하는 배치
+	 */
+	layout(options: LayoutOptions): { run(): void }
+	/** @returns 지금 확대 배율 */
+	zoom(): number
+	/**
+	 * 확대 배율을 바꾼다.
+	 * @param level 새 배율
+	 */
+	zoom(level: number): void
+	/** 그래프를 화면 가운데에 놓는다. */
+	center(): void
+	/** 그래프 영역의 크기를 다시 잰다. 영역 크기가 바뀐 뒤에 부른다. */
+	resize(): void
 	/** 그래프를 지우고 이벤트와 canvas 를 정리한다. */
 	destroy(): void
 }
 
-/** 그래프를 만들 때 주는 값이다. */
+/** 배치 설정이다. 이 플러그인은 `cose` 만 쓴다. */
+export type LayoutOptions = {
+	name: string
+	animate?: boolean
+	nodeDimensionsIncludeLabels?: boolean
+	/** 점끼리 밀어내는 힘이다. 기본값은 2048 이다. */
+	nodeRepulsion?: number
+	/** 이어지지 않은 묶음 사이의 간격이다. 기본값은 40 이다. */
+	componentSpacing?: number
+}
+
+/** 그래프를 만들 때 주는 값이다. 배치는 만든 뒤에 `layout` 으로 실행한다. */
 export type CytoscapeOptions = {
 	container: HTMLElement
 	elements: ElementDefinition[]
 	style: StylesheetJson
-	layout: { name: string }
 	boxSelectionEnabled?: boolean
 }
 

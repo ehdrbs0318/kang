@@ -15,15 +15,22 @@ export const STALE_NOTICE = '인덱스가 오래되었습니다. <code>kang buil
  * 스타일 파일을 문서에 넣는다. 공통 스타일 `frame.css` 를 먼저, 화면의 스타일을 뒤에 넣는다.
  * 브라우저의 ES module 은 CSS 를 import 할 수 없으므로 link 로 넣는다. frame 의 CSP 가 플러그인 자신의 파일을 허용한다.
  * @param href 화면 스타일 파일의 절대 URL. 호출하는 module 의 `import.meta.url` 로 만든다
+ * @returns 두 파일을 다 읽으면 풀리는 promise. 파일을 읽지 못해도 거부하지 않는다
  */
-export function addStyles(href: string): void {
-	// 공통 스타일과 화면 스타일마다 link 를 하나씩 만든다.
-	for (const url of [new URL('./frame.css', import.meta.url).href, href]) {
+export function addStyles(href: string): Promise<void> {
+	// 공통 스타일과 화면 스타일마다 link 를 하나씩 만들고, 읽기가 끝나기를 기다린다.
+	const loads = [new URL('./frame.css', import.meta.url).href, href].map((url) => {
 		const link = document.createElement('link')
 		link.rel = 'stylesheet'
 		link.href = url
+		// 읽기에 실패해도 스타일 없이 그릴 수 있으므로 풀어 준다.
+		const loaded = new Promise<void>((resolve) => {
+			link.onload = link.onerror = () => resolve()
+		})
 		document.head.append(link)
-	}
+		return loaded
+	})
+	return Promise.all(loads).then(() => undefined)
 }
 
 /**

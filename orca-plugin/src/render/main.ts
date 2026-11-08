@@ -5,7 +5,7 @@ import type { Locate } from '../protocol'
 import { addStyles, locateNotice } from '../frame'
 import { parseKang, renderBody, resolveRef, type KangView } from './parse'
 
-addStyles(new URL('./style.css', import.meta.url).href)
+void addStyles(new URL('./style.css', import.meta.url).href)
 
 const root = document.createElement('main')
 root.className = 'kang'
