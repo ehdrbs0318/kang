@@ -13,5 +13,19 @@
   "capabilities": [
     { "kind": "workspace:read" },
     { "kind": "workspace:write" }
-  ]
+  ],
+  "contributes": {
+    "customEditors": [
+      {
+        "id": "kang",
+        "title": "kang",
+        "extensions": [
+          ".kang"
+        ],
+        "entry": "src/render/main.ts",
+        "priority": "default",
+        "frame": "isolated"
+      }
+    ]
+  }
 }
