@@ -30,7 +30,7 @@ export function isLocal(workspace: Workspace): boolean {
 /** 파일 읽기 인터페이스다. workspace 루트와 그 안의 상대 경로를 받는다. 파일이 없거나 읽을 수 없으면 null 을 돌려준다. 한 workspace 에서 읽은 양이 한도를 넘으면 ReadLimit 을 던질 수 있다. */
 export type FileReader = { read(root: string, path: string): string | null }
 
-/** FileReader 가 한 workspace 에서 읽은 양이 한도를 넘었다는 오류다. locate 는 그 workspace 만 건너뛴다. */
+/** FileReader 가 한 workspace 에서 읽은 양이 한도를 넘었다는 오류다. locate 는 그 후보를 버리고 다시 고른다. 버린 후보가 focus 된 workspace 이면 `notIndexed` 로 답한다. */
 export class ReadLimit extends Error {}
 
 /** 읽어서 검사를 통과한 그래프 인덱스다. `text` 는 파일 원문이다. */
@@ -214,7 +214,7 @@ export function pickWorkspace(candidates: Candidate[], focused: Focused | null):
  *   한도를 넘은 workspace 가 focus 된 workspace 이면 다른 저장소를 고르지 않고 `notIndexed`,
  *   원격 workspace 만 있거나 로컬 후보가 없고 focus 된 workspace 가 원격이면 `remoteOnly`,
  *   하나를 고를 수 없거나 고른 workspace 안에 같은 해시의 문서가 둘 이상이면 `ambiguous`
- * @throws ReadLimit 가 아닌 파일 읽기 오류는 그대로 던진다
+ * @throws Error 파일 읽기 오류 가운데 ReadLimit 이 아닌 것은 그대로 던진다
  */
 export function locate(text: string, workspaces: Workspace[], focused: Focused | null, fs: FileReader): Locate {
 	const local = workspaces.filter(isLocal)
