@@ -1,0 +1,24 @@
+# kang Orca 플러그인
+
+이 플러그인은 kang 문서(`.kang`)와 그래프 인덱스(`.kang/graph.kang.json`)를 Orca 에서 읽기 전용으로 보여 준다. 플러그인 id 는 `kang` 이다.
+
+## 구성
+
+- `src/worker.ts`: 플러그인의 worker 다. custom editor 의 요청 두 개에 답한다.
+  - `kang.locate`: 열린 파일의 원문으로 workspace 와 문서를 찾는다. 그 workspace 의 그래프, 정의, stale 문서 목록을 돌려준다.
+  - `kang.open`: 인덱스에 있는 문서 `<path>.kang` 을 Orca 의 편집기 탭으로 연다.
+- `src/locate.ts`: 문서 해시 계산과 workspace 찾기다. 해시 규칙은 `crates/kang/src/hash.rs` 와 같다.
+- `src/protocol.ts`: worker 와 custom editor 가 함께 쓰는 요청 타입이다.
+
+원격 workspace 는 지원하지 않는다. worker 는 로컬 파일만 읽는다.
+
+## 개발
+
+먼저 저장소 루트에서 `kang build` 를 실행해 그래프 인덱스를 만든다. 다음 명령은 `orca-plugin/` 에서 실행한다.
+
+```sh
+orca plugin types .          # .orca/types/ 에 타입 파일을 쓴다
+orca plugin test . --json    # src/*.test.ts 를 실행한다
+npx -y -p typescript@5.6.3 tsc -p . --noEmit
+orca plugin validate . --json
+```
