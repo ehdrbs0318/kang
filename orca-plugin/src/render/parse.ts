@@ -25,9 +25,13 @@ const DOTTED = /^`[^`]*`(?:\.`[^`]*`)*$/
 // 컴파일러처럼 앞의 공백 문자를 뗀 줄이 `##` 로 시작하고 그 다음이 `#` 가 아니면 topic 제목 줄이다. `###` 이하는 marked 가 그린다.
 // `import`, `keyword`, `exception`, `cover` 낱말 뒤에 공백 한 칸이 오면 선언 줄이다. 탭이면 본문이다.
 const KANG_LINE = /^(?:##(?!#)|(import|keyword|exception|cover) )/
-// 아래 정규식은 lex 가 고친 kang 줄 한 줄에 쓴다. 앞의 공백 문자와 낱말 뒤의 공백 문자는 lex 가 이미 뗐다.
-const IMPORT = new RegExp(`^import (${NAMES})(?:[ \\t]+as[ \\t]+\`([^\`\\n]*)\`)?(?:[ \\t]+rev[ \\t]+"[^"\\n]*")?[ \\t]*$`)
-const KEYWORD = /^keyword (`[^`\n]*`(?:\.`[^`\n]*`)*)[ \t]*:(.*)$/
+// 아래 정규식은 lex 가 고친 kang 줄 한 줄에 쓴다. 앞의 공백 문자와 낱말 뒤의 공백 문자는 lex 가 이미 뗐다. 줄 안의 공백도 컴파일러처럼 Rust 공백 문자다.
+// 컴파일러의 `parse_symbol_ref` 처럼 import 대상은 `/` 로 이은 문서 경로 뒤에 `.` keyword 이름, `#` topic, `!` exception 중 하나가 온다. 계층은 keyword 만 갖는다. 이름은 비지 않고 `/` 가 없다.
+const NAME = '`[^`/\\n]+`'
+const TARGET = `${NAME}(?:/${NAME})*(?:\\.${NAME}(?:\\.${NAME})*|[#!]${NAME})`
+// 컴파일러는 ` as ` 와 ` rev ` 를 공백 한 칸까지 그대로 찾고, 그 앞뒤를 Rust 공백 문자로 뗀다.
+const IMPORT = new RegExp(`^import (${TARGET})(?:[${WS}]* as [${WS}]*(${NAME}))?(?:[${WS}]* rev [${WS}]*"[^"\\n]*")?[${WS}]*$`)
+const KEYWORD = new RegExp(`^keyword (\`[^\`\\n]*\`(?:\\.\`[^\`\\n]*\`)*)[${WS}]*:(.*)$`)
 const DECL = /^(exception|cover) (.*)$/
 // 컴파일러처럼 수식어를 뗀 exception, cover 선언부는 백틱 이름 하나이고, 뒤에 ` pending` 이 올 수 있다.
 const DECL_NAME = /^`([^`]*)`( pending)?$/
@@ -36,7 +40,7 @@ const HEADING = /^##([^\n]*)$/
 // 컴파일러의 `is_modifier_word` 처럼 `//` 뒤에 `uncoded` 나 `iknow` 낱말이 오고, 낱말 뒤는 끝이거나 공백 문자다. lastIndex 자리에서만 찾는다.
 const MODIFIER_WORD = new RegExp(`[${WS}]*(?:uncoded|iknow)(?:[${WS}]|$)`, 'y')
 // 컴파일러처럼 topic 표시의 `#` 앞에는 공백이 있어야 한다. `C#\`lang\`` 의 `#` 는 글자다.
-const TOPIC = new RegExp(` (#${NAMES})[ \\t]*$`)
+const TOPIC = new RegExp(` (#${NAMES})[${WS}]*$`)
 
 /**
  * 선언 줄을 선언부와 수식어로 가른다. 컴파일러의 `split_modifier` 와 같은 규칙이다.
@@ -77,13 +81,18 @@ function iknowOf(modifier: string | undefined): string {
  */
 let inScope = { locals: new Set<string>(), depth: 1 }
 
+/** 점 참조 하나에서 나누어 볼 조각 수의 최대값이다. 나누기는 조각 수와 scope 깊이의 곱에 비례해 느려진다. */
+const MAX_PARTS = 64
+
 /**
  * 점으로 이은 참조의 조각들을 scope 의 이름으로 나눈다. 컴파일러의 `split_names`(`crates/kang/src/check.rs`)와 같은 순서로 찾는다.
  * 모든 조각이 scope 에 있는 나누기 중에서 왼쪽을 가장 길게 잡는 것을 고른다. 한 이름의 조각 수는 scope 의 가장 많은 조각 수까지만 본다.
  * @param parts 백틱 이름 조각들. 두 개 이상이다
- * @returns 나눈 이름들. 모든 조각이 scope 에 있는 나누기가 없으면 조각을 모두 이은 이름 하나다
+ * @returns 나눈 이름들. 모든 조각이 scope 에 있는 나누기가 없거나 조각이 MAX_PARTS 개를 넘으면 조각을 모두 이은 이름 하나다
  */
 function splitNames(parts: string[]): string[] {
+	// shortcut: 조각이 MAX_PARTS 개를 넘으면 나누지 않는다. 컴파일러는 나누지만 화면이 멈추지 않게 한다. 실제 문서에 그런 참조가 생기면 컴파일러처럼 이은 문자열의 조각으로 찾게 바꾼다.
+	if (parts.length > MAX_PARTS) return [parts.join('.')]
 	const join = (at: number, count: number) => parts.slice(at, at + count).join('.')
 	// fit[at] 은 at 번째 조각부터 끝까지를 모두 scope 의 이름으로 나눌 때 at 자리에서 잡을 조각 수다. 뒤를 먼저 알아야 하므로 끝에서부터 채운다.
 	const fit: (number | undefined)[] = []
@@ -204,7 +213,7 @@ const importExtension: TokenizerExtension = {
 		const target = toLocal(match[1])
 		const names = match[1].match(/`[^`]*`/g)!
 		// local 은 alias, 없으면 마지막 이름이다.
-		const local = match[2] ?? toLocal(names[names.length - 1])
+		const local = toLocal(match[2] ?? names[names.length - 1])
 		return { type: 'kangImport', raw: match[0], target, local }
 	},
 	/** import 줄은 본문에 그리지 않는다. 늘 빈 문자열이다. */
@@ -370,7 +379,8 @@ const kang = new Marked(common, { extensions: [refExtension, importExtension, ke
  * 앞 공백을 뗀 줄이 백틱 3개 이상으로 시작하면 펜스가 열린다. 문단 바로 다음 줄이어도 같다. `- ` 나 `> ` 로 시작하는 줄은 펜스가 아니다.
  * 그 뒤에서 여는 줄보다 적지 않은 백틱으로 시작하는 줄이 펜스를 닫는다. 닫는 줄에 글자가 더 있어도 닫는다.
  * `~~~` 는 펜스가 아니다. 닫히지 않으면 끝까지 펜스다.
- * 펜스 밖에서 앞 공백을 뗀 줄이 KANG_LINE 이면 그 한 줄만 kang 확장으로 읽는다. 나머지 글은 prose 가 읽는다.
+ * 펜스 밖에서 앞 공백을 뗀 줄이 KANG_LINE 이고 선언 문법에 맞으면 그 한 줄만 kang 확장으로 읽는다. 나머지 글은 prose 가 읽는다.
+ * 그래서 `import 를 해야 한다` 처럼 선언 낱말로 시작하는 글은 문단이나 목록에서 떨어지지 않는다.
  * @param body parseKang 의 `body`
  * @returns 최상위 token 배열. 펜스 한 개는 code token 한 개다
  */
@@ -391,8 +401,11 @@ function lex(body: string): Token[] {
 			continue
 		}
 		const kangLine = run < 3 ? KANG_LINE.exec(trimmed) : null
-		// 펜스도 kang 줄도 아닌 보통 줄은 모아 두었다가 prose 에 넘긴다.
-		if (run < 3 && !kangLine) {
+		const word = kangLine?.[1]
+		// 선언 낱말 뒤의 공백 문자는 컴파일러처럼 몇 개여도 되므로 한 칸만 남긴다. `##` 줄은 수식어의 앞 공백이 필요하므로 그대로 둔다.
+		const decl = kangLine ? kang.lexer(word ? `${word} ${trimStart(trimmed.slice(word.length + 1))}` : trimmed) : []
+		// 펜스도 아니고 선언 문법에 맞는 kang 줄도 아닌 줄은 모아 두었다가 prose 에 넘긴다. 컴파일러도 문법에 맞지 않는 import 줄은 본문으로 읽는다.
+		if (run < 3 && !decl[0]?.type.startsWith('kang')) {
 			text.push(line)
 			continue
 		}
@@ -400,13 +413,9 @@ function lex(body: string): Token[] {
 		tokens.push(...prose.lexer(text.join('\n')))
 		text = []
 		// 펜스가 열린다.
-		if (!kangLine) {
-			fence = { run, lang: trimmed.slice(run).trim(), lines: [] }
-			continue
-		}
-		// 선언 낱말 뒤의 공백 문자는 컴파일러처럼 몇 개여도 되므로 한 칸만 남긴다. `##` 줄은 수식어의 앞 공백이 필요하므로 그대로 둔다.
-		const word = kangLine[1]
-		tokens.push(...kang.lexer(word ? `${word} ${trimStart(trimmed.slice(word.length + 1))}` : trimmed))
+		if (run >= 3) fence = { run, lang: trim(trimmed.slice(run)), lines: [] }
+		// kang 줄이다.
+		else tokens.push(...decl)
 	}
 	// 닫히지 않은 펜스는 끝까지 코드다.
 	if (fence) tokens.push({ type: 'code', raw: '', lang: fence.lang, text: fence.lines.join('\n') })
@@ -423,16 +432,16 @@ export function parseKang(text: string): KangView {
 	const view: KangView = { description: '', imports: [], body: '' }
 	const lines = text.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n').split('\n')
 	// 컴파일러처럼 맨 앞 빈 줄을 건너뛴다. 그 다음 줄이 앞뒤 공백을 뗀 `---` 이면 frontmatter 가 열린다.
-	const open = lines.findIndex((l) => l.trim() !== '')
+	const open = lines.findIndex((l) => trim(l) !== '')
 	let start = 0
 	// 열린 frontmatter 는 다음 `---` 까지다. 그 안에서 description 만 읽는다.
-	if (open >= 0 && lines[open].trim() === '---') {
-		const close = lines.findIndex((l, i) => i > open && l.trim() === '---')
+	if (open >= 0 && trim(lines[open]) === '---') {
+		const close = lines.findIndex((l, i) => i > open && trim(l) === '---')
 		const end = close < 0 ? lines.length : close
 		const front = lines.slice(open + 1, end)
 		// 컴파일러처럼 줄 앞뒤 공백을 떼고 찾고, 값은 앞뒤 공백만 뗀다. 따옴표는 값의 일부다.
-		const line = front.map((l) => l.trim()).find((l) => l.startsWith('description:'))
-		if (line !== undefined) view.description = line.slice('description:'.length).trim()
+		const line = front.map(trim).find((l) => l.startsWith('description:'))
+		if (line !== undefined) view.description = trim(line.slice('description:'.length))
 		start = close < 0 ? lines.length : close + 1
 	}
 	view.body = lines.slice(start).join('\n')
@@ -451,7 +460,8 @@ export function parseKang(text: string): KangView {
  * @returns HTML 문자열. 링크에는 아직 동작이 없다
  */
 export function renderBody(body: string, scope: ScopeEntry[]): string {
-	const locals = new Set(scope.map((e) => e.local))
+	// iknow 대상은 local 이 주소 그대로인 항목이다. 컴파일러의 scope 에는 없으므로 나누기에 쓰지 않는다.
+	const locals = new Set(scope.filter((e) => e.local !== e.address).map((e) => e.local))
 	inScope = { locals, depth: [...locals].reduce((depth, local) => Math.max(depth, local.split('.').length), 1) }
 	return kang.parser(lex(body))
 }

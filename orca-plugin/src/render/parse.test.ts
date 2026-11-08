@@ -379,3 +379,44 @@ test('모든 조각이 scope 에 있는 나누기가 없거나 점이 아닌 구
 	const html = render('## t\n\n`결제수단`.`없음` 과 `docs`/`카드`\n', scope)
 	assert.ok(html.includes('<a class="kang-ref" data-ref="결제수단.없음">결제수단.없음</a> 과 <a class="kang-ref" data-ref="docs/카드">docs/카드</a>'), html)
 })
+
+test('선언 낱말로 시작해도 선언 문법에 맞지 않는 줄은 컴파일러처럼 문단과 목록 안의 글이다', () => {
+	const context = renderBody(parseKang(source('CONTEXT')).body, [])
+	assert.ok(context.includes('그 단어를 쓰는 모든 <a class="kang-ref" data-ref="문서">문서</a> 가\nimport 를 해야 하므로 금방 번거로워진다.</p>'), context)
+	const adr2 = renderBody(parseKang(source('docs/adr/0002-flatten-on-read-import-on-write')).body, [])
+	assert.ok(adr2.includes('정의하는 쪽이 <a class="kang-ref" data-ref="owner">owner</a> 이고,\nimport 하는 쪽이 근거 서사다.</li>'), adr2)
+	const adr1 = renderBody(parseKang(source('docs/adr/0001-no-tombstones-for-retired-terms')).body, [])
+	assert.ok(adr1.includes('를\nimport 하면 어떻게 되나&quot; 같은 질문도 없다.</li>'), adr1)
+	const html = render('## t\n\n- 항목\n  keyword 를 쓴다.\n  exception 을 둔다.\n  cover 를 한다.\n')
+	assert.ok(html.includes('<li>항목\nkeyword 를 쓴다.\nexception 을 둔다.\ncover 를 한다.</li>'), html)
+})
+
+test('import 의 as, rev 와 keyword 이름 뒤의 : 와 줄 끝 #topic 둘레의 공백은 컴파일러처럼 Rust 공백 문자다', () => {
+	const view = parseKang('---\ndescription: d\n---\n\nimport `A`.`b`　 as 　`C` rev 　"1"　\nimport `A`.`d`\tas `E`\nimport `A`.`f` rev\t"1"\n\n## t\n\nkeyword `카드`　: 정의 #`t`　\n')
+	assert.deepEqual(view.imports, [{ target: 'A.b', local: 'C' }])
+	const html = renderBody(view.body, [])
+	assert.ok(html.includes('<p>import <a class="kang-ref" data-ref="A.d">A.d</a>\tas <a class="kang-ref" data-ref="E">E</a>\nimport <a class="kang-ref" data-ref="A.f">A.f</a> rev\t&quot;1&quot;</p>'), html)
+	assert.ok(html.includes('<strong>카드</strong><span>정의</span> <a class="kang-ref" data-ref="t">t</a></div>'), html)
+})
+
+test('frontmatter 와 펜스 info string 은 컴파일러처럼 Rust 공백 문자로 앞뒤를 뗀다', () => {
+	const view = parseKang('---\u0085\ndescription: 넬\u0085\n---\n\n## t\n\n```js\u0085\nx\n```\n')
+	assert.equal(view.description, '넬')
+	assert.ok(renderBody(view.body, []).includes('<code class="language-js">x\n</code>'))
+})
+
+test('점으로 이은 참조는 iknow 대상의 주소로 나누지 않는다', () => {
+	const scope = [...scopeOf('카드'), { local: 'B.결제', address: 'B.결제', doc: 'B' }]
+	const html = render('## t\n\n`B`.`결제`.`카드` 다.\n', scope)
+	assert.ok(html.includes('<a class="kang-ref" data-ref="B.결제.카드">B.결제.카드</a> 다.'), html)
+})
+
+test('조각이 아주 많은 점 참조는 깊은 scope 에서도 100ms 안에 그리고 나누지 않는다', () => {
+	const deep = Array(1000).fill('a').join('.')
+	const ref = Array(1000).fill('`b`').join('.')
+	const started = performance.now()
+	const html = render(`## t\n\n${ref}\n`, scopeOf(deep, 'b'))
+	const elapsed = performance.now() - started
+	assert.ok(elapsed < 100, `${elapsed}ms`)
+	assert.ok(html.includes(`data-ref="${Array(1000).fill('b').join('.')}"`), html.slice(0, 200))
+})
