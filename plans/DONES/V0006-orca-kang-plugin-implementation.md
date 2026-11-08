@@ -8,7 +8,7 @@
 
 **Tech Stack:** Rust (기존 `kang` 크레이트, 외부 의존성은 `sha2` 하나), Orca plugin API 1 (Orca 1.4.253), TypeScript (빌드 단계 없음), `marked` 15.0.12, `cytoscape` 3.31.0.
 
-**Spec:** `plans/TODOS/V0005-orca-kang-plugin.md`
+**Spec:** `plans/DONES/V0005-orca-kang-plugin.md`
 
 ## Global Constraints
 
