@@ -35,6 +35,25 @@ pub fn normalize(text: &str) -> String {
     normalized_lines.join("\n").trim().to_string()
 }
 
+/// 정규화된 텍스트의 SHA-256 해시 전체 hex 문자열(64자)을 반환한다.
+///
+/// 그래프 인덱스가 문서 원문 해시로 쓴다. 앞 6자리가 [`rev`] 다.
+///
+/// # 매개변수
+/// - `text`: 해시를 계산할 원본 텍스트 (내부적으로 [`normalize`] 를 거친다)
+///
+/// # 반환값
+/// SHA-256 해시값의 소문자 hex 문자열 64자
+pub fn doc_hash(text: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(normalize(text).as_bytes());
+    hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect()
+}
+
 /// 정규화된 텍스트의 SHA-256 해시 앞 6자리 hex 문자열을 반환한다.
 ///
 /// # 매개변수
@@ -44,16 +63,6 @@ pub fn normalize(text: &str) -> String {
 /// SHA-256 해시값의 앞 6자리 hex 문자열
 #[kang::keyword("CONTEXT.rev 핀", rev = "718dd2")]
 pub fn rev(text: &str) -> String {
-    let normalized = normalize(text);
-
-    let mut hasher = Sha256::new();
-    hasher.update(normalized.as_bytes());
-    let digest = hasher.finalize();
-
     // 전체 hex 문자열 중 앞 6자리만 사용
-    digest
-        .iter()
-        .map(|b| format!("{:02x}", b))
-        .collect::<String>()[..6]
-        .to_string()
+    doc_hash(text)[..6].to_string()
 }

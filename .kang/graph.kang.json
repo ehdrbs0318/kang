@@ -1,0 +1,35 @@
+{"kang":"graph/1",
+"docs":[
+{"path":"CONTEXT","description":"kang 언어를 설계하고 구현할 때 쓰는 용어집. 코드의 타입과 함수 이름은 이 용어를 따른다. 새 용어를 도입하려면 이 파일을 먼저 고친다. 구현 결정은 docs/adr/ 에, 명세는 plans/ 에 있다.","hash":"6c94b24ac49bc40366aff2f922f1dba8179861e8fe979e0feb37c270401e6893"},
+{"path":"docs/adr/0001-no-tombstones-for-retired-terms","description":"ADR-0001: 폐기한 용어에 묘비를 남기지 않는다. deprecated 나 @deprecated 같은 폐기 표현을 kang 에 넣자는 제안이 왔을 때, 또는 개념 이름을 바꿀 때 옛 이름을 어떻게 할지 물을 때 읽는다. 근거 스펙은 V0001 2절 설계 원칙이다.","hash":"d0a3c4819a6da289f3fcc895c658ade45fd5f9652d881fa471eca916424f4971"},
+{"path":"docs/adr/0002-flatten-on-read-import-on-write","description":"ADR-0002: 읽을 때는 평탄화, 쓸 때는 import. kang show 가 왜 참조한 topic 의 전문을 재귀로 펼쳐 넣는지 물을 때, 또는 하위 문서가 상위 정책을 재정의하는 것을 언어로 막자는 제안이 왔을 때 읽는다. 근거 스펙은 V0001 6.2절이다.","hash":"1a24ee4d3a5ec4568b0361fedcf699971f8d26bb2622fbbdc593e5427ab46360"},
+{"path":"docs/adr/0003-symbolic-addressing-not-line-numbers","description":"ADR-0003: 오래 쓰는 주소는 심볼로 지정한다. 줄 번호를 쓰지 않는다. kang bless 의 인자 형식, 진단의 fix 표현, 코드 애노테이션의 위치 지정을 설계할 때, 또는 줄 번호로 가리키면 간단하다는 제안이 왔을 때 읽는다.","hash":"fe226b26a5c72732690fea434b75e57c5fb5711bab3cb54171a3f3e0ef28d9d4"},
+{"path":"examples/ts-consumer/docs/proration","description":"환불 금액을 기간으로 쪼개는 계산 규칙. 얼마를 돌려주는지가 필요할 때 읽는다. 받아 줄지 말지는 docs/refunds 에 있다. src/refund.ts 가 이 문서의 topic 을 애노테이션으로 참조한다.","hash":"e241f3136ce3a715d555b5543186dcdade397e4c84f2eacb43a1122328e98c49"},
+{"path":"examples/ts-consumer/docs/refunds","description":"환불 정책. 어떤 요청을 받아 주고 어떤 요청을 거절하는지는 이 문서만 정한다. 돌려줄 금액을 쪼개는 규칙은 docs/proration 에 있다. src/refund.ts 가 이 문서의 topic 을 애노테이션으로 참조한다.","hash":"b5650fea8fa551138cc089080ae1fc3894d11ccb153f838ecc65c118eabca500"}
+],
+"keywords":[
+{"path":"CONTEXT","name":"문서","definition":".kang 파일 하나. 프로젝트 안에서 파일 경로 하나로 구별된다"},
+{"path":"CONTEXT","name":"keyword","definition":"그 프로젝트의 도메인에서만 쓰는 특수 용어. 반드시 한 줄 정의가 있고, 계층을 가질 수 있다"},
+{"path":"CONTEXT","name":"계층 keyword","definition":"결제.상태 처럼 상위 개념 아래에 정의한 `keyword`. 전체 경로가 이름이다. 그래서 결제.상태 와 구독.상태 는 서로 다른 이름이고, 충돌하지 않는다"},
+{"path":"CONTEXT","name":"topic","definition":"파일 안에서 혼자 읽어도 뜻이 통하는 서술 단위. 같은 파일의 다른 `topic` 과 관계가 없다"},
+{"path":"CONTEXT","name":"exception","definition":"어떤 정책에 예외가 있다는 선언. 본문 없이 이름만 있다"},
+{"path":"CONTEXT","name":"cover","definition":"어떤 `exception` 을 다루는 정책이 이 `topic` 이라는 선언"},
+{"path":"CONTEXT","name":"심볼","definition":"파일 밖에 공개되어 import 할 수 있는 것. `keyword`, `topic`, `exception` 세 종류뿐이다"},
+{"path":"CONTEXT","name":"owner","definition":"어떤 `keyword` 를 선언한 파일. 한 개념의 `owner` 는 정확히 하나다"},
+{"path":"CONTEXT","name":"정본 이름","definition":"`owner` 가 선언한 `keyword` 의 이름. 그 개념을 부르는 유일한 이름이다. 동의어 문법은 없다"},
+{"path":"CONTEXT","name":"alias","definition":"import 문이 붙이는 다른 이름. 그 import 문이 있는 파일 안에서만 쓸 수 있다. 로컬 이름이 충돌할 때 피하는 수단이다. 개념에 두 번째 이름을 주는 수단이 아니다"},
+{"path":"CONTEXT","name":"iknow","definition":"서로 다른 파일이 같은 이름의 `심볼` 을 선언할 때, 각 파일이 나머지 파일 모두를 알고 있다고 밝히는 선언"},
+{"path":"CONTEXT","name":"rev 핀","definition":"import 가 대상 `심볼` 의 이름과 함께 내용까지 고정한 해시. 대상의 내용이 바뀌면 컴파일 error 가 난다. 그래서 다시 검토해야만 한다"},
+{"path":"CONTEXT","name":"bless","definition":"맞지 않는 `rev 핀` 을 검토했다고 선언하고 새 값으로 갱신하는 일"},
+{"path":"CONTEXT","name":"pending","definition":"예외가 있다는 것은 알지만, 그 예외를 다룰 정책을 아직 정하지 않았다는 선언"},
+{"path":"CONTEXT","name":"uncoded","definition":"대응하는 코드가 없는 것이 정상인 `topic` 이라는 선언"},
+{"path":"CONTEXT","name":"묘비","definition":"폐기한 개념의 옛 이름을 지우지 않고, 대신할 대상을 가리키는 표시로 남긴 것"},
+{"path":"examples/ts-consumer/docs/proration","name":"일할 계산","definition":"구독 기간을 하루 단위로 나누고 사용한 날 수만큼만 값을 매기는 방식"},
+{"path":"examples/ts-consumer/docs/refunds","name":"환불","definition":"승인이 끝난 결제를 되돌려 구매자에게 대금을 돌려주는 것"},
+{"path":"examples/ts-consumer/docs/refunds","name":"정산","definition":"결제 대금을 판매자에게 이미 지급한 상태"}
+],
+"edges":[
+{"from":"docs/adr/0001-no-tombstones-for-retired-terms","to":"CONTEXT","symbols":["CONTEXT.묘비","CONTEXT.심볼","CONTEXT.문서"]},
+{"from":"docs/adr/0002-flatten-on-read-import-on-write","to":"CONTEXT","symbols":["CONTEXT.topic","CONTEXT.owner","CONTEXT.문서"]},
+{"from":"docs/adr/0003-symbolic-addressing-not-line-numbers","to":"CONTEXT","symbols":["CONTEXT.심볼","CONTEXT.rev 핀","CONTEXT.alias","CONTEXT.bless","CONTEXT.문서"]}
+]}

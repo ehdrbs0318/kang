@@ -4683,3 +4683,64 @@ fn bless_updates_all_lines_importing_same_symbol() {
 
     cleanup(&root);
 }
+
+/// 빌드가 성공하면 저장소 루트에 그래프 인덱스가 생긴다. 하위 디렉토리에서 불러도 같다.
+#[test]
+fn build_writes_graph_index() {
+    let root = temp_root("graph-ok");
+    make_git_repo(&root);
+    valid_doc(&root);
+    fs::create_dir_all(root.join("docs/sub")).unwrap();
+
+    let (_, stderr, code) = run(&root.join("docs/sub"), &["build"]);
+
+    assert_eq!(code, 0, "stderr: {stderr}");
+    let graph = fs::read_to_string(root.join(".kang/graph.kang.json"))
+        .expect("그래프 인덱스가 루트의 .kang 아래에 생겨야 한다");
+    assert_eq!(graph.lines().next(), Some("{\"kang\":\"graph/1\","));
+    assert!(graph.contains("\"path\":\"docs/a\""), "{graph}");
+    // 두 번 돌려도 같은 바이트다.
+    run(&root, &["build"]);
+    assert_eq!(
+        fs::read_to_string(root.join(".kang/graph.kang.json")).unwrap(),
+        graph
+    );
+    cleanup(&root);
+}
+
+/// 컴파일 error 로 끝난 빌드는 그래프 인덱스를 쓰지 않는다.
+#[test]
+fn build_does_not_write_graph_on_error() {
+    let root = temp_root("graph-err");
+    make_git_repo(&root);
+    write(
+        &root,
+        "docs/a.kang",
+        "---\ndescription: x\n---\n\n사용자는 `없는말` 을 한다.\nimport `docs`/`없음`.`결제`\n",
+    );
+
+    let (_, _, code) = run(&root, &["build"]);
+
+    assert_eq!(code, 1);
+    assert!(!root.join(".kang/graph.kang.json").exists());
+    cleanup(&root);
+}
+
+/// kang 이 만들지 않은 파일은 덮어쓰지 않고 종료 코드 2 로 끝난다.
+#[test]
+fn build_refuses_to_overwrite_foreign_graph_file() {
+    let root = temp_root("graph-foreign");
+    make_git_repo(&root);
+    valid_doc(&root);
+    write(&root, ".kang/graph.kang.json", "{\"mine\":true}\n");
+
+    let (_, stderr, code) = run(&root, &["build"]);
+
+    assert_eq!(code, 2, "stderr: {stderr}");
+    assert!(stderr.contains("kang 이 만들지 않은 파일"), "{stderr}");
+    assert_eq!(
+        fs::read_to_string(root.join(".kang/graph.kang.json")).unwrap(),
+        "{\"mine\":true}\n"
+    );
+    cleanup(&root);
+}
