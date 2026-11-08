@@ -22,6 +22,7 @@
 - 문서 해시는 맨 앞 BOM(U+FEFF) 하나를 뗀 원문을 `crates/kang/src/hash.rs` 의 `normalize` 와 같은 규칙으로 정규화한 텍스트의 SHA-256 전체 hex 값이다. Rust 는 `doc_hash`, TypeScript 는 `docHash` 가 계산한다. `normalize` 와 `rev` 는 BOM 을 떼지 않는다. 그래야 rev 핀이 바뀌지 않는다. TypeScript 쪽 계산은 worker 에만 있다.
 - 원격 workspace 는 지원하지 않는다. `hostId` 가 null 이나 `'local'` 이면 로컬 workspace 이고, 그 밖의 값이면 원격 workspace 다.
 - 문서와 주석은 `/pstack:technical-writing` 규칙과 한국어 쉬운 문체를 따른다. 주석은 한국어다.
+- 플러그인은 `@types/node` 를 쓰지 않는다. `orca-plugin/src/node.d.ts` 에 쓰는 함수의 타입만 직접 적는다. 플러그인에는 빌드와 설치 단계가 없어서 패키지를 받을 곳이 없다. `kang` 크레이트에도 의존성을 더하지 않는다. 그래서 이 파일은 임시 방법이 아니라 정한 방법이다.
 
 ## Interfaces
 
@@ -67,6 +68,8 @@ type Locate =
 - `scope` 는 `kind: 'doc'` 일 때 그 문서의 `scope` 다. `kind: 'graph'` 이면 빈 목록이다.
 - `stale` 은 지금 해시가 인덱스와 다른 문서 경로들이다.
 - 인덱스의 항목 하나라도 필드 타입이 틀리면 worker 는 그 인덱스 전체를 없는 것으로 본다. 다른 workspace 는 그대로 찾는다.
+- 인덱스는 커밋된 파일이라 어느 저장소에서든 올 수 있다. 그래서 worker 는 다음 인덱스도 없는 것으로 본다. `docs[].path`, `scope[].doc`, `keywords[].path`, `edges[].from`, `edges[].to` 중 하나라도 비었거나, 절대 경로이거나, 역슬래시가 있거나, `.` 나 `..` 조각이 있는 인덱스다. `docs[].path` 가 겹치는 인덱스도 없는 것으로 본다.
+- worker 는 보통 파일만 읽는다. symlink 는 따라간 뒤의 파일을 본다. 디렉토리, FIFO, 장치 파일, 32 MiB 보다 큰 파일은 없는 파일로 본다.
 - 한 workspace 안에서 해시가 같은 문서가 둘 이상이면 `ambiguous` 다.
 - 로컬 후보가 없을 때 focus 된 workspace(`workspace.list` 에서 이름과 branch 가 같은 것)가 원격이면 `remoteOnly` 다. 그 밖에는 `notIndexed` 다.
 - `kang.open` 은 `path` 가 그 workspace 의 인덱스에 있을 때만 `<path>.kang` 을 연다. 없으면 `{ opened: false }` 다.
@@ -80,7 +83,7 @@ export function renderBody(body: string): string      // 참조는 <a class="kan
 export function lookupRef(scope: ScopeEntry[], ref: string): ScopeEntry | undefined
 ```
 
-- 이름 풀이는 컴파일러가 한다. 화면은 `lookupRef` 로 `scope` 에서 찾기만 한다. 맨 앞 `#` 나 `!` 하나는 떼고 `local` 과 비교한다. 없으면 링크 없이 글자로 둔다.
+- 이름 풀이는 컴파일러가 한다. 화면은 `lookupRef` 로 `scope` 에서 찾기만 한다. 맨 앞 `#` 하나는 떼고 `local` 과 비교한다. 참조 바로 앞의 `!` 는 참조에 넣지 않고 글자로 둔다. kang 문법에서 `!` 는 주소 안의 구분자이고 참조 앞에 오지 않는다. 없으면 링크 없이 글자로 둔다.
 - import 칩은 `target` 과 `address` 가 같은 `scope` 항목으로 찾는다. 칩의 문서 경로는 그 항목의 `doc` 이다. 찾지 못하면 `target` 을 보여 준다.
 - 정의가 `definitions` 에 없는 참조에는 tooltip 을 달지 않는다.
 

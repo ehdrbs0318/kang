@@ -4,7 +4,7 @@ import type { Locate } from './protocol'
 /** 상태가 `ok` 가 아닐 때 보여 주는 안내 문구 HTML 이다. 고정 문자열이므로 그대로 innerHTML 에 넣는다. */
 const NOTICES: Record<Exclude<Locate['status'], 'ok'>, string> = {
 	notIndexed: '<code>kang build</code> 를 실행하세요.',
-	ambiguous: '이 문서와 같은 문서가 여러 workspace 에 있어서 하나를 고를 수 없습니다.',
+	ambiguous: '같은 내용의 문서가 여럿 있어서 하나를 고를 수 없습니다.',
 	remoteOnly: '원격 workspace 는 지원하지 않습니다.',
 }
 

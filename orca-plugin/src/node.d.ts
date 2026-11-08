@@ -1,5 +1,5 @@
 // worker 와 테스트가 쓰는 Node 내장 모듈의 최소 타입이다.
-// shortcut: @types/node 를 쓰지 않으려고 쓰는 함수만 적는다. 쓰는 함수가 늘면 @types/node 로 바꾼다.
+// 플러그인에는 빌드와 설치 단계가 없으므로 @types/node 를 받을 곳이 없다. 그래서 쓰는 함수만 직접 적는다.
 
 declare module 'node:fs' {
 	/**
@@ -10,6 +10,45 @@ declare module 'node:fs' {
 	 * @throws 파일이 없거나 디렉토리이면 던진다
 	 */
 	export function readFileSync(path: string, encoding: 'utf8'): string
+	/** `statSync` 가 돌려주는 파일 정보 중 쓰는 부분이다. */
+	interface Stats {
+		/** 보통 파일이면 true 다. */
+		isFile(): boolean
+		/** 바이트 단위 크기다. */
+		size: number
+	}
+	/**
+	 * 파일 정보를 읽는다. symlink 는 따라간다.
+	 * @param path 볼 경로
+	 * @returns 파일 정보
+	 * @throws 경로가 없거나 볼 권한이 없으면 던진다
+	 */
+	export function statSync(path: string): Stats
+	/**
+	 * 파일에 글자를 쓴다. 파일이 없으면 만든다.
+	 * @param path 쓸 파일 경로
+	 * @param data 쓸 내용
+	 * @throws 쓸 수 없으면 던진다
+	 */
+	export function writeFileSync(path: string, data: string): void
+	/**
+	 * 파일 크기를 바꾼다. 늘린 부분은 0 바이트다.
+	 * @param path 바꿀 파일 경로
+	 * @param length 새 크기 (바이트)
+	 * @throws 파일이 없거나 쓸 수 없으면 던진다
+	 */
+	export function truncateSync(path: string, length: number): void
+	/**
+	 * 파일을 지운다.
+	 * @param path 지울 파일 경로
+	 * @throws 파일이 없거나 지울 수 없으면 던진다
+	 */
+	export function rmSync(path: string): void
+}
+
+declare module 'node:os' {
+	/** 운영 체제의 임시 디렉토리 경로를 돌려준다. */
+	export function tmpdir(): string
 }
 
 declare module 'node:crypto' {
@@ -31,6 +70,8 @@ declare module 'node:crypto' {
 declare module 'node:path' {
 	/** 경로를 이어 붙이고 정리한다. */
 	export function join(...parts: string[]): string
+	/** 경로가 절대 경로이면 true 를 돌려준다. */
+	export function isAbsolute(path: string): boolean
 	/** 경로를 절대 경로로 만든다. 상대 경로는 앞의 인자를 기준으로 푼다. */
 	export function resolve(...parts: string[]): string
 }

@@ -1,8 +1,11 @@
 // worker 를 mock host 위에서 실행한다. workspace 경로는 이 저장소 루트라서 실제 파일을 읽는다.
 import { fileURLToPath } from 'node:url'
 import { assert, mockHost, mountWorker, test } from 'orca/testing'
-import { readFileSync } from 'node:fs'
+import { readFileSync, rmSync, truncateSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import * as main from './worker'
+import { realFs } from './worker'
 
 /** 이 파일에서 두 단계 위가 저장소 루트다. */
 const ROOT = fileURLToPath(new URL('../../', import.meta.url))
@@ -39,4 +42,19 @@ test('kang.open 은 인덱스에 있는 문서만 연다', async () => {
 	assert.deepEqual(await worker.request('kang.open', { workspaceId: 'nope', path: 'CONTEXT' }), { opened: false })
 	assert.deepEqual(h.callsOf('editor.open'), [{ workspaceId: 'w1', path: 'CONTEXT.kang' }])
 	await worker.deactivate()
+})
+
+test('realFs 는 보통 파일이 아니거나 32 MiB 보다 큰 파일을 읽지 않는다', () => {
+	const big = join(tmpdir(), `kang-worker-test-${Date.now()}.kang`)
+	writeFileSync(big, '')
+	// 디스크를 쓰지 않는 sparse 파일로 크기만 키운다.
+	truncateSync(big, 32 * 1024 * 1024 + 1)
+	try {
+		assert.equal(realFs.read(ROOT), null)
+		assert.equal(realFs.read('/dev/null'), null)
+		assert.equal(realFs.read(big), null)
+		assert.ok(realFs.read(`${ROOT}CONTEXT.kang`))
+	} finally {
+		rmSync(big)
+	}
 })

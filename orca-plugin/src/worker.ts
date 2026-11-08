@@ -1,18 +1,24 @@
 // 플러그인의 worker 다. custom editor 의 `kang.locate`, `kang.open` 요청에 답한다.
 // Orca 가 이 파일을 Node 프로세스로 실행하므로 실제 파일 시스템을 읽을 수 있다.
-import { readFileSync } from 'node:fs'
+import { readFileSync, statSync } from 'node:fs'
 import type { OrcaWorkerApi } from 'orca/worker'
 import { isLocal, locate, readIndex, type FileReader } from './locate'
 
-/** 실제 파일 시스템이다. 파일이 없거나 디렉토리이면 null 을 돌려준다. */
-const realFs: FileReader = {
+/** worker 가 읽는 파일의 최대 크기다. 32 MiB 이다. */
+const MAX_SIZE = 32 * 1024 * 1024
+
+/** 실제 파일 시스템이다. 보통 파일만 읽는다. */
+export const realFs: FileReader = {
 	/**
-	 * 파일을 UTF-8 글자로 읽는다.
+	 * 파일을 UTF-8 글자로 읽는다. symlink 는 따라간 뒤의 파일을 본다.
 	 * @param path 절대 경로
-	 * @returns 파일 내용. 읽을 수 없으면 null
+	 * @returns 파일 내용. 없거나, 보통 파일이 아니거나, 32 MiB 보다 크거나, 읽을 수 없으면 null
 	 */
 	read(path) {
 		try {
+			const stat = statSync(path)
+			// 디렉토리, FIFO, 장치 파일, 큰 파일은 읽지 않는다. `/dev/zero` 나 FIFO 를 읽으면 worker 가 멈춘다.
+			if (!stat.isFile() || stat.size > MAX_SIZE) return null
 			return readFileSync(path, 'utf8')
 		} catch {
 			// 없는 파일, 디렉토리, 권한 없음은 모두 읽을 수 없는 파일로 본다.
@@ -47,7 +53,7 @@ export default function activate(orca: OrcaWorkerApi): void {
 		const { workspaces } = await orca.host.call('workspace.list')
 		const workspace = workspaces.find((w) => w.id === workspaceId && isLocal(w))
 		const index = workspace ? readIndex(workspace.path, realFs) : null
-		// 인덱스에 있는 문서만 연다. 그래서 요청이 workspace 밖의 파일을 열 수 없다.
+		// 인덱스에 있는 문서만 연다. readIndex 가 workspace 밖을 가리키는 경로가 있는 인덱스를 버리므로, 요청이 workspace 밖의 파일을 열 수 없다.
 		if (!index || !index.docs.some((d) => d.path === path)) return { opened: false }
 		await orca.host.call('editor.open', { workspaceId, path: `${path}.kang` })
 		return { opened: true }

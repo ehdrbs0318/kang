@@ -1,7 +1,7 @@
 // 열린 파일의 원문으로 그 파일이 어느 workspace 의 어느 kang 문서인지 찾는다.
 // 파일 읽기는 `fs` 인자로 받으므로 이 모듈은 순수하고, 테스트에서 가짜 파일 시스템을 쓴다.
 import { createHash } from 'node:crypto'
-import { join, resolve } from 'node:path'
+import { isAbsolute, join, resolve } from 'node:path'
 import type { GraphDoc, GraphEdge, GraphKeyword, Locate } from './protocol'
 
 /** `workspace.list` 가 돌려주는 workspace 한 개다. */
@@ -111,10 +111,21 @@ function validLists(docs: unknown, keywords: unknown, edges: unknown): boolean {
 }
 
 /**
+ * 인덱스의 문서 경로가 workspace 안을 가리키는지 본다. 인덱스는 커밋된 파일이라 어느 저장소에서든 올 수 있다.
+ * 조각이 모두 비지 않고 `.` 나 `..` 가 아니면, 루트에 이은 경로가 루트 밖으로 나갈 수 없다.
+ * @param path `/` 로 나눈 문서 경로
+ * @returns 상대 경로이고 역슬래시가 없고 모든 조각이 보통 이름이면 true
+ */
+function insidePath(path: string): boolean {
+	return !isAbsolute(path) && !path.includes('\\') && path.split('/').every((s) => s !== '' && s !== '.' && s !== '..')
+}
+
+/**
  * workspace 의 그래프 인덱스를 읽는다.
  * @param root workspace 루트 절대 경로
  * @param fs 파일 읽기
- * @returns 인덱스. 파일이 없거나, JSON 이 깨졌거나, `kang` 표지가 `graph/1` 이 아니거나, 항목 하나라도 타입이 틀리면 null
+ * @returns 인덱스. 파일이 없거나, JSON 이 깨졌거나, `kang` 표지가 `graph/1` 이 아니거나, 항목 하나라도 타입이 틀리면 null.
+ *   문서 경로 하나라도 workspace 밖을 가리키거나 `docs` 에 같은 경로가 둘 이상이어도 null
  */
 export function readIndex(root: string, fs: FileReader): GraphIndex | null {
 	const text = fs.read(join(root, INDEX_PATH))
@@ -130,7 +141,15 @@ export function readIndex(root: string, fs: FileReader): GraphIndex | null {
 	const index = value as { kang?: unknown; docs?: unknown; keywords?: unknown; edges?: unknown } | null
 	// kang 이 만든 파일이 아니거나 항목 하나라도 타입이 틀리면 인덱스가 없는 것으로 본다. 그래야 깨진 인덱스 하나가 다른 workspace 를 막지 않는다.
 	if (!index || index.kang !== 'graph/1' || !validLists(index.docs, index.keywords, index.edges)) return null
-	return { text, docs: index.docs as GraphDoc[], keywords: index.keywords as GraphKeyword[], edges: index.edges as GraphEdge[] }
+	const docs = index.docs as GraphDoc[]
+	const keywords = index.keywords as GraphKeyword[]
+	const edges = index.edges as GraphEdge[]
+	const paths = [...docs.flatMap((d) => [d.path, ...d.scope.map((e) => e.doc)]), ...keywords.map((k) => k.path), ...edges.flatMap((e) => [e.from, e.to])]
+	// workspace 밖을 가리키는 경로가 있으면 그 파일을 읽거나 열 수 있으므로 인덱스 전체를 버린다.
+	if (!paths.every(insidePath)) return null
+	// 같은 문서 경로가 둘이면 그래프 화면의 점 id 가 겹치므로 인덱스 전체를 버린다.
+	if (new Set(docs.map((d) => d.path)).size !== docs.length) return null
+	return { text, docs, keywords, edges }
 }
 
 /**

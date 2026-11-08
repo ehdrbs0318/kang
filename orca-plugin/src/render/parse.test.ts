@@ -119,7 +119,13 @@ test('본문의 HTML 은 글자로 남는다', () => {
 	assert.ok(html.includes('&#60;script&#62;'))
 })
 
-test('lookupRef 는 참조 문자열을 scope 의 local 로 찾고, 앞의 # 나 ! 하나는 떼고 찾는다', () => {
+test('참조 바로 앞의 ! 는 참조가 아니라 글자로 남는다', () => {
+	const html = render('## t\n\n주의!`결제` 와 `docs`/`A`!`예외`\n')
+	assert.ok(html.includes('주의!<a class="kang-ref" data-ref="결제">결제</a>'), html)
+	assert.ok(html.includes('<a class="kang-ref" data-ref="docs/A!예외">docs/A!예외</a>'), html)
+})
+
+test('lookupRef 는 참조 문자열을 scope 의 local 로 찾고, 앞의 # 하나는 떼고 찾는다', () => {
 	const scope = [
 		{ local: 'A 결제', address: 'docs/A.결제', doc: 'docs/A' },
 		{ local: '결제수단.카드', address: 'docs/B.결제수단.카드', doc: 'docs/B' },
@@ -130,7 +136,8 @@ test('lookupRef 는 참조 문자열을 scope 의 local 로 찾고, 앞의 # 나
 	assert.equal(lookupRef(scope, 'A 결제'), scope[0])
 	assert.equal(lookupRef(scope, '결제수단.카드'), scope[1])
 	assert.equal(lookupRef(scope, '#결제의 방법'), scope[2])
-	assert.equal(lookupRef(scope, '!예외'), scope[3])
+	assert.equal(lookupRef(scope, '예외'), scope[3])
+	assert.equal(lookupRef(scope, '!예외'), undefined)
 	assert.equal(lookupRef(scope, 'docs/A#상품'), scope[4])
 })
 

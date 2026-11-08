@@ -19,7 +19,7 @@ export type KangView = {
 
 /** 백틱으로 감싼 이름들을 `/ . # !` 로 이은 kang 참조 원문이다. */
 const NAMES = '`[^`\\n]*`(?:[/.#!]`[^`\\n]*`)*'
-const REF = new RegExp(`^[#!]?${NAMES}`)
+const REF = new RegExp(`^#?${NAMES}`)
 const IMPORT = new RegExp(`^import[ \\t]+(${NAMES})(?:[ \\t]+as[ \\t]+\`([^\`\\n]*)\`)?(?:[ \\t]+rev[ \\t]+"[^"\\n]*")?[ \\t]*(?:\\n|$)`)
 const KEYWORD = /^keyword[ \t]+(`[^`\n]*`(?:\.`[^`\n]*`)*)[ \t]*:[ \t]*(.*)(?:\n|$)/
 const DECL = /^(exception|cover)[ \t]+`([^`\n]*)`([ \t]+pending)?(?:[ \t]*\/\/[ \t]*iknow[ \t]+(.*?))?[ \t]*(?:\n|$)/
@@ -74,7 +74,10 @@ function iknowHtml(self: RendererThis, tokens: Token[]): string {
 	return tokens.length > 0 ? ` ${badge('iknow')} ${self.parser.parseInline(tokens)}` : ''
 }
 
-/** 본문의 백틱 참조다. `<a class="kang-ref" data-ref="참조 문자열">` 로 그린다. `` \` `` 는 marked 의 escape 가 먼저 가져간다. */
+/**
+ * 본문의 백틱 참조다. `<a class="kang-ref" data-ref="참조 문자열">` 로 그린다. `` \` `` 는 marked 의 escape 가 먼저 가져간다.
+ * 맨 앞의 `#` 는 참조에 넣는다. 맨 앞의 `!` 는 넣지 않는다. kang 문법에서 `!` 는 주소 안의 구분자일 뿐 참조 앞에 오지 않는다.
+ */
 const refExtension: TokenizerExtension = {
 	name: 'kangRef',
 	level: 'inline',
@@ -83,7 +86,7 @@ const refExtension: TokenizerExtension = {
 	 * @param src 남은 원문
 	 * @returns 참조의 첫 시작 위치. 없으면 -1
 	 */
-	start: (src) => src.search(/[#!]?`/),
+	start: (src) => src.search(/#?`/),
 	/**
 	 * 원문 맨 앞을 백틱 참조 token 으로 바꾼다.
 	 * @param src 남은 원문
@@ -102,7 +105,7 @@ const refExtension: TokenizerExtension = {
 	 */
 	renderer(token) {
 		const local = token.local as string
-		return `<a class="kang-ref" data-ref="${escape(local)}">${escape(local.replace(/^[#!]/, ''))}</a>`
+		return `<a class="kang-ref" data-ref="${escape(local)}">${escape(local.replace(/^#/, ''))}</a>`
 	},
 }
 
@@ -298,12 +301,12 @@ export function renderBody(body: string): string {
 
 /**
  * 본문의 참조 문자열을 `kang build` 가 쓴 scope 에서 찾는다. 이름 풀이는 컴파일러가 이미 했으므로 여기서는 찾기만 한다.
- * 맨 앞의 `#` 나 `!` 하나는 떼고 찾는다. 컴파일러는 본문 참조의 기호를 보지 않고 이름만 보기 때문이다.
+ * 맨 앞의 `#` 하나는 떼고 찾는다. 컴파일러는 본문 참조의 기호를 보지 않고 이름만 보기 때문이다.
  * @param scope `kang.locate` 답의 `scope`
  * @param ref 참조 문자열 (예: `A 결제`, `결제수단.카드`, `#topic`, `docs/A#상품`)
  * @returns 맞는 항목. 없으면 undefined
  */
 export function lookupRef(scope: ScopeEntry[], ref: string): ScopeEntry | undefined {
-	const local = ref.replace(/^[#!]/, '')
+	const local = ref.replace(/^#/, '')
 	return scope.find((e) => e.local === local)
 }

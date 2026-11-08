@@ -116,6 +116,28 @@ test('항목의 타입이 틀린 인덱스는 없는 것으로 보고, 다른 wo
 	assert.deepEqual(locate(DOC_A, bad, null, fs), { status: 'notIndexed' })
 })
 
+test('workspace 밖을 가리키는 경로가 하나라도 있는 인덱스는 없는 것으로 본다', () => {
+	const doc = (path: string, scope: unknown[] = []) => ({ path, description: '', hash: docHash(path === 'A' ? DOC_A : DOC_B), scope })
+	const bad = ['', '/etc/passwd', '../x', 'a/../../x', './A', 'a//b', 'a\\b', 'a/.']
+	const indexes = [
+		...bad.map((p) => ({ docs: [doc('A'), doc(p)], keywords: [], edges: [] })),
+		{ docs: [doc('A', [{ local: 'x', address: 'x', doc: '../x' }])], keywords: [], edges: [] },
+		{ docs: [doc('A')], keywords: [{ path: '../x', name: 'n', definition: 'd' }], edges: [] },
+		{ docs: [doc('A')], keywords: [], edges: [{ from: 'A', to: '/x', symbols: [] }] },
+		{ docs: [doc('A')], keywords: [], edges: [{ from: '..', to: 'A', symbols: [] }] },
+	]
+	for (const index of indexes) {
+		const fs = fakeFs({ '/r/a/.kang/graph.kang.json': JSON.stringify({ kang: 'graph/1', ...index }), '/r/a/A.kang': DOC_A })
+		assert.deepEqual(locate(DOC_A, [ws('w1', '/r/a')], null, fs), { status: 'notIndexed' }, JSON.stringify(index))
+	}
+})
+
+test('같은 문서 경로가 두 번 나오는 인덱스는 없는 것으로 본다', () => {
+	const doc = { path: 'A', description: '', hash: docHash(DOC_A), scope: [] }
+	const fs = fakeFs({ '/r/a/.kang/graph.kang.json': JSON.stringify({ kang: 'graph/1', docs: [doc, doc], keywords: [], edges: [] }) })
+	assert.deepEqual(locate(DOC_A, [ws('w1', '/r/a')], null, fs), { status: 'notIndexed' })
+})
+
 test('로컬 후보가 없고 focus 된 workspace 가 원격이면 remoteOnly 다', () => {
 	const remote = { ...ws('w2', '/r/b', 'b', 'dev'), hostId: 'ssh-1' }
 	assert.deepEqual(locate(DOC_A, [ws('w1', '/r/a'), remote], { displayName: 'b', branch: 'dev' }, fakeFs({})), { status: 'remoteOnly' })
