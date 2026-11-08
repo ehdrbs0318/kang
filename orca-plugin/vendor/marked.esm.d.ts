@@ -41,8 +41,17 @@ export type TokenizerExtension = {
 /** `use` 에 넘기는 설정이다. */
 export type MarkedExtension = {
 	extensions?: TokenizerExtension[]
-	/** 기본 renderer 의 메소드를 바꾼다. 여기서는 `html` 만 쓴다. */
-	renderer?: { html?(token: { text: string }): string }
+	/** 기본 tokenizer 의 메소드를 바꾼다. undefined 를 돌려주면 아무것도 읽지 않고, false 를 돌려주면 기본 tokenizer 가 읽는다. */
+	tokenizer?: {
+		fences?(src: string): Token | undefined
+		code?(src: string): Token | undefined
+		lheading?(src: string): Token | undefined
+	}
+	/** 기본 renderer 의 메소드를 바꾼다. 여기서는 `html` 과 `image` 만 쓴다. */
+	renderer?: {
+		html?(token: { text: string }): string
+		image?(token: { href: string; title?: string | null; text: string }): string
+	}
 }
 
 /** 설정을 따로 갖는 marked 인스턴스다. */

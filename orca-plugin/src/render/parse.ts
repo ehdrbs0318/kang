@@ -1,6 +1,6 @@
 // kang 원문을 렌더링 화면용으로 나누고 HTML 로 그린다. 본문 참조는 `kang build` 가 쓴 scope 에서 찾는다.
 // kang 문법(import, keyword, 백틱 참조, 선언 줄, topic 수식어)은 marked 의 확장으로 다룬다.
-// 그래서 marked 가 아는 코드 영역(코드 펜스, 들여 쓴 코드) 안에서는 kang 문법을 해석하지 않는다.
+// 코드 영역은 컴파일러와 같은 규칙으로 정한다. 백틱 3개 이상으로 시작하는 줄만 펜스이고, 그 안에서는 kang 문법을 해석하지 않는다.
 // 화면과 Orca 에 의존하지 않는 순수 함수이므로 Node 테스트에서 그대로 부른다.
 import type { ScopeEntry } from '../protocol'
 import { Marked, type RendererThis, type Token, type TokenizerExtension, type TokenizerThis } from '../../vendor/marked.esm.js'
@@ -23,7 +23,10 @@ const KEYWORD = /^keyword[ \t]+(`[^`\n]*`(?:\.`[^`\n]*`)*)[ \t]*:[ \t]*(.*)(?:\n
 const DECL = /^(exception|cover)[ \t]+`([^`\n]*)`([ \t]+pending)?(?:[ \t]*\/\/[ \t]*iknow[ \t]+(.*?))?[ \t]*(?:\n|$)/
 const HEADING = /^(#{1,6})[ \t]+(.*?)[ \t]*\/\/[ \t]*(?:(uncoded)|iknow[ \t]+(.*?))[ \t]*(?:\n|$)/
 const IKNOW = /[ \t]*\/\/[ \t]*iknow[ \t]+(.*)$/
-const TOPIC = new RegExp(`[ \\t]*(#${NAMES})[ \\t]*$`)
+// 컴파일러처럼 topic 표시의 `#` 앞에는 공백이 있어야 한다. `C#\`lang\`` 의 `#` 는 글자다.
+const TOPIC = new RegExp(` (#${NAMES})[ \\t]*$`)
+/** 요청을 보내도 되는 이미지 주소다. scheme, `/`, `\\`, 공백이 없는 상대 경로만 받는다. */
+const RELATIVE_SRC = /^(?![a-z][a-z0-9+.-]*:|[\\/])[^\\\s\x00-\x1f]+$/i
 
 /**
  * HTML 에서 특별한 뜻이 있는 문자를 문자 참조로 바꾼다.
@@ -257,11 +260,48 @@ const headingExtension: TokenizerExtension = {
 	},
 }
 
+/**
+ * 원문 맨 앞의 코드 펜스를 컴파일러(`crates/kang/src/parse.rs`)와 같은 규칙으로 읽는다.
+ * 앞 공백을 뗀 줄이 백틱 3개 이상으로 시작하면 펜스가 열린다. 그 뒤에서 여는 줄보다 적지 않은 백틱으로 시작하는 줄이 펜스를 닫는다.
+ * 닫는 줄에 글자가 더 있어도 닫는다. `~~~` 는 펜스가 아니다. 닫히지 않으면 끝까지 펜스다.
+ * @param src 남은 원문
+ * @returns code token. 맨 앞 줄이 펜스가 아니면 undefined 이고 marked 의 다른 tokenizer 가 받는다. false 는 marked 의 기본 펜스로 넘기므로 쓰지 않는다
+ */
+function fences(src: string): Token | undefined {
+	const run = (line: string) => /^`*/.exec(line.trimStart())![0].length
+	const first = /^[^\n]*/.exec(src)![0]
+	const open = run(first)
+	// 백틱 3개 이상으로 시작하지 않으면 펜스가 아니다.
+	if (open < 3) return undefined
+	const lines = src.split('\n')
+	const close = lines.findIndex((line, i) => i > 0 && run(line) >= open)
+	// 닫는 줄이 없으면 남은 원문 전부가 펜스다.
+	const end = close < 0 ? lines.length : close + 1
+	const raw = lines.slice(0, end).join('\n') + (end < lines.length ? '\n' : '')
+	const text = lines.slice(1, close < 0 ? lines.length : close).join('\n')
+	return { type: 'code', raw, lang: first.trimStart().slice(open).trim(), text }
+}
+
+/**
+ * 이미지를 그린다. 같은 플러그인 안의 상대 경로만 `<img>` 로 그리고, 나머지는 alt 글자로 그려 밖으로 요청을 보내지 않는다.
+ * marked 의 기본 renderer 는 alt 를 escape 하지 않으므로 여기서 alt 와 title 을 모두 escape 한다.
+ * @param token image token. `href` 는 주소, `title` 은 제목, `text` 는 alt 원문이다
+ * @returns `<img>` HTML 또는 escape 한 alt 글자
+ */
+function image({ href, title, text }: { href: string; title?: string | null; text: string }): string {
+	// 상대 경로가 아니면 요청을 보내지 않고 글자만 남긴다.
+	if (!RELATIVE_SRC.test(href)) return escape(text)
+	return `<img src="${escape(href)}" alt="${escape(text)}"${title ? ` title="${escape(title)}"` : ''}>`
+}
+
 /** kang 확장을 단 marked 인스턴스다. 문서에 쓴 HTML 은 태그가 아니라 글자로 그린다. */
 const kang = new Marked({
 	extensions: [refExtension, importExtension, keywordExtension, declExtension, headingExtension],
+	// 컴파일러는 들여 쓴 코드와 setext 제목을 모른다. 그래서 두 tokenizer 를 끄고, 펜스는 컴파일러 규칙으로 바꾼다.
+	// undefined 를 돌려주면 그 tokenizer 가 꺼진다. false 를 돌려주면 marked 의 기본 tokenizer 가 대신 읽는다.
+	tokenizer: { fences, code: () => undefined, lheading: () => undefined },
 	/** 문서에 쓴 HTML 을 태그가 아니라 글자로 그린다. `token.text` 는 HTML 원문이고, 돌려주는 값은 escape 한 글자다. */
-	renderer: { html: (token) => escape(token.text) },
+	renderer: { html: (token) => escape(token.text), image },
 })
 
 /**
@@ -280,8 +320,9 @@ export function parseKang(text: string): KangView {
 		const close = lines.findIndex((l, i) => i > open && l.trim() === '---')
 		const end = close < 0 ? lines.length : close
 		const front = lines.slice(open + 1, end)
-		const match = front.map((l) => /^description:\s*(.*)$/.exec(l)).find((m) => m)
-		if (match) view.description = match[1].replace(/^(["'])(.*)\1$/, '$2')
+		// 컴파일러처럼 줄 앞뒤 공백을 떼고 찾고, 값은 앞뒤 공백만 뗀다. 따옴표는 값의 일부다.
+		const line = front.map((l) => l.trim()).find((l) => l.startsWith('description:'))
+		if (line !== undefined) view.description = line.slice('description:'.length).trim()
 		start = close < 0 ? lines.length : close + 1
 	}
 	view.body = lines.slice(start).join('\n')

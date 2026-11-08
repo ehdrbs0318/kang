@@ -63,6 +63,7 @@ test('realFs 는 보통 파일이 아니거나 32 MiB 보다 큰 파일을 읽�
 test('workspace 밖을 가리키는 symlink 는 읽지 않고 열지 않는다', async () => {
 	const outside = mkdtempSync(join(tmpdir(), 'kang-worker-outside-'))
 	const root = mkdtempSync(join(tmpdir(), 'kang-worker-ws-'))
+	let worker: Awaited<ReturnType<typeof mountWorker>> | undefined
 	try {
 		writeFileSync(join(outside, 'secret.kang'), 'secret')
 		writeFileSync(join(root, 'real.kang'), 'real')
@@ -74,12 +75,13 @@ test('workspace 밖을 가리키는 symlink 는 읽지 않고 열지 않는다',
 		assert.equal(realFs.read(root, 'x.kang'), null)
 		assert.equal(realFs.read(root, 'y.kang'), 'real')
 		const h = host(root)
-		const worker = await mountWorker(main, { host: h })
+		worker = await mountWorker(main, { host: h })
 		assert.deepEqual(await worker.request('kang.open', { workspaceId: 'w1', path: 'x' }), { opened: false })
 		assert.deepEqual(await worker.request('kang.open', { workspaceId: 'w1', path: 'y' }), { opened: true })
 		assert.deepEqual(h.callsOf('editor.open'), [{ workspaceId: 'w1', path: 'y.kang' }])
-		await worker.deactivate()
 	} finally {
+		// 검사가 실패해도 worker 를 내리고 임시 폴더를 지운다.
+		await worker?.deactivate()
 		rmSync(outside, { recursive: true })
 		rmSync(root, { recursive: true })
 	}

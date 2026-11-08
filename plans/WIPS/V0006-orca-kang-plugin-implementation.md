@@ -87,6 +87,10 @@ export function lookupRef(scope: ScopeEntry[], ref: string): ScopeEntry | undefi
 - 이름 풀이는 컴파일러가 한다. 화면은 `lookupRef` 로 `scope` 에서 찾기만 한다. 참조 문자열을 그대로 `local` 과 비교한다. 없으면 링크 없이 글자로 둔다.
 - 참조 바로 앞의 `#` 와 `!` 는 참조에 넣지 않고 글자로 둔다. 컴파일러는 본문에서 백틱 쌍만 참조로 본다. 참조 앞의 `#` 가 문법인 자리는 keyword 줄 끝의 topic 뿐이다. 그 `#` 는 떼고 참조만 그린다.
 - frontmatter 는 컴파일러와 같은 규칙으로 찾는다. 맨 앞 BOM 하나와 빈 줄을 건너뛴 첫 줄이 앞뒤 공백을 뗀 `---` 이면 열리고, 다음에 앞뒤 공백을 뗀 `---` 줄에서 닫힌다.
+- `description` 은 앞뒤 공백을 뗀 줄이 `description:` 로 시작하는 첫 줄의 값이다. 값은 앞뒤 공백만 떼고 따옴표는 그대로 둔다.
+- 코드 영역은 컴파일러와 같은 규칙으로 정한다. 앞 공백을 뗀 줄이 백틱 3개 이상으로 시작하면 펜스가 열린다. 여는 줄보다 적지 않은 백틱으로 시작하는 줄이 펜스를 닫는다. 그 줄에 글자가 더 있어도 닫는다. `~~~` 펜스, 들여 쓴 코드, setext 제목(문단 아래의 `---` 나 `===`)은 없다.
+- keyword 줄 끝의 topic 표시 `#` 는 앞에 공백이 있을 때만 topic 표시다.
+- 이미지는 scheme, `/`, `\`, 공백이 없는 상대 경로일 때만 `<img>` 로 그린다. 그 밖에는 alt 글자로 그린다. alt 와 title 은 escape 한다.
 - import 칩은 `target` 과 `address` 가 같은 `scope` 항목으로 찾는다. 칩의 문서 경로는 그 항목의 `doc` 이다. 찾지 못하면 `target` 을 보여 준다.
 - 정의가 `definitions` 에 없는 참조에는 tooltip 을 달지 않는다.
 
@@ -145,8 +149,8 @@ export function lookupRef(scope: ScopeEntry[], ref: string): ScopeEntry | undefi
 **Interfaces:**
 - Consumes: `kang.locate`, `kang.open` (Task 2), `parseKang`, `renderBody`, `lookupRef`
 
-- [x] **Step 1:** 실패하는 테스트를 쓴다. `parseKang` 이 저장소의 `docs/adr/0002-flatten-on-read-import-on-write.kang` 원문에서 description, import 3개(`CONTEXT.topic`, `CONTEXT.owner`, `CONTEXT.문서`), 본문 링크를 만드는지 본다. `CONTEXT.kang` 에서 keyword 블록과 줄 끝 `#`무엇을 keyword 로 선언하나`` 링크를 만드는지 본다. 코드 펜스 안의 백틱은 링크가 되지 않는다. `\`` 는 백틱 문자로 남는다. `// uncoded`, `// iknow …`, `exception`, `cover`, `pending` 의 원본 기호가 출력에 남지 않는다. `lookupRef` 는 참조 문자열을 `scope` 의 `local` 로 찾고, 맨 앞 `#` 나 `!` 하나는 떼고 찾는다. `scope` 에 없는 참조는 찾지 못한다.
-  - 확인: 파서 테스트와 `lookupRef` 테스트가 통과한다. 들여 쓴 코드와 `~~~` 펜스 안에는 링크가 생기지 않는다.
+- [x] **Step 1:** 실패하는 테스트를 쓴다. `parseKang` 이 저장소의 `docs/adr/0002-flatten-on-read-import-on-write.kang` 원문에서 description, import 3개(`CONTEXT.topic`, `CONTEXT.owner`, `CONTEXT.문서`), 본문 링크를 만드는지 본다. `CONTEXT.kang` 에서 keyword 블록과 줄 끝 `#`무엇을 keyword 로 선언하나`` 링크를 만드는지 본다. 코드 펜스 안의 백틱은 링크가 되지 않는다. `\`` 는 백틱 문자로 남는다. `// uncoded`, `// iknow …`, `exception`, `cover`, `pending` 의 원본 기호가 출력에 남지 않는다. `lookupRef` 는 참조 문자열을 쓴 그대로 `scope` 의 `local` 과 비교해 찾는다. `scope` 에 없는 참조는 찾지 못한다.
+  - 확인: 파서 테스트와 `lookupRef` 테스트가 통과한다. 백틱 펜스 안에는 링크가 생기지 않는다. 들여 쓴 줄과 `~~~` 줄은 컴파일러처럼 코드가 아니므로 링크가 생긴다.
 - [x] **Step 2:** 테스트가 실패하는지 확인한다.
   - 확인: 구현 전 실행이 실패했다 (task-3-report).
 - [x] **Step 3:** `parse.ts` 와 `main.ts` 를 구현한다. `main.ts` 는 `orca.document.onDidChange` 로 원문을 받고, `kang.locate` 를 부르고, `marked` 로 렌더링한다. 마우스를 올리면 정의를 보여 주고, 클릭하면 `kang.open` 을 부른다. 상태가 `ok` 가 아니면 안내 문구를 보여 준다. 테마는 `--orca-*` 변수를 쓴다.

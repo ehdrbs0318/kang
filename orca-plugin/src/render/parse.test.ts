@@ -63,17 +63,57 @@ test('코드 펜스 안의 백틱은 링크가 되지 않고, 코드 펜스 안�
 	assert.ok(!html.includes('kang-ref'))
 })
 
-test('~~~ 코드 펜스 안의 백틱은 링크가 되지 않는다', () => {
+test('~~~ 는 컴파일러처럼 코드 펜스가 아니므로 안의 백틱이 링크가 된다', () => {
 	const html = render('## t\n\n~~~\n`x` 와 `y`\n~~~\n')
-	assert.ok(html.includes('<code>`x` 와 `y`\n</code>'))
-	assert.ok(!html.includes('kang-ref'))
+	assert.ok(html.includes('<a class="kang-ref" data-ref="x">x</a>'), html)
+	assert.ok(!html.includes('<code>'), html)
 })
 
-test('4칸 들여 쓴 코드는 링크 없이 코드로 그리고, < 는 한 번만 escape 한다', () => {
+test('4칸 들여 쓴 줄은 컴파일러처럼 코드가 아니므로 링크가 되고, < 는 한 번만 escape 한다', () => {
 	const html = render('## t\n\n본문\n\n    `x` < y\n')
-	assert.ok(html.includes('<pre><code>`x` &lt; y\n</code></pre>'))
-	assert.ok(!html.includes('kang-ref'))
+	assert.ok(html.includes('<a class="kang-ref" data-ref="x">x</a> &lt; y'), html)
+	assert.ok(!html.includes('<pre>'), html)
 	assert.ok(!html.includes('&amp;lt;'))
+})
+
+test('백틱 3개 이상으로 시작하는 줄은 info string 이 있어도 펜스를 닫는다', () => {
+	const html = render('## t\n\n```\n`a`\n```js\n\n## U\n\n`b`\n')
+	assert.ok(html.includes('<pre><code>`a`\n</code></pre>'), html)
+	assert.ok(html.includes('<h2>U</h2>'), html)
+	assert.ok(html.includes('<a class="kang-ref" data-ref="b">b</a>'), html)
+})
+
+test('여는 펜스보다 짧은 백틱 줄은 펜스를 닫지 않고, 들여 쓴 펜스도 펜스다', () => {
+	const html = render('## t\n\n     ````md\n```\n## U\n````\n')
+	assert.ok(html.includes('<pre><code class="language-md">```\n## U\n</code></pre>'), html)
+	assert.ok(!html.includes('<h2>U</h2>'), html)
+})
+
+test('문단 아래의 --- 나 === 는 setext 제목을 만들지 않는다', () => {
+	const html = render('## t\n\n글\n===\n\n말\n---\n')
+	assert.ok(!html.includes('<h1>'), html)
+	assert.ok(!html.includes('<h2>글'), html)
+	assert.ok(!html.includes('<h2>말'), html)
+})
+
+test('이미지 alt 와 title 은 escape 하고, 상대 경로가 아닌 이미지는 글자로 그린다', () => {
+	const xss = render('## t\n\n![x" onerror="alert(1)](y)\n')
+	assert.ok(!xss.includes('onerror="'), xss)
+	assert.ok(xss.includes('<img src="y" alt="x&#34; onerror=&#34;alert(1)">'), xss)
+	const title = render('## t\n\n![a](y "t\\" onload=\\"z")\n')
+	assert.ok(!title.includes('onload="'), title)
+	for (const src of ['https://e.com/p.png', '//e.com/p.png', '/\\e.com/p.png', 'data:image/png;base64,AA']) {
+		const html = render(`## t\n\n![a<b](${src})\n`)
+		assert.ok(!html.includes('<img'), html)
+		assert.ok(html.includes('a&#60;b'), html)
+	}
+})
+
+test('링크의 href, title 과 코드 펜스의 info string 은 속성을 깨지 않는다', () => {
+	const link = render('## t\n\n[a](<x" onclick="1> "t\\" onclick=\\"2")\n')
+	assert.ok(!link.includes('onclick="'), link)
+	const code = render('## t\n\n```a"onclick="1\nb\n```\n')
+	assert.ok(!code.includes('onclick="'), code)
 })
 
 test('\\` 는 백틱 문자로 남는다', () => {
@@ -122,6 +162,15 @@ test('참조 바로 앞의 # 는 참조가 아니라 글자로 남는다', () =>
 	const html = render('## t\n\n주의#`결제` 와 `docs`/`A`#`상품`\n')
 	assert.ok(html.includes('주의#<a class="kang-ref" data-ref="결제">결제</a>'), html)
 	assert.ok(html.includes('<a class="kang-ref" data-ref="docs/A#상품">docs/A#상품</a>'), html)
+})
+
+test('description 은 컴파일러처럼 줄 앞뒤 공백을 떼고 찾고, 값의 앞뒤 공백만 떼고 따옴표는 둔다', () => {
+	assert.equal(parseKang('---\n  description:  "a b"  \n---\n').description, '"a b"')
+})
+
+test('keyword 줄 끝의 # 는 앞에 공백이 있을 때만 topic 표시다', () => {
+	const html = render('keyword `C`: 언어 C#`lang`\n\n## t\n')
+	assert.ok(html.includes('<span>언어 C#<a class="kang-ref" data-ref="lang">lang</a></span></div>'), html)
 })
 
 test('frontmatter 는 컴파일러처럼 맨 앞 BOM 과 빈 줄을 건너뛰고 앞뒤 공백을 뗀 --- 로 찾는다', () => {
