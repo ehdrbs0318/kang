@@ -29,10 +29,11 @@ const KANG_LINE = /^(?:##(?!#)|(import|keyword|exception|cover) )/
 // 컴파일러의 `parse_symbol_ref` 처럼 import 대상은 `/` 로 이은 문서 경로 뒤에 `.` keyword 이름, `#` topic, `!` exception 중 하나가 온다. 계층은 keyword 만 갖는다. 이름은 비지 않고 `/` 가 없다.
 const NAME = '`[^`/\\n]+`'
 const TARGET = `${NAME}(?:/${NAME})*(?:\\.${NAME}(?:\\.${NAME})*|[#!]${NAME})`
+// 정의와 선언부는 `.` 대신 `[^\n]` 로 읽는다. `.` 는 U+2028, U+2029 에서 멈추는데 컴파일러는 이를 글자로 읽는다.
 // 컴파일러는 ` as ` 와 ` rev ` 를 공백 한 칸까지 그대로 찾고, 그 앞뒤를 Rust 공백 문자로 뗀다.
 const IMPORT = new RegExp(`^import (${TARGET})(?:[${WS}]* as [${WS}]*(${NAME}))?(?:[${WS}]* rev [${WS}]*"[^"\\n]*")?[${WS}]*$`)
-const KEYWORD = new RegExp(`^keyword (\`[^\`\\n]*\`(?:\\.\`[^\`\\n]*\`)*)[${WS}]*:(.*)$`)
-const DECL = /^(exception|cover) (.*)$/
+const KEYWORD = new RegExp(`^keyword (\`[^\`\\n]*\`(?:\\.\`[^\`\\n]*\`)*)[${WS}]*:([^\\n]*)$`)
+const DECL = /^(exception|cover) ([^\n]*)$/
 // 컴파일러처럼 수식어를 뗀 exception, cover 선언부는 백틱 이름 하나이고, 뒤에 ` pending` 이 올 수 있다.
 const DECL_NAME = /^`([^`]*)`( pending)?$/
 // `##` 뒤의 공백은 없어도 된다.

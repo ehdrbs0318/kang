@@ -1,7 +1,7 @@
 // locate.ts 의 정규화, 해시, workspace 찾기를 가짜 파일 시스템으로 검사한다.
 import { join } from 'node:path'
 import { assert, test } from 'orca/testing'
-import { docHash, isLocal, locate, normalize, pickWorkspace, type Workspace } from './locate'
+import { docHash, isLocal, locate, normalize, pickWorkspace, ReadLimit, type Workspace } from './locate'
 
 /**
  * 경로와 내용의 표로 가짜 파일 시스템을 만든다.
@@ -264,6 +264,56 @@ test('stale 문서가 선언한 keyword 는 정의에서 뺀다', () => {
 	})
 	const result = locate(DOC_A, [ws('w1', '/r/a')], null, fs)
 	assert.deepEqual(result.status === 'ok' && result.definitions, { 'A.가': '가 정의' })
+})
+
+/**
+ * 같은 저장소의 worktree 둘이 있는 가짜 파일 시스템을 만든다. 두 worktree 모두 문서 A, B 를 가진다.
+ * @param limited 문서 파일을 읽으면 ReadLimit 을 던지는 루트들
+ * @returns 파일 시스템과, 문서 파일(`.kang`)을 읽은 (루트, 경로) 기록
+ */
+function twoWorktrees(limited: string[] = []) {
+	const index = graph({ A: DOC_A, B: DOC_B })
+	const base = fakeFs({
+		'/r/a/.git': 'gitdir: /r/main/.git/worktrees/a\n',
+		'/r/b/.git': 'gitdir: /r/main/.git/worktrees/b\n',
+		'/r/a/.kang/graph.kang.json': index,
+		'/r/b/.kang/graph.kang.json': index,
+		'/r/a/A.kang': DOC_A,
+		'/r/a/B.kang': DOC_B,
+		'/r/b/A.kang': DOC_A,
+		'/r/b/B.kang': DOC_B,
+	})
+	const docReads: string[] = []
+	const fs = {
+		read(root: string, path: string) {
+			if (!path.endsWith('.kang') || path.startsWith('.kang/')) return base.read(root, path)
+			docReads.push(`${root}:${path}`)
+			// 한도가 걸린 루트의 문서를 읽으면 읽은 양이 한도를 넘은 것이다.
+			if (limited.includes(root)) throw new ReadLimit()
+			return base.read(root, path)
+		},
+	}
+	return { fs, docReads }
+}
+
+test('같은 저장소의 worktree 둘이 맞아도 고른 workspace 의 문서만 읽는다', () => {
+	const { fs, docReads } = twoWorktrees()
+	const result = locate(DOC_A, [ws('w1', '/r/a'), ws('w2', '/r/b')], null, fs)
+	assert.equal(result.status === 'ok' && result.workspaceId, 'w1')
+	assert.deepEqual(docReads, ['/r/a:A.kang', '/r/a:B.kang'])
+})
+
+test('읽은 양이 한도를 넘은 후보는 버리고 나머지에서 다시 골라 답한다', () => {
+	const { fs } = twoWorktrees(['/r/a'])
+	const result = locate(DOC_A, [ws('w1', '/r/a'), ws('w2', '/r/b')], null, fs)
+	assert.equal(result.status === 'ok' && result.workspaceId, 'w2')
+})
+
+test('버린 후보가 focus 된 workspace 이면 다른 저장소를 고르지 않고 notIndexed 다', () => {
+	const { fs } = twoWorktrees(['/r/a'])
+	const focused = { displayName: 'w1', branch: 'main' }
+	const list = [ws('w1', '/r/a'), ws('w2', '/r/b', 'w2', 'dev')]
+	assert.deepEqual(locate(DOC_A, list, focused, fs), { status: 'notIndexed' })
 })
 
 test('pickWorkspace 는 후보가 하나면 그 후보를 고른다', () => {

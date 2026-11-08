@@ -267,6 +267,12 @@ test('앞에 공백이나 탭이 있는 keyword, exception, cover 줄도 컴파�
 	assert.ok(html.includes('<span class="kang-badge">cover</span> <a class="kang-ref" data-ref="예외">예외</a>'), html)
 })
 
+test('정의에 U+2028, U+2029 가 있어도 keyword 와 exception 은 선언이다', () => {
+	const html = render('## t\n\nkeyword `카드`: 카드\u2028결제\u2029끝\nexception `무료\u2028` pending\n')
+	assert.ok(html.includes('<div class="kang-term"><strong>카드</strong><span>카드\u2028결제\u2029끝</span></div>'), html)
+	assert.ok(html.includes('<span class="kang-badge">exception</span>'), html)
+})
+
 test('문장 중간의 keyword 낱말은 선언이 아니다', () => {
 	const html = render('## t\n\nA keyword `x`: y\n')
 	assert.ok(html.includes('<p>A keyword <a class="kang-ref" data-ref="x">x</a>: y</p>'), html)

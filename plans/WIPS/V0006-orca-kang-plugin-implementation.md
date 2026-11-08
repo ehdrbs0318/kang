@@ -72,7 +72,7 @@ type Locate =
 - 인덱스의 항목 하나라도 필드 타입이 틀리면 worker 는 그 인덱스 전체를 없는 것으로 본다. 다른 workspace 는 그대로 찾는다.
 - 인덱스는 커밋된 파일이라 어느 저장소에서든 올 수 있다. 그래서 worker 는 다음 인덱스도 없는 것으로 본다. `docs[].path`, `scope[].doc`, `keywords[].path`, `edges[].from`, `edges[].to` 중 하나라도 비었거나, 절대 경로이거나, 역슬래시가 있거나, `.` 나 `..` 조각이 있는 인덱스다. `docs[].path` 가 겹치는 인덱스와 `edges` 에 같은 `(from, to)` 쌍이 둘 이상인 인덱스도 없는 것으로 본다.
 - worker 는 workspace 안의 보통 파일만 읽는다. symlink 는 따라간 뒤의 실제 경로를 본다. 실제 경로가 workspace 루트의 실제 경로 밖이면 없는 파일로 본다. 디렉토리, FIFO, 장치 파일, 32 MiB 보다 큰 파일도 없는 파일로 본다.
-- 문서가 10 000 개를 넘는 인덱스는 없는 것으로 본다. `kang.locate` 요청 하나가 workspace 하나에서 읽는 파일 크기의 합이 64 MiB 를 넘으면 그 workspace 를 건너뛴다. 다른 workspace 에서는 그대로 찾는다.
+- 문서가 10 000 개를 넘는 인덱스는 없는 것으로 본다. `kang.locate` 요청 하나는 모든 workspace 의 인덱스를 읽고, 문서 파일은 고른 workspace 하나에서만 읽는다. 그 workspace 에서 읽는 파일 크기의 합이 64 MiB 를 넘으면 그 workspace 를 버리고 나머지에서 다시 고른다. 버린 workspace 가 focus 된 workspace 이면 다른 저장소를 고르지 않고 `notIndexed` 로 답한다.
 - 한 workspace 안에서 해시가 같은 문서가 둘 이상이면 `ambiguous` 다.
 - 로컬 후보가 없을 때 focus 된 workspace(`workspace.list` 에서 이름과 branch 가 같은 것)가 원격이면 `remoteOnly` 다. 그 밖에는 `notIndexed` 다.
 - `kang.open` 은 `path` 가 그 workspace 의 인덱스에 있고 `<path>.kang` 을 위 규칙으로 읽을 수 있을 때만 그 파일을 연다. 그 밖에는 `{ opened: false }` 다.

@@ -131,6 +131,8 @@ test('읽은 양이 한도를 넘은 workspace 만 건너뛰고 다른 workspace
 			truncateSync(join(big, `${path}.kang`), 20 * 1024 * 1024)
 		}
 		for (const [root, extra] of [[big, paths], [small, []]] as const) {
+			// 두 workspace 는 같은 저장소의 worktree 다.
+			writeFileSync(join(root, '.git'), `gitdir: /repo/.git/worktrees/${root === big ? 'big' : 'small'}\n`)
 			writeFileSync(join(root, 'A.kang'), text)
 			mkdirSync(join(root, '.kang'))
 			const index = { kang: 'graph/1', docs: [doc('A', docHash(text)), ...extra.map((p) => doc(p, '0'.repeat(64)))], keywords: [], edges: [] }

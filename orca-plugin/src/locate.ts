@@ -128,6 +128,7 @@ function insidePath(path: string): boolean {
  * @param fs 파일 읽기
  * @returns 인덱스. 파일이 없거나, JSON 이 깨졌거나, `kang` 표지가 `graph/1` 이 아니거나, 항목 하나라도 타입이 틀리면 null.
  *   문서가 MAX_DOCS 개를 넘거나, 문서 경로 하나라도 workspace 밖을 가리키거나, `docs` 에 같은 경로가 둘 이상이거나, `edges` 에 같은 (from, to) 쌍이 둘 이상이어도 null
+ * @throws ReadLimit 인덱스 파일을 읽다 이 루트에서 읽은 양이 한도를 넘으면 던진다
  */
 export function readIndex(root: string, fs: FileReader): GraphIndex | null {
 	const text = fs.read(root, INDEX_PATH)
@@ -164,6 +165,7 @@ export function readIndex(root: string, fs: FileReader): GraphIndex | null {
  * @param root workspace 루트 절대 경로
  * @param fs 파일 읽기
  * @returns 절대 경로. git 저장소가 아니면 null
+ * @throws ReadLimit `.git` 파일을 읽다 이 루트에서 읽은 양이 한도를 넘으면 던진다
  */
 function gitCommonDir(root: string, fs: FileReader): string | null {
 	const file = fs.read(root, '.git')
@@ -202,12 +204,17 @@ export function pickWorkspace(candidates: Candidate[], focused: Focused | null):
 
 /**
  * 열린 파일의 원문으로 workspace 와 문서를 찾고, 그 workspace 의 그래프와 정의를 돌려준다.
+ * 인덱스만 모든 workspace 에서 읽고, stale 검사는 고른 workspace 하나에서만 한다.
+ * 그 검사에서 읽은 양이 한도를 넘으면 그 workspace 의 후보를 버리고 나머지에서 다시 고른다.
  * @param text 열린 파일의 원문
  * @param workspaces `workspace.list` 의 workspace 목록
  * @param focused focus 된 workspace. 없으면 null
  * @param fs 파일 읽기
- * @returns 찾은 결과. 읽은 양이 한도를 넘은 workspace 는 건너뛴다. 맞는 인덱스가 없으면 `notIndexed`, 원격 workspace 만 있거나 로컬 후보가 없고 focus 된 workspace 가 원격이면 `remoteOnly`,
+ * @returns 찾은 결과. 맞는 인덱스가 없거나 고른 workspace 의 읽은 양이 한도를 넘었고 남은 후보가 없으면 `notIndexed`,
+ *   한도를 넘은 workspace 가 focus 된 workspace 이면 다른 저장소를 고르지 않고 `notIndexed`,
+ *   원격 workspace 만 있거나 로컬 후보가 없고 focus 된 workspace 가 원격이면 `remoteOnly`,
  *   하나를 고를 수 없거나 고른 workspace 안에 같은 해시의 문서가 둘 이상이면 `ambiguous`
+ * @throws ReadLimit 가 아닌 파일 읽기 오류는 그대로 던진다
  */
 export function locate(text: string, workspaces: Workspace[], focused: Focused | null, fs: FileReader): Locate {
 	const local = workspaces.filter(isLocal)
@@ -215,55 +222,67 @@ export function locate(text: string, workspaces: Workspace[], focused: Focused |
 	if (local.length === 0 && workspaces.length > 0) return { status: 'remoteOnly' }
 
 	const hash = docHash(text)
-	const found = new Map<string, { index: GraphIndex; stale: Set<string> }>()
-	const candidates: Candidate[] = []
-	// workspace 마다 인덱스를 읽고, 그래프 원문이나 문서 해시가 맞는 후보를 모은다. 후보가 있는 workspace 는 stale 문서도 여기서 찾는다.
+	const found = new Map<string, GraphIndex>()
+	let candidates: Candidate[] = []
+	// workspace 마다 인덱스를 읽고, 그래프 원문이나 문서 해시가 맞는 후보를 모은다. 문서 파일은 아직 읽지 않는다.
 	for (const workspace of local) {
 		try {
 			const index = readIndex(workspace.path, fs)
 			// 인덱스가 없는 workspace 는 건너뛴다.
 			if (!index) continue
 			const paths = index.text === text ? [null] : index.docs.filter((d) => d.hash === hash).map((d) => d.path)
-			// 맞는 문서가 없는 workspace 는 stale 검사를 하지 않는다.
+			// 맞는 문서가 없는 workspace 는 후보가 아니다.
 			if (paths.length === 0) continue
 			const dir = gitCommonDir(workspace.path, fs)
-			// 지금 파일의 해시가 인덱스와 다르거나 파일이 없는 문서는 stale 이다.
-			const stale = new Set(index.docs.filter((d) => {
-				const current = fs.read(workspace.path, `${d.path}.kang`)
-				return current === null || docHash(current) !== d.hash
-			}).map((d) => d.path))
-			found.set(workspace.id, { index, stale })
+			found.set(workspace.id, index)
 			for (const path of paths) candidates.push({ workspace, path, gitCommonDir: dir })
 		} catch (error) {
-			// 이 workspace 에서 읽은 양이 한도를 넘었으면 이 workspace 만 건너뛴다. 그 밖의 오류는 그대로 던진다.
+			// 인덱스를 읽다 한도를 넘었으면 이 workspace 만 건너뛴다. 그 밖의 오류는 그대로 던진다.
 			if (!(error instanceof ReadLimit)) throw error
 		}
 	}
-	// 로컬 후보가 없을 때 focus 된 workspace 가 원격이면, 그 문서는 원격 workspace 의 것일 수 있다.
-	if (candidates.length === 0) {
-		const remote = focused && workspaces.some((w) => !isLocal(w) && w.name === focused.displayName && w.branch === focused.branch)
-		return { status: remote ? 'remoteOnly' : 'notIndexed' }
-	}
 
-	const picked = pickWorkspace(candidates, focused)
-	// 고를 수 없거나, 고른 workspace 안에 내용이 같은 문서가 둘 이상이면 어느 문서인지 모른다.
-	if (picked === 'ambiguous' || candidates.filter((c) => c.workspace.id === picked.workspace.id).length > 1) return { status: 'ambiguous' }
+	// 고른 workspace 의 stale 검사가 한도를 넘으면 그 workspace 를 버리고 다시 고른다.
+	while (true) {
+		// 후보가 없을 때 focus 된 workspace 가 원격이면, 그 문서는 원격 workspace 의 것일 수 있다.
+		if (candidates.length === 0) {
+			const remote = focused && workspaces.some((w) => !isLocal(w) && w.name === focused.displayName && w.branch === focused.branch)
+			return { status: remote ? 'remoteOnly' : 'notIndexed' }
+		}
+		const picked = pickWorkspace(candidates, focused)
+		// 고를 수 없거나, 고른 workspace 안에 내용이 같은 문서가 둘 이상이면 어느 문서인지 모른다.
+		if (picked === 'ambiguous' || candidates.filter((c) => c.workspace.id === picked.workspace.id).length > 1) return { status: 'ambiguous' }
 
-	const { index, stale } = found.get(picked.workspace.id)!
-	const definitions: Record<string, string> = {}
-	// stale 문서가 선언한 keyword 는 정의가 바뀌었을 수 있으므로 뺀다.
-	for (const k of index.keywords) {
-		if (!stale.has(k.path)) definitions[`${k.path}.${k.name}`] = k.definition
-	}
-	return {
-		status: 'ok',
-		kind: picked.path === null ? 'graph' : 'doc',
-		workspaceId: picked.workspace.id,
-		path: picked.path,
-		docs: index.docs,
-		edges: index.edges,
-		definitions,
-		scope: index.docs.find((d) => d.path === picked.path)?.scope ?? [],
-		stale: [...stale],
+		const index = found.get(picked.workspace.id)!
+		try {
+			// 지금 파일의 해시가 인덱스와 다르거나 파일이 없는 문서는 stale 이다.
+			const stale = new Set(index.docs.filter((d) => {
+				const current = fs.read(picked.workspace.path, `${d.path}.kang`)
+				return current === null || docHash(current) !== d.hash
+			}).map((d) => d.path))
+			const definitions: Record<string, string> = {}
+			// stale 문서가 선언한 keyword 는 정의가 바뀌었을 수 있으므로 뺀다.
+			for (const k of index.keywords) {
+				if (!stale.has(k.path)) definitions[`${k.path}.${k.name}`] = k.definition
+			}
+			return {
+				status: 'ok',
+				kind: picked.path === null ? 'graph' : 'doc',
+				workspaceId: picked.workspace.id,
+				path: picked.path,
+				docs: index.docs,
+				edges: index.edges,
+				definitions,
+				scope: index.docs.find((d) => d.path === picked.path)?.scope ?? [],
+				stale: [...stale],
+			}
+		} catch (error) {
+			// 한도를 넘은 것이 아니면 그대로 던진다.
+			if (!(error instanceof ReadLimit)) throw error
+			// focus 된 workspace 를 읽지 못하면 다른 저장소의 답을 대신 내지 않는다.
+			if (focused && picked.workspace.name === focused.displayName && picked.workspace.branch === focused.branch) return { status: 'notIndexed' }
+			// 이 workspace 의 후보를 버리고 나머지에서 다시 고른다.
+			candidates = candidates.filter((c) => c.workspace.id !== picked.workspace.id)
+		}
 	}
 }
