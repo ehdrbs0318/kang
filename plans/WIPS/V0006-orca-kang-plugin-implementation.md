@@ -188,9 +188,9 @@ export function lookupRef(scope: ScopeEntry[], ref: string): ScopeEntry | undefi
 - [x] **Step 2:** `orca file open docs/adr/0002-flatten-on-read-import-on-write.kang --focus` 를 실행하고 화면을 캡처한다. 칩 3개, 용어 링크, 마크다운 제목이 보여야 한다.
   - 확인: `orca plugin shot local.kang --editor …0002….kang` 캡처에서 description 인용 블록, 칩 3개(topic, owner, 문서), 점선 밑줄 링크, 마크다운 제목과 목록이 보인다. ADR-0003 은 칩 5개가 보인다.
 - [x] **Step 3:** 링크에 마우스를 올려 정의가 보이는지, 클릭해서 `CONTEXT.kang` 이 열리는지 화면으로 확인한다.
-  - 확인: `kang.locate` 가 `ok`, 정의 19개, 문서별 scope 를 돌려준다. `kang.open` 이 `CONTEXT.kang` 을 새 탭으로 열고, 창 전체 캡처에서 그 탭이 용어 카드로 렌더링된 것을 보았다. 실제 마우스 hover 와 클릭은 macOS 접근성 권한이 막혀 넣지 못했다.
+  - 확인: `kang.locate` 가 `ok`, 정의 19개, 문서별 scope 를 돌려준다. `kang.open` 이 `CONTEXT.kang` 을 새 탭으로 열고, 창 전체 캡처에서 그 탭이 용어 카드로 렌더링된 것을 보았다. 그 뒤 Orca 창을 숨기고 `orca plugin shot --act` 로 실제 마우스 입력을 넣었다. `문서` 링크 위에 마우스를 올리면 정의가 링크 아래 상자로 보이고, 화면 아래쪽 링크에서는 위로 올라간다. 링크를 클릭하면 `CONTEXT.kang` 탭이 활성 탭이 된다.
 - [x] **Step 4:** `.kang/graph.kang.json` 을 열고 그래프 화면을 캡처한다. `CONTEXT` 로 화살표 3개가 들어와야 한다. 점을 클릭해 문서가 열리는지 확인한다.
-  - 확인: 그래프 캡처에서 점 6개, `CONTEXT` 로 들어가는 화살표 3개가 보이고 `CONTEXT` 점이 가장 크다. 점 클릭이 부르는 `kang.open` 은 Step 3 에서 확인했다.
+  - 확인: 그래프 캡처에서 점 6개, `CONTEXT` 로 들어가는 화살표 3개가 보이고 `CONTEXT` 점이 가장 크다. 실제 마우스로 ADR-0003 의 화살표 위에 올리면 import 한 심볼 5개가 상자로 보인다. ADR-0001 점을 클릭하면 그 문서가 새 탭에서 렌더링 화면으로 열린다.
 - [x] **Step 5:** 문서 하나를 고친 뒤 `kang build` 전에 그래프 화면을 다시 열어 "인덱스가 오래되었습니다" 안내를 확인하고, 고친 내용을 되돌린다.
   - 확인: `examples/ts-consumer/docs/proration.kang` 에 한 줄을 더한 뒤 그래프 화면 위에 "인덱스가 오래되었습니다. `kang build` 를 실행하세요." 가 보였다. 같은 문서의 렌더링 화면은 링크를 빼고 "`kang build` 를 실행하세요." 를 보였다. 파일은 원래대로 되돌렸다.
 
