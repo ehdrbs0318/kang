@@ -45,12 +45,14 @@ export type MarkedExtension = {
 	tokenizer?: {
 		fences?(src: string): Token | undefined
 		code?(src: string): Token | undefined
+		html?(src: string): Token | undefined
 		lheading?(src: string): Token | undefined
 	}
 	/** 기본 renderer 의 메소드를 바꾼다. 여기서는 `html` 과 `image` 만 쓴다. */
 	renderer?: {
 		html?(token: { text: string }): string
-		image?(token: { href: string; title?: string | null; text: string }): string
+		/** `token.text` 는 이미지의 alt 원문이다. */
+		image?(token: { text: string }): string
 	}
 }
 
@@ -68,10 +70,9 @@ export class Marked {
 	 */
 	lexer(src: string): Token[]
 	/**
-	 * 마크다운 블록을 HTML 로 바꾼다.
-	 * @param src 마크다운 원문
-	 * @param options `async: false` 이면 문자열을 돌려준다
+	 * 최상위 token 들을 HTML 로 바꾼다.
+	 * @param tokens `lexer` 가 만든 token 이나 같은 꼴의 token 배열
 	 * @returns HTML 문자열
 	 */
-	parse(src: string, options: { async: false }): string
+	parser(tokens: Token[]): string
 }

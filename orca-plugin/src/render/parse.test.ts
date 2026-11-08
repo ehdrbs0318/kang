@@ -89,6 +89,40 @@ test('여는 펜스보다 짧은 백틱 줄은 펜스를 닫지 않고, 들여 �
 	assert.ok(!html.includes('<h2>U</h2>'), html)
 })
 
+test('목록과 인용 안의 백틱 줄은 컴파일러처럼 펜스가 아니므로 안의 백틱이 링크다', () => {
+	for (const mark of ['- ', '> ']) {
+		const html = render(`## t\n\n${mark}\`\`\`\`\n${mark}\`x\`\n${mark}\`\`\`\`\n\n## U\n\n\`y\`\n`)
+		assert.ok(!html.includes('<pre>'), html)
+		assert.ok(html.includes('<a class="kang-ref" data-ref="x">x</a>'), html)
+		assert.ok(html.includes('<h2>U</h2>'), html)
+		assert.ok(html.includes('<a class="kang-ref" data-ref="y">y</a>'), html)
+	}
+})
+
+test('문단 바로 다음 줄의 펜스는 info string 에 백틱이 있어도 컴파일러처럼 그 줄에서 열린다', () => {
+	const html = render('## t\n\n글\n```js `a`\n`x`\n```\n\n## U\n\n`y`\n')
+	assert.ok(html.includes('<p>글</p>'), html)
+	assert.ok(html.includes('<pre><code class="language-js">`x`\n</code></pre>'), html)
+	assert.ok(html.includes('<h2>U</h2>'), html)
+	assert.ok(html.includes('<a class="kang-ref" data-ref="y">y</a>'), html)
+})
+
+test('문단 바로 다음 줄의 4칸 넘게 들여 쓴 펜스도 컴파일러처럼 펜스다', () => {
+	const html = render('## t\n\n글\n      ```\n`x`\n      ```\n\n## U\n\n`y`\n')
+	assert.ok(html.includes('<pre><code>`x`\n</code></pre>'), html)
+	assert.ok(html.includes('<h2>U</h2>'), html)
+	assert.ok(html.includes('<a class="kang-ref" data-ref="y">y</a>'), html)
+})
+
+test('HTML 블록처럼 보이는 줄도 컴파일러처럼 글자이고, 그 아래의 참조와 topic 이 살아 있다', () => {
+	const html = render('## t\n\n<div>\n`x`\n</div>\n\n<!--\n## V\n`y`\n-->\n')
+	assert.ok(!html.includes('<div>'), html)
+	assert.ok(html.includes('&#60;div&#62;'), html)
+	assert.ok(html.includes('<a class="kang-ref" data-ref="x">x</a>'), html)
+	assert.ok(html.includes('<h2>V</h2>'), html)
+	assert.ok(html.includes('<a class="kang-ref" data-ref="y">y</a>'), html)
+})
+
 test('문단 아래의 --- 나 === 는 setext 제목을 만들지 않는다', () => {
 	const html = render('## t\n\n글\n===\n\n말\n---\n')
 	assert.ok(!html.includes('<h1>'), html)
@@ -96,13 +130,11 @@ test('문단 아래의 --- 나 === 는 setext 제목을 만들지 않는다', ()
 	assert.ok(!html.includes('<h2>말'), html)
 })
 
-test('이미지 alt 와 title 은 escape 하고, 상대 경로가 아닌 이미지는 글자로 그린다', () => {
+test('이미지는 주소와 상관없이 escape 한 alt 글자로 그린다', () => {
 	const xss = render('## t\n\n![x" onerror="alert(1)](y)\n')
-	assert.ok(!xss.includes('onerror="'), xss)
-	assert.ok(xss.includes('<img src="y" alt="x&#34; onerror=&#34;alert(1)">'), xss)
-	const title = render('## t\n\n![a](y "t\\" onload=\\"z")\n')
-	assert.ok(!title.includes('onload="'), title)
-	for (const src of ['https://e.com/p.png', '//e.com/p.png', '/\\e.com/p.png', 'data:image/png;base64,AA']) {
+	assert.ok(!xss.includes('<img'), xss)
+	assert.ok(xss.includes('x&#34; onerror=&#34;alert(1)'), xss)
+	for (const src of ['y', 'https://e.com/p.png', '//e.com/p.png', 'data:image/png;base64,AA']) {
 		const html = render(`## t\n\n![a<b](${src})\n`)
 		assert.ok(!html.includes('<img'), html)
 		assert.ok(html.includes('a&#60;b'), html)

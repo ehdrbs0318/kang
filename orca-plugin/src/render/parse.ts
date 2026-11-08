@@ -1,6 +1,6 @@
 // kang 원문을 렌더링 화면용으로 나누고 HTML 로 그린다. 본문 참조는 `kang build` 가 쓴 scope 에서 찾는다.
 // kang 문법(import, keyword, 백틱 참조, 선언 줄, topic 수식어)은 marked 의 확장으로 다룬다.
-// 코드 영역은 컴파일러와 같은 규칙으로 정한다. 백틱 3개 이상으로 시작하는 줄만 펜스이고, 그 안에서는 kang 문법을 해석하지 않는다.
+// 코드 영역은 marked 가 아니라 컴파일러와 같은 줄 규칙으로 먼저 정한다. 백틱 3개 이상으로 시작하는 줄만 펜스이고, 그 안에서는 kang 문법을 해석하지 않는다.
 // 화면과 Orca 에 의존하지 않는 순수 함수이므로 Node 테스트에서 그대로 부른다.
 import type { ScopeEntry } from '../protocol'
 import { Marked, type RendererThis, type Token, type TokenizerExtension, type TokenizerThis } from '../../vendor/marked.esm.js'
@@ -25,8 +25,6 @@ const HEADING = /^(#{1,6})[ \t]+(.*?)[ \t]*\/\/[ \t]*(?:(uncoded)|iknow[ \t]+(.*
 const IKNOW = /[ \t]*\/\/[ \t]*iknow[ \t]+(.*)$/
 // 컴파일러처럼 topic 표시의 `#` 앞에는 공백이 있어야 한다. `C#\`lang\`` 의 `#` 는 글자다.
 const TOPIC = new RegExp(` (#${NAMES})[ \\t]*$`)
-/** 요청을 보내도 되는 이미지 주소다. scheme, `/`, `\\`, 공백이 없는 상대 경로만 받는다. */
-const RELATIVE_SRC = /^(?![a-z][a-z0-9+.-]*:|[\\/])[^\\\s\x00-\x1f]+$/i
 
 /**
  * HTML 에서 특별한 뜻이 있는 문자를 문자 참조로 바꾼다.
@@ -260,49 +258,58 @@ const headingExtension: TokenizerExtension = {
 	},
 }
 
-/**
- * 원문 맨 앞의 코드 펜스를 컴파일러(`crates/kang/src/parse.rs`)와 같은 규칙으로 읽는다.
- * 앞 공백을 뗀 줄이 백틱 3개 이상으로 시작하면 펜스가 열린다. 그 뒤에서 여는 줄보다 적지 않은 백틱으로 시작하는 줄이 펜스를 닫는다.
- * 닫는 줄에 글자가 더 있어도 닫는다. `~~~` 는 펜스가 아니다. 닫히지 않으면 끝까지 펜스다.
- * @param src 남은 원문
- * @returns code token. 맨 앞 줄이 펜스가 아니면 undefined 이고 marked 의 다른 tokenizer 가 받는다. false 는 marked 의 기본 펜스로 넘기므로 쓰지 않는다
- */
-function fences(src: string): Token | undefined {
-	const run = (line: string) => /^`*/.exec(line.trimStart())![0].length
-	const first = /^[^\n]*/.exec(src)![0]
-	const open = run(first)
-	// 백틱 3개 이상으로 시작하지 않으면 펜스가 아니다.
-	if (open < 3) return undefined
-	const lines = src.split('\n')
-	const close = lines.findIndex((line, i) => i > 0 && run(line) >= open)
-	// 닫는 줄이 없으면 남은 원문 전부가 펜스다.
-	const end = close < 0 ? lines.length : close + 1
-	const raw = lines.slice(0, end).join('\n') + (end < lines.length ? '\n' : '')
-	const text = lines.slice(1, close < 0 ? lines.length : close).join('\n')
-	return { type: 'code', raw, lang: first.trimStart().slice(open).trim(), text }
-}
-
-/**
- * 이미지를 그린다. 같은 플러그인 안의 상대 경로만 `<img>` 로 그리고, 나머지는 alt 글자로 그려 밖으로 요청을 보내지 않는다.
- * marked 의 기본 renderer 는 alt 를 escape 하지 않으므로 여기서 alt 와 title 을 모두 escape 한다.
- * @param token image token. `href` 는 주소, `title` 은 제목, `text` 는 alt 원문이다
- * @returns `<img>` HTML 또는 escape 한 alt 글자
- */
-function image({ href, title, text }: { href: string; title?: string | null; text: string }): string {
-	// 상대 경로가 아니면 요청을 보내지 않고 글자만 남긴다.
-	if (!RELATIVE_SRC.test(href)) return escape(text)
-	return `<img src="${escape(href)}" alt="${escape(text)}"${title ? ` title="${escape(title)}"` : ''}>`
-}
-
 /** kang 확장을 단 marked 인스턴스다. 문서에 쓴 HTML 은 태그가 아니라 글자로 그린다. */
 const kang = new Marked({
 	extensions: [refExtension, importExtension, keywordExtension, declExtension, headingExtension],
-	// 컴파일러는 들여 쓴 코드와 setext 제목을 모른다. 그래서 두 tokenizer 를 끄고, 펜스는 컴파일러 규칙으로 바꾼다.
+	// 코드 영역은 lex 가 컴파일러 규칙으로 먼저 떼어 낸다. 컴파일러는 들여 쓴 코드, HTML 블록, setext 제목을 모른다. 그래서 네 tokenizer 를 끈다.
 	// undefined 를 돌려주면 그 tokenizer 가 꺼진다. false 를 돌려주면 marked 의 기본 tokenizer 가 대신 읽는다.
-	tokenizer: { fences, code: () => undefined, lheading: () => undefined },
-	/** 문서에 쓴 HTML 을 태그가 아니라 글자로 그린다. `token.text` 는 HTML 원문이고, 돌려주는 값은 escape 한 글자다. */
-	renderer: { html: (token) => escape(token.text), image },
+	tokenizer: { fences: () => undefined, code: () => undefined, html: () => undefined, lheading: () => undefined },
+	renderer: {
+		/** 문서에 쓴 HTML 을 태그가 아니라 글자로 그린다. `token.text` 는 HTML 원문이고, 돌려주는 값은 escape 한 글자다. */
+		html: (token) => escape(token.text),
+		/** 이미지는 escape 한 alt 글자로 그린다. 상대 주소는 문서가 아니라 플러그인 화면을 기준으로 풀리므로 그릴 이미지가 없다. 밖으로 요청도 보내지 않는다. */
+		image: (token) => escape(token.text),
+	},
 })
+
+/**
+ * 본문을 최상위 token 으로 나눈다. 코드 영역은 컴파일러(`crates/kang/src/parse.rs`)와 같은 줄 규칙으로 먼저 정한다.
+ * 앞 공백을 뗀 줄이 백틱 3개 이상으로 시작하면 펜스가 열린다. 목록이나 인용 안이어도, 문단 바로 다음 줄이어도 같다.
+ * 그 뒤에서 여는 줄보다 적지 않은 백틱으로 시작하는 줄이 펜스를 닫는다. 닫는 줄에 글자가 더 있어도 닫는다.
+ * `~~~` 는 펜스가 아니다. 닫히지 않으면 끝까지 펜스다. 펜스 사이의 글은 marked 가 읽는다.
+ * @param body parseKang 의 `body`
+ * @returns 최상위 token 배열. 펜스 한 개는 code token 한 개다
+ */
+function lex(body: string): Token[] {
+	const tokens: Token[] = []
+	let text: string[] = []
+	let fence: { run: number; lang: string; lines: string[] } | undefined
+	for (const line of body.split('\n')) {
+		const run = /^`*/.exec(line.trimStart())![0].length
+		// 열린 펜스 안이다. 여는 줄보다 적지 않은 백틱 줄이 닫고, 나머지 줄은 코드다.
+		if (fence) {
+			if (run < fence.run) fence.lines.push(line)
+			else {
+				tokens.push({ type: 'code', raw: '', lang: fence.lang, text: fence.lines.join('\n') })
+				fence = undefined
+			}
+			continue
+		}
+		// 펜스 밖의 보통 줄은 모아 두었다가 marked 에 넘긴다.
+		if (run < 3) {
+			text.push(line)
+			continue
+		}
+		// 펜스가 열린다. 앞에 모은 글을 먼저 token 으로 바꾼다.
+		tokens.push(...kang.lexer(text.join('\n')))
+		text = []
+		fence = { run, lang: line.trimStart().slice(run).trim(), lines: [] }
+	}
+	// 닫히지 않은 펜스는 끝까지 코드다.
+	if (fence) tokens.push({ type: 'code', raw: '', lang: fence.lang, text: fence.lines.join('\n') })
+	tokens.push(...kang.lexer(text.join('\n')))
+	return tokens
+}
 
 /**
  * kang 원문을 화면용으로 나눈다. frontmatter 에서 description 을 읽고, 최상위 import 를 모은다.
@@ -327,7 +334,7 @@ export function parseKang(text: string): KangView {
 	}
 	view.body = lines.slice(start).join('\n')
 	// 최상위 token 에서 import 를 모은다. 코드 영역 안의 같은 글자는 code token 이므로 걸리지 않는다.
-	for (const token of kang.lexer(view.body)) {
+	for (const token of lex(view.body)) {
 		if (token.type === 'kangImport') view.imports.push({ target: token.target as string, local: token.local as string })
 	}
 	return view
@@ -339,7 +346,7 @@ export function parseKang(text: string): KangView {
  * @returns HTML 문자열. 링크에는 아직 동작이 없다
  */
 export function renderBody(body: string): string {
-	return kang.parse(body, { async: false })
+	return kang.parser(lex(body))
 }
 
 /**
