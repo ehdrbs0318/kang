@@ -2,7 +2,7 @@
 // 원문을 받으면 worker 에 `kang.locate` 를 묻고, 답의 문서와 import 관계를 cytoscape 로 그린다. JSON 은 worker 가 읽는다.
 // 점을 누르면 `kang.open` 으로 그 문서를 열고, 화살표에 마우스를 올리면 심볼 목록을 보여 준다. 파일에는 아무것도 쓰지 않는다.
 import cytoscape, { type Core, type StylesheetJson } from '../../vendor/cytoscape.esm.min.mjs'
-import { addStyles, locateNotice, notice, STALE_NOTICE } from '../frame'
+import { addStyles, createTooltip, locateNotice, notice, STALE_NOTICE } from '../frame'
 import type { Locate } from '../protocol'
 import { toElements } from './model'
 
@@ -13,10 +13,8 @@ const notices = document.createElement('div')
 notices.className = 'kang-notices'
 const canvas = document.createElement('div')
 canvas.className = 'kang-graph'
-const tooltip = document.createElement('pre')
-tooltip.className = 'kang-tooltip'
-tooltip.hidden = true
-document.body.append(notices, canvas, tooltip)
+document.body.append(notices, canvas)
+const tooltip = createTooltip()
 
 // 창 크기나 안내 문구 때문에 그래프 영역의 크기가 바뀌면 cytoscape 에 다시 재게 한다. cytoscape 는 창 크기 변화만 스스로 본다.
 new ResizeObserver(() => graph?.resize()).observe(canvas)

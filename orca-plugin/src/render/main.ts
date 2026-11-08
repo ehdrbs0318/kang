@@ -2,7 +2,7 @@
 // 원문을 받으면 worker 에 `kang.locate` 를 묻고, parse.ts 의 marked 확장으로 본문을 그린다.
 // 참조 링크는 마우스를 올리면 정의를 보여 주고, 누르면 `kang.open` 으로 그 문서를 연다. 문서에는 아무것도 쓰지 않는다.
 import type { Locate } from '../protocol'
-import { addStyles, locateNotice } from '../frame'
+import { addStyles, createTooltip, locateNotice } from '../frame'
 import { lookupRef, parseKang, renderBody, type KangView } from './parse'
 
 void addStyles(new URL('./style.css', import.meta.url).href)
@@ -10,6 +10,7 @@ void addStyles(new URL('./style.css', import.meta.url).href)
 const root = document.createElement('main')
 root.className = 'kang'
 document.body.append(root)
+const tooltip = createTooltip()
 
 /** 가장 최근에 받은 원문의 번호다. 늦게 온 `kang.locate` 답이 새 화면을 덮지 않게 한다. */
 let latest = 0
@@ -78,7 +79,7 @@ function draw(view: KangView, located: Locate | null): void {
 }
 
 /**
- * scope 에 있는 참조에 링크를 단다. 링크는 정의가 있으면 tooltip 으로 보여 주고, 누르면 그 심볼의 문서를 연다.
+ * scope 에 있는 참조에 링크를 단다. 링크는 정의가 있으면 페이지 안 tooltip 으로 보여 주고, 누르면 그 심볼의 문서를 연다.
  * scope 에 없거나 인덱스에 없는 문서를 가리키는 참조는 글자로 둔다.
  * @param located 상태가 ok 이고 kind 가 doc 인 `kang.locate` 답
  */
@@ -91,10 +92,38 @@ function link(located: Extract<Locate, { status: 'ok' }>): void {
 		if (!entry || !located.docs.some((d) => d.path === entry.doc)) continue
 		el.href = '#'
 		// 정의가 없으면 tooltip 을 달지 않는다. stale 문서의 정의는 worker 가 이미 뺐다. `constructor` 같은 물려받은 key 는 정의가 아니다.
-		if (Object.hasOwn(located.definitions, entry.address)) el.title = located.definitions[entry.address]
+		if (Object.hasOwn(located.definitions, entry.address)) {
+			const definition = located.definitions[entry.address]
+			el.addEventListener('mouseover', () => showTooltip(el, definition))
+			el.addEventListener('focus', () => showTooltip(el, definition))
+			el.addEventListener('mouseout', hideTooltip)
+			el.addEventListener('blur', hideTooltip)
+		}
 		el.addEventListener('click', (event) => openEntry(event, located.workspaceId, entry.doc))
 	}
 }
+
+/**
+ * 링크 바로 아래에 정의 tooltip 을 보여 준다. 오른쪽 끝을 넘으면 화면 안으로 당긴다.
+ * @param el 정의를 가진 참조 링크
+ * @param definition 보여 줄 정의 글자. textContent 로만 넣는다
+ */
+function showTooltip(el: HTMLElement, definition: string): void {
+	tooltip.textContent = definition
+	tooltip.hidden = false
+	const rect = el.getBoundingClientRect()
+	// 오른쪽 끝을 넘지 않게 left 를 제한한다. 왼쪽 끝은 넘지 않는다.
+	const left = Math.max(8, Math.min(rect.left, window.innerWidth - tooltip.offsetWidth - 8))
+	tooltip.style.left = `${left}px`
+	tooltip.style.top = `${rect.bottom + 4}px`
+}
+
+/** 정의 tooltip 을 숨긴다. */
+function hideTooltip(): void {
+	tooltip.hidden = true
+}
+
+window.addEventListener('scroll', hideTooltip, true)
 
 /**
  * 참조 링크를 누르면 그 심볼을 선언한 문서를 연다. topic 참조도 그 topic 이 있는 문서를 연다.

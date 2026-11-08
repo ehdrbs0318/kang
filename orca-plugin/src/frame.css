@@ -19,3 +19,18 @@ body {
 	font-family: ui-monospace, monospace;
 	font-size: 13px;
 }
+
+.kang-tooltip {
+	position: fixed;
+	z-index: 1;
+	margin: 0;
+	max-width: min(360px, calc(100vw - 16px));
+	padding: 6px 10px;
+	border: 1px solid var(--orca-border);
+	border-radius: var(--orca-radius);
+	background: var(--orca-popover);
+	color: var(--orca-popover-foreground);
+	font: 12px/1.5 ui-monospace, monospace;
+	white-space: pre-wrap;
+	pointer-events: none;
+}

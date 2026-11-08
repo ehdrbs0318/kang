@@ -55,3 +55,16 @@ export function notice(html: string): HTMLElement {
 	el.innerHTML = html
 	return el
 }
+
+/**
+ * 페이지 안에 보여 주는 tooltip 요소를 만들어 body 에 붙인다. 처음에는 숨겨져 있다.
+ * 화면 좌표(`position: fixed`)로 놓으므로, 놓을 때 `left`, `top` 에 viewport 기준 값을 준다.
+ * @returns 숨겨진 `kang-tooltip` 요소. 글자는 textContent 로만 넣는다
+ */
+export function createTooltip(): HTMLElement {
+	const el = document.createElement('pre')
+	el.className = 'kang-tooltip'
+	el.hidden = true
+	document.body.append(el)
+	return el
+}
