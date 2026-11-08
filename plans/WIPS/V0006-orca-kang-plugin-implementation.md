@@ -189,7 +189,7 @@ export function lookupRef(scope: ScopeEntry[], ref: string): ScopeEntry | undefi
 ### Task 5: Orca 에 설치하고 화면으로 확인한다
 
 - [x] **Step 1:** `orca plugin install ./orca-plugin --json` 을 실행한다. `approval_required` 가 나오면 Orca 가 준 fingerprint 로 다시 실행한다.
-  - 확인: `orca plugin install` 대신 `orca plugin dev load ./orca-plugin --approve <fingerprint>` 로 등록했다. 이 worktree 를 고치면 Orca 가 바로 다시 읽는다. 플러그인 key 는 `local.kang`, 상태는 running 이다. Orca 의 kang 저장소 설정에서 "Orca 밖에서 만든 worktree 보이기" 를 켰다.
+  - 확인: `orca plugin install` 대신 `orca plugin dev load ./orca-plugin --approve <fingerprint>` 로 등록했다. 개발 중에는 이 worktree 를 고치면 Orca 가 바로 다시 읽었다. 마지막에는 개발용 로드를 내리고 `orca plugin install ./orca-plugin --approve <fingerprint>` 로 정식 설치했다. Orca 는 파일을 `~/Library/Application Support/Orca/plugins/local.kang` 에 복사한다. 플러그인 key 는 `local.kang`, 개발용 아님, 상태는 running 이다. Orca 의 kang 저장소 설정에서 "Orca 밖에서 만든 worktree 보이기" 를 켰다.
 - [x] **Step 2:** `orca file open docs/adr/0002-flatten-on-read-import-on-write.kang --focus` 를 실행하고 화면을 캡처한다. 칩 3개, 용어 링크, 마크다운 제목이 보여야 한다.
   - 확인: `orca plugin shot local.kang --editor …0002….kang` 캡처에서 description 인용 블록, 칩 3개(topic, owner, 문서), 점선 밑줄 링크, 마크다운 제목과 목록이 보인다. ADR-0003 은 칩 5개가 보인다.
 - [x] **Step 3:** 링크에 마우스를 올려 정의가 보이는지, 클릭해서 `CONTEXT.kang` 이 열리는지 화면으로 확인한다.
