@@ -4768,3 +4768,25 @@ fn build_refuses_kang_dir_link_outside_repo() {
     cleanup(&root);
     cleanup(&outside);
 }
+
+/// 저장소의 `.kang` 이 저장소 안의 폴더를 가리키는 링크면 그 폴더에 그래프 인덱스를 쓴다.
+#[cfg(unix)]
+#[test]
+fn build_writes_through_kang_dir_link_inside_repo() {
+    use std::os::unix::fs::symlink;
+
+    let root = temp_root("graph-link-inside");
+    make_git_repo(&root);
+    valid_doc(&root);
+    fs::create_dir(root.join("inner")).expect("폴더를 만들 수 있어야 한다");
+    symlink(root.join("inner"), root.join(".kang")).expect("링크를 걸 수 있어야 한다");
+
+    let (_, stderr, code) = run(&root, &["build"]);
+
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert!(
+        root.join("inner/graph.kang.json").exists(),
+        "저장소 안을 가리키는 링크는 따라가서 써야 한다"
+    );
+    cleanup(&root);
+}
