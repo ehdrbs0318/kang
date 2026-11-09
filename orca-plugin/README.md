@@ -17,13 +17,15 @@ orca plugin install ehdrbs0318/kang-orca-plugin
 ## 구성
 
 - `src/worker.ts`: 플러그인의 worker 다. custom editor 의 요청 두 개에 답한다.
-  - `kang.locate`: 열린 파일의 원문으로 workspace 와 문서를 찾는다. 그 workspace 의 그래프, 정의, stale 문서 목록을 돌려준다.
+  - `kang.locate`: 열린 파일의 원문으로 kang 프로젝트와 문서를 찾는다. 그 프로젝트의 그래프, 정의, stale 문서 목록을 돌려준다.
   - `kang.open`: 인덱스에 있는 문서 `<path>.kang` 을 Orca 의 편집기 탭으로 연다.
+- kang 프로젝트 루트는 kang 컴파일러처럼 git 저장소 루트다. 플러그인은 workspace 루트와, 그 바로 아래의 git 저장소 루트에서 `.kang/graph.kang.json` 을 찾는다. 그래서 여러 저장소를 한 상위 폴더에 두고 그 폴더를 workspace 로 열어도 문서 저장소의 그래프를 찾는다. 두 단계 이상 아래의 저장소는 찾지 않는다.
 - `src/locate.ts`: 문서 해시 계산과 workspace 찾기다. 해시 규칙은 `crates/kang/src/hash.rs` 와 같다.
 - `src/protocol.ts`: worker 와 custom editor 가 함께 쓰는 요청 타입이다.
 - `src/render/`: `.kang` 파일의 읽기 전용 렌더링 화면이다. Orca 가 `.kang` 파일을 이 custom editor 로 연다.
   - `parse.ts`: kang 문법을 marked 확장으로 그리고, 본문 참조를 `kang build` 가 쓴 scope 에서 찾는다.
   - `main.ts`: 본문을 그리고 `kang.locate` 답으로 참조에 링크를 단다.
+  - `find.ts`: 화면 안의 찾기 막대다. isolated frame 에는 Orca 의 찾기가 닿지 않으므로 화면이 직접 찾는다. Cmd/Ctrl+F 로 열고, Enter 나 Cmd/Ctrl+G 로 다음 결과, Shift 를 함께 누르면 이전 결과로 가고, Escape 로 닫는다.
   - `style.css`: Orca 테마의 `--orca-*` 변수로 색을 정한다.
 - `src/graph/`: `.kang.json` 그래프 인덱스의 읽기 전용 그래프 화면이다. Orca 가 `.kang.json` 파일을 이 custom editor 로 연다.
   - `model.ts`: 인덱스를 화면 모델로 바꾼다. 문서마다 짧은 이름, 폴더, 역할(허브, 고립), 들어오고 나가는 연결, 선언한 keyword 를 모은다.

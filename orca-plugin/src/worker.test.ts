@@ -39,9 +39,9 @@ test('kang.locate 는 열린 문서의 workspace 와 경로를 답한다', async
 test('kang.open 은 인덱스에 있는 문서만 연다', async () => {
 	const h = host()
 	const worker = await mountWorker(main, { host: h })
-	assert.deepEqual(await worker.request('kang.open', { workspaceId: 'w1', path: 'CONTEXT' }), { opened: true })
-	assert.deepEqual(await worker.request('kang.open', { workspaceId: 'w1', path: '../etc/passwd' }), { opened: false })
-	assert.deepEqual(await worker.request('kang.open', { workspaceId: 'nope', path: 'CONTEXT' }), { opened: false })
+	assert.deepEqual(await worker.request('kang.open', { workspaceId: 'w1', root: '', path: 'CONTEXT' }), { opened: true })
+	assert.deepEqual(await worker.request('kang.open', { workspaceId: 'w1', root: '', path: '../etc/passwd' }), { opened: false })
+	assert.deepEqual(await worker.request('kang.open', { workspaceId: 'nope', root: '', path: 'CONTEXT' }), { opened: false })
 	assert.deepEqual(h.callsOf('editor.open'), [{ workspaceId: 'w1', path: 'CONTEXT.kang' }])
 	await worker.deactivate()
 })
@@ -78,9 +78,40 @@ test('workspace 밖을 가리키는 symlink 는 읽지 않고 열지 않는다',
 		assert.equal(realFs().read(root, 'y.kang'), 'real')
 		const h = host(root)
 		worker = await mountWorker(main, { host: h })
-		assert.deepEqual(await worker.request('kang.open', { workspaceId: 'w1', path: 'x' }), { opened: false })
-		assert.deepEqual(await worker.request('kang.open', { workspaceId: 'w1', path: 'y' }), { opened: true })
+		assert.deepEqual(await worker.request('kang.open', { workspaceId: 'w1', root: '', path: 'x' }), { opened: false })
+		assert.deepEqual(await worker.request('kang.open', { workspaceId: 'w1', root: '', path: 'y' }), { opened: true })
 		assert.deepEqual(h.callsOf('editor.open'), [{ workspaceId: 'w1', path: 'y.kang' }])
+	} finally {
+		// 검사가 실패해도 worker 를 내리고 임시 폴더를 지운다.
+		await worker?.deactivate()
+		rmSync(outside, { recursive: true })
+		rmSync(root, { recursive: true })
+	}
+})
+
+test('kang.open 은 하위 저장소의 kang 프로젝트 문서를 workspace 기준 경로로 열고, symlink 디렉토리는 프로젝트로 받지 않는다', async () => {
+	const outside = mkdtempSync(join(tmpdir(), 'kang-worker-outside-'))
+	const root = mkdtempSync(join(tmpdir(), 'kang-worker-ws-'))
+	let worker: Awaited<ReturnType<typeof mountWorker>> | undefined
+	try {
+		const doc = (path: string) => ({ path, description: '', hash: '0'.repeat(64), scope: [] })
+		const index = JSON.stringify({ kang: 'graph/1', docs: [doc('A')], keywords: [], edges: [] })
+		// 상위 폴더 workspace 아래의 문서 저장소다.
+		mkdirSync(join(root, 'doc'))
+		mkdirSync(join(root, 'doc/.kang'))
+		writeFileSync(join(root, 'doc/.kang/graph.kang.json'), index)
+		writeFileSync(join(root, 'doc/A.kang'), 'a')
+		// workspace 밖의 저장소를 가리키는 symlink 디렉토리다.
+		mkdirSync(join(outside, '.kang'))
+		writeFileSync(join(outside, '.kang/graph.kang.json'), index)
+		writeFileSync(join(outside, 'A.kang'), 'secret')
+		symlinkSync(outside, join(root, 'link'))
+		const h = host(root)
+		worker = await mountWorker(main, { host: h })
+		assert.deepEqual(await worker.request('kang.open', { workspaceId: 'w1', root: 'doc', path: 'A' }), { opened: true })
+		assert.deepEqual(await worker.request('kang.open', { workspaceId: 'w1', root: 'link', path: 'A' }), { opened: false })
+		assert.deepEqual(await worker.request('kang.open', { workspaceId: 'w1', root: '..', path: 'A' }), { opened: false })
+		assert.deepEqual(h.callsOf('editor.open'), [{ workspaceId: 'w1', path: 'doc/A.kang' }])
 	} finally {
 		// 검사가 실패해도 worker 를 내리고 임시 폴더를 지운다.
 		await worker?.deactivate()

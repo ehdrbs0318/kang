@@ -120,3 +120,65 @@
 	padding: 4px 8px;
 	border: 1px solid var(--orca-border);
 }
+
+.kang-find {
+	position: fixed;
+	top: 8px;
+	right: 16px;
+	z-index: 2;
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	padding: 4px 6px;
+	border: 1px solid var(--orca-border);
+	border-radius: var(--orca-radius);
+	background: var(--orca-popover);
+	color: var(--orca-popover-foreground);
+	font-size: 12px;
+}
+
+.kang-find[hidden] {
+	display: none;
+}
+
+.kang-find input {
+	width: 180px;
+	padding: 2px 6px;
+	border: 1px solid var(--orca-border);
+	border-radius: var(--orca-radius);
+	background: var(--orca-background);
+	color: var(--orca-foreground);
+	font: inherit;
+}
+
+.kang-find-count {
+	min-width: 40px;
+	color: var(--orca-muted-foreground);
+	text-align: center;
+}
+
+.kang-find button {
+	padding: 0 6px;
+	border: none;
+	border-radius: var(--orca-radius);
+	background: none;
+	color: inherit;
+	font: inherit;
+	cursor: pointer;
+}
+
+.kang-find button:hover,
+.kang-find button:focus-visible {
+	background: var(--orca-accent);
+	color: var(--orca-accent-foreground);
+}
+
+::highlight(kang-find) {
+	background: var(--orca-accent);
+	color: var(--orca-accent-foreground);
+}
+
+::highlight(kang-find-current) {
+	background: var(--orca-primary);
+	color: var(--orca-primary-foreground);
+}

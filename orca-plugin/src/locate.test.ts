@@ -9,7 +9,11 @@ import { docHash, isLocal, locate, normalize, pickWorkspace, ReadLimit, type Wor
  * @returns 루트와 상대 경로를 이은 경로가 표에 없으면 null 을 돌려주는 `read`
  */
 function fakeFs(files: Record<string, string>) {
-	return { read: (root: string, path: string) => files[join(root, path)] ?? null }
+	return {
+		read: (root: string, path: string) => files[join(root, path)] ?? null,
+		// 표의 경로에서 루트 바로 아래의 디렉토리 이름을 모은다.
+		dirs: (root: string) => [...new Set(Object.keys(files).filter((f) => f.startsWith(`${root}/`)).map((f) => f.slice(root.length + 1).split('/')).filter((parts) => parts.length > 1 && !parts[0].startsWith('.')).map((parts) => parts[0]))],
+	}
 }
 
 /**
@@ -81,11 +85,46 @@ test('문서가 하나의 workspace 에만 맞으면 그 workspace 와 문서를
 	if (result.status !== 'ok') return
 	assert.equal(result.kind, 'doc')
 	assert.equal(result.workspaceId, 'w1')
+	assert.equal(result.root, '')
 	assert.equal(result.path, 'docs/A')
 	assert.deepEqual(result.docs.map((d) => d.path), ['docs/A', 'B'])
 	assert.deepEqual(result.definitions, { 'B.결제.카드': '카드 결제' })
 	assert.deepEqual(result.scope, [{ local: '카드', address: 'B.결제.카드', doc: 'B' }])
 	assert.deepEqual(result.stale, [])
+})
+
+test('workspace 바로 아래의 git 저장소에 있는 kang 프로젝트를 찾는다', () => {
+	const fs = fakeFs({
+		'/r/top/app/src/main.ts': '',
+		'/r/top/doc/.git/HEAD': 'ref: refs/heads/main\n',
+		'/r/top/doc/.kang/graph.kang.json': graph({ 'docs/A': DOC_A, B: DOC_B }, [{ path: 'B', name: '결제.카드', definition: '카드 결제' }]),
+		'/r/top/doc/docs/A.kang': DOC_A,
+		'/r/top/doc/B.kang': DOC_B,
+	})
+	const result = locate(DOC_A, [ws('w1', '/r/top')], null, fs)
+	assert.equal(result.status, 'ok')
+	if (result.status !== 'ok') return
+	assert.equal(result.workspaceId, 'w1')
+	assert.equal(result.root, 'doc')
+	assert.equal(result.path, 'docs/A')
+	assert.deepEqual(result.definitions, { 'B.결제.카드': '카드 결제' })
+	assert.deepEqual(result.scope, [{ local: '카드', address: 'B.결제.카드', doc: 'B' }])
+	assert.deepEqual(result.stale, [])
+})
+
+test('git 저장소가 아닌 하위 디렉토리의 인덱스는 보지 않는다', () => {
+	const fs = fakeFs({ '/r/top/doc/.kang/graph.kang.json': graph({ A: DOC_A }), '/r/top/doc/A.kang': DOC_A })
+	assert.deepEqual(locate(DOC_A, [ws('w1', '/r/top')], null, fs), { status: 'notIndexed' })
+})
+
+test('하위 저장소를 따로 연 workspace 와 상위 폴더 workspace 가 함께 맞으면 같은 저장소이므로 첫 번째를 고른다', () => {
+	const fs = fakeFs({
+		'/r/top/doc/.git/HEAD': 'ref: refs/heads/main\n',
+		'/r/top/doc/.kang/graph.kang.json': graph({ A: DOC_A }),
+		'/r/top/doc/A.kang': DOC_A,
+	})
+	const result = locate(DOC_A, [ws('w1', '/r/top'), ws('w2', '/r/top/doc')], null, fs)
+	assert.equal(result.status === 'ok' && `${result.workspaceId}:${result.root}`, 'w1:doc')
 })
 
 test('원문이 그래프 인덱스 파일과 같으면 kind 는 graph 이고 path 는 null 이다', () => {
@@ -285,6 +324,7 @@ function twoWorktrees(limited: string[] = []) {
 	})
 	const docReads: string[] = []
 	const fs = {
+		dirs: base.dirs,
 		read(root: string, path: string) {
 			if (!path.endsWith('.kang') || path.startsWith('.kang/')) return base.read(root, path)
 			docReads.push(`${root}:${path}`)
@@ -317,7 +357,7 @@ test('버린 후보가 focus 된 workspace 이면 다른 저장소를 고르지 
 })
 
 test('pickWorkspace 는 후보가 하나면 그 후보를 고른다', () => {
-	const candidate = { workspace: ws('w1', '/r/a'), path: 'A', gitCommonDir: null }
+	const candidate = { workspace: ws('w1', '/r/a'), root: '', path: 'A', gitCommonDir: null }
 	assert.equal(pickWorkspace([candidate], null), candidate)
 })
 

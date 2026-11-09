@@ -3,6 +3,7 @@
 // 참조 링크는 마우스를 올리면 정의를 보여 주고, 누르면 `kang.open` 으로 그 문서를 연다. 문서에는 아무것도 쓰지 않는다.
 import type { Locate } from '../protocol'
 import { addStyles, createTooltip, locateNotice, positionTooltip } from '../frame'
+import { setupFind } from './find'
 import { lookupRef, parseKang, renderBody, type KangView } from './parse'
 
 void addStyles(new URL('./style.css', import.meta.url).href)
@@ -11,6 +12,7 @@ const root = document.createElement('main')
 root.className = 'kang'
 document.body.append(root)
 const tooltip = createTooltip()
+const find = setupFind(root)
 
 /** 가장 최근에 받은 원문의 번호다. 늦게 온 `kang.locate` 답이 새 화면을 덮지 않게 한다. */
 let latest = 0
@@ -77,6 +79,8 @@ function draw(view: KangView, located: Locate | null): void {
 	root.append(body)
 	// 문서로 찾았을 때만 링크를 단다. 그래프 인덱스 파일이나 찾지 못한 문서는 링크가 없다.
 	if (located?.status === 'ok' && located.kind === 'doc') link(located)
+	// 찾기 막대가 열려 있으면 새 내용으로 다시 찾는다.
+	find.refresh()
 }
 
 /**
@@ -100,7 +104,7 @@ function link(located: Extract<Locate, { status: 'ok' }>): void {
 			el.addEventListener('mouseout', hideTooltip)
 			el.addEventListener('blur', hideTooltip)
 		}
-		el.addEventListener('click', (event) => openEntry(event, located.workspaceId, entry.doc))
+		el.addEventListener('click', (event) => openEntry(event, located.workspaceId, located.root, entry.doc))
 	}
 }
 
@@ -144,12 +148,13 @@ window.addEventListener('keydown', (event) => {
  * 참조 링크를 누르면 그 심볼을 선언한 문서를 연다. topic 참조도 그 topic 이 있는 문서를 연다.
  * @param event 클릭 이벤트. frame 안에서 이동하지 않게 기본 동작을 막는다
  * @param workspaceId 문서를 열 workspace id
+ * @param root 문서가 속한 kang 프로젝트 루트. `kang.locate` 답의 값이다
  * @param path 열 문서의 경로
  */
-function openEntry(event: MouseEvent, workspaceId: string, path: string): void {
+function openEntry(event: MouseEvent, workspaceId: string, root: string, path: string): void {
 	event.preventDefault()
 	// 요청이 실패해도 화면은 그대로 둔다.
-	orca.plugin.request('kang.open', { workspaceId, path }).catch((error) => console.debug('kang.open 요청이 실패했습니다', error))
+	orca.plugin.request('kang.open', { workspaceId, root, path }).catch((error) => console.debug('kang.open 요청이 실패했습니다', error))
 }
 
 /**

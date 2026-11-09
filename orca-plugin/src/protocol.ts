@@ -18,6 +18,8 @@ export type Locate =
 			status: 'ok'
 			kind: 'doc' | 'graph'
 			workspaceId: string
+			/** kang 프로젝트 루트의 workspace 기준 상대 경로다. workspace 루트이면 빈 문자열이다. `path` 와 문서 경로는 이 루트 기준이다. */
+			root: string
 			path: string | null
 			docs: GraphDoc[]
 			edges: GraphEdge[]
@@ -31,7 +33,7 @@ declare module 'orca' {
 	interface PluginRequests {
 		/** 열린 파일의 원문으로 그 파일의 workspace 와 문서를 찾는다. */
 		'kang.locate': { input: { text: string }; output: Locate }
-		/** 인덱스에 있는 문서 `<path>.kang` 을 Orca 의 편집기 탭으로 연다. */
-		'kang.open': { input: { workspaceId: string; path: string }; output: { opened: boolean } }
+		/** kang 프로젝트 `root` 의 인덱스에 있는 문서 `<root>/<path>.kang` 을 Orca 의 편집기 탭으로 연다. `root` 는 `kang.locate` 답의 값이다. */
+		'kang.open': { input: { workspaceId: string; root: string; path: string }; output: { opened: boolean } }
 	}
 }

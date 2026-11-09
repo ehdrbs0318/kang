@@ -24,6 +24,21 @@ declare module 'node:fs' {
 	 * @throws 경로가 없거나 볼 권한이 없으면 던진다
 	 */
 	export function statSync(path: string): Stats
+	/** `readdirSync` 가 `withFileTypes` 로 돌려주는 디렉토리 항목 중 쓰는 부분이다. */
+	interface Dirent {
+		/** 항목 이름이다. */
+		name: string
+		/** 디렉토리이면 true 다. symlink 는 따라가지 않으므로 false 다. */
+		isDirectory(): boolean
+	}
+	/**
+	 * 디렉토리 항목을 읽는다.
+	 * @param path 읽을 디렉토리 경로
+	 * @param options 항상 `{ withFileTypes: true }`
+	 * @returns 디렉토리 항목 목록
+	 * @throws 디렉토리가 없거나 읽을 권한이 없으면 던진다
+	 */
+	export function readdirSync(path: string, options: { withFileTypes: true }): Dirent[]
 	/**
 	 * 파일에 글자를 쓴다. 파일이 없으면 만든다.
 	 * @param path 쓸 파일 경로

@@ -1,6 +1,6 @@
 // 플러그인의 worker 다. custom editor 의 `kang.locate`, `kang.open` 요청에 답한다.
 // Orca 가 이 파일을 Node 프로세스로 실행하므로 실제 파일 시스템을 읽을 수 있다.
-import { readFileSync, realpathSync, statSync } from 'node:fs'
+import { readdirSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import { join, sep } from 'node:path'
 import type { OrcaWorkerApi } from 'orca/worker'
 import { isLocal, locate, ReadLimit, readIndex, type FileReader } from './locate'
@@ -49,6 +49,21 @@ export function realFs(): FileReader {
 				return null
 			}
 		},
+		/**
+		 * 루트 바로 아래의 디렉토리 이름을 돌려준다. symlink 는 workspace 밖을 가리킬 수 있으므로 뺀다.
+		 * @param root 디렉토리를 볼 루트 절대 경로
+		 * @returns 디렉토리 이름 목록. `.` 으로 시작하는 이름은 빼고, 루트를 읽을 수 없으면 빈 목록
+		 */
+		dirs(root) {
+			try {
+				return readdirSync(root, { withFileTypes: true })
+					.filter((entry) => entry.isDirectory() && !entry.name.startsWith('.'))
+					.map((entry) => entry.name)
+			} catch {
+				// 없는 디렉토리, 권한 없음은 하위 디렉토리가 없는 것으로 본다.
+				return []
+			}
+		},
 	}
 }
 
@@ -70,21 +85,25 @@ export default function activate(orca: OrcaWorkerApi): void {
 	})
 
 	/**
-	 * `kang.open` 에 답한다. 그 workspace 의 인덱스에 있는 문서만 편집기 탭으로 연다.
+	 * `kang.open` 에 답한다. 그 kang 프로젝트의 인덱스에 있는 문서만 편집기 탭으로 연다.
 	 * @param input.workspaceId 문서를 열 workspace id. 로컬 workspace 이어야 한다
-	 * @param input.path 확장자를 뺀 문서 경로
+	 * @param input.root kang 프로젝트 루트의 workspace 기준 상대 경로. 빈 문자열이거나 workspace 바로 아래의 symlink 가 아닌 디렉토리 이름이어야 한다
+	 * @param input.path 프로젝트 루트 기준의 확장자를 뺀 문서 경로
 	 * @returns 열었으면 `{ opened: true }`, 열 수 없는 요청이면 `{ opened: false }`. 인덱스에 없거나, 파일이 없거나, symlink 가 workspace 밖을 가리키면 열 수 없다.
 	 *   host 호출이 실패하면 그 오류로 거부한다
 	 */
-	orca.panels.handle('kang.open', async ({ workspaceId, path }) => {
+	orca.panels.handle('kang.open', async ({ workspaceId, root, path }) => {
 		const { workspaces } = await orca.host.call('workspace.list')
 		const workspace = workspaces.find((w) => w.id === workspaceId && isLocal(w))
 		// 인덱스 하나와 문서 하나는 각각 MAX_SIZE 까지이므로 이 요청은 MAX_TOTAL 을 넘지 않는다.
 		const fs = realFs()
-		const index = workspace ? readIndex(workspace.path, fs) : null
-		// 인덱스에 있고 실제 경로가 workspace 안인 문서만 연다. readIndex 는 경로 글자를, realFs 는 symlink 를 따라간 실제 경로를 검사한다.
-		if (!index || !index.docs.some((d) => d.path === path) || fs.read(workspace!.path, `${path}.kang`) === null) return { opened: false }
-		await orca.host.call('editor.open', { workspaceId, path: `${path}.kang` })
+		// 프로젝트 루트는 workspace 루트이거나 그 바로 아래의 실제 디렉토리여야 한다. 그래야 `..` 나 symlink 로 workspace 밖을 열 수 없다.
+		const known = workspace !== undefined && (root === '' || fs.dirs(workspace.path).includes(root))
+		const dir = known ? join(workspace.path, root) : null
+		const index = dir ? readIndex(dir, fs) : null
+		// 인덱스에 있고 실제 경로가 프로젝트 안인 문서만 연다. readIndex 는 경로 글자를, realFs 는 symlink 를 따라간 실제 경로를 검사한다.
+		if (!index || !index.docs.some((d) => d.path === path) || fs.read(dir!, `${path}.kang`) === null) return { opened: false }
+		await orca.host.call('editor.open', { workspaceId, path: root === '' ? `${path}.kang` : `${root}/${path}.kang` })
 		return { opened: true }
 	})
 }

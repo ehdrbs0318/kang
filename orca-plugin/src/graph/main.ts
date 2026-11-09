@@ -13,8 +13,8 @@ const styled = addStyles(new URL('./style.css', import.meta.url).href)
 
 /** 지금 그린 그래프다. 새 원문이 오면 지우고 다시 만든다. */
 let graph: Core | null = null
-/** 지금 화면의 모델과 Orca workspace id 다. 그래프가 없으면 null 이다. */
-let current: { model: GraphModel; workspaceId: string } | null = null
+/** 지금 화면의 모델과 Orca workspace id, kang 프로젝트 루트다. 그래프가 없으면 null 이다. */
+let current: { model: GraphModel; workspaceId: string; root: string } | null = null
 /** 상세 패널에 고정한 문서 경로다. */
 let selected: string | null = null
 /** 마우스가 올라가 있는 문서 경로다. 고른 문서보다 먼저 강조한다. */
@@ -94,7 +94,7 @@ function inView(at: { x: number; y: number }): boolean {
 function open(path: string): void {
 	// 그래프가 없으면 열 workspace 를 모른다.
 	if (!current) return
-	orca.plugin.request('kang.open', { workspaceId: current.workspaceId, path }).catch((error) => console.debug('kang.open 요청이 실패했습니다', error))
+	orca.plugin.request('kang.open', { workspaceId: current.workspaceId, root: current.root, path }).catch((error) => console.debug('kang.open 요청이 실패했습니다', error))
 }
 
 /**
@@ -260,7 +260,7 @@ function draw(located: Locate | null): void {
 	// 해시가 바뀐 문서가 있으면 그래프가 지금 문서와 다를 수 있다고 알린다.
 	if (located.stale.length > 0) notices.append(notice(STALE_NOTICE))
 	const model = buildModel(located.docs, located.edges, located.definitions)
-	current = { model, workspaceId: located.workspaceId }
+	current = { model, workspaceId: located.workspaceId, root: located.root }
 	// 새 원문에 고른 문서가 없으면 고르기를 푼다.
 	if (selected && !model.nodes.some((n) => n.path === selected)) selected = null
 	panels.setModel(model)

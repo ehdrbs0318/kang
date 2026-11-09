@@ -1,5 +1,9 @@
 {
   "extends": "./.orca/types/tsconfig.json",
+  // DOM.Iterable 은 찾기 막대가 쓰는 CSS.highlights 의 set, delete 타입을 준다.
+  "compilerOptions": {
+    "lib": ["ES2022", "DOM", "DOM.Iterable"]
+  },
   "include": [
     "src"
   ]
