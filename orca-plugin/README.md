@@ -17,7 +17,7 @@
   - `model.ts`: 인덱스를 화면 모델로 바꾼다. 문서마다 짧은 이름, 폴더, 역할(허브, 고립), 들어오고 나가는 연결, 선언한 keyword 를 모은다.
   - `panel.ts`: 머리줄(통계, 폴더 색 범례, 검색, 전체 보기), 왼쪽 문서 목록, 오른쪽 상세 패널을 만든다.
   - `main.ts`: `kang.locate` 답을 `cose` 레이아웃으로 그린다. 점에 마우스를 올리면 이웃만 밝게 남긴다. 점을 누르면 상세 패널에 고정하고, 두 번 누르면 그 문서를 연다. 화살표에 마우스를 올리면 심볼 목록을 보여 준다.
-  - 화면 구성은 [GEPA](https://github.com/gepa-ai/gepa) Workbench 를 참조했다. 자세한 내용은 `plans/WIPS/V0007-graph-view-redesign.md` 에 있다.
+  - 화면 구성은 [GEPA](https://github.com/gepa-ai/gepa) Workbench 를 참조했다. 자세한 내용은 `plans/DONES/V0007-graph-view-redesign.md` 에 있다.
 - `src/frame.ts`, `src/frame.css`: 두 화면이 함께 쓰는 스타일 넣기와 안내 문구다.
 
 원격 workspace 는 지원하지 않는다. worker 는 로컬 파일만 읽는다.
