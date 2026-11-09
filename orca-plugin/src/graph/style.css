@@ -1,20 +1,341 @@
-/* kang 그래프 화면의 스타일이다. 그래프 영역은 안내 문구 아래의 나머지 화면을 모두 쓴다. */
+/* kang 그래프 화면의 스타일이다. 색은 Orca 테마의 --orca-* 변수를 쓰고, 폴더 색만 panel.ts 의 PALETTE 를 쓴다. */
 body {
 	display: flex;
 	flex-direction: column;
 	height: 100vh;
+	overflow: hidden;
 }
 
 .kang-notices:not(:empty) {
-	padding: 16px 16px 0;
+	padding: 12px 16px 0;
 }
 
 .kang-notices .kang-notice {
 	margin: 0;
 }
 
+.kg-layout {
+	display: flex;
+	flex-direction: column;
+	flex: 1;
+	min-height: 0;
+}
+
+.kg-layout[hidden] {
+	display: none;
+}
+
+/* 머리줄: 제목, 통계, 범례, 검색과 버튼 */
+.kg-header {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 8px 20px;
+	padding: 10px 16px;
+	border-bottom: 1px solid var(--orca-border);
+	background: linear-gradient(90deg, color-mix(in srgb, var(--orca-primary) 10%, transparent), transparent 60%);
+}
+
+.kg-title {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	font-size: 15px;
+}
+
+.kg-logo {
+	color: var(--orca-primary);
+	font-size: 18px;
+}
+
+.kg-stats {
+	display: flex;
+	gap: 6px;
+}
+
+.kg-stat {
+	display: flex;
+	align-items: baseline;
+	gap: 6px;
+	padding: 2px 10px;
+	border: 1px solid var(--orca-border);
+	border-radius: 999px;
+	background: var(--orca-muted);
+	font-size: 12px;
+}
+
+.kg-stat span {
+	color: var(--orca-muted-foreground);
+}
+
+.kg-legend {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 4px 12px;
+	font-size: 12px;
+	color: var(--orca-muted-foreground);
+}
+
+.kg-legend-item {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+}
+
+.kg-tools {
+	display: flex;
+	gap: 6px;
+	margin-left: auto;
+}
+
+.kg-search {
+	width: 180px;
+	padding: 4px 10px;
+	border: 1px solid var(--orca-border);
+	border-radius: var(--orca-radius);
+	background: var(--orca-background);
+	color: var(--orca-foreground);
+	font: inherit;
+	font-size: 12px;
+}
+
+.kg-button {
+	padding: 4px 12px;
+	border: 1px solid var(--orca-border);
+	border-radius: var(--orca-radius);
+	background: var(--orca-secondary);
+	color: var(--orca-secondary-foreground);
+	font: inherit;
+	font-size: 12px;
+	cursor: pointer;
+}
+
+.kg-button:hover {
+	border-color: var(--orca-primary);
+}
+
+.kg-primary {
+	border-color: var(--orca-primary);
+	background: var(--orca-primary);
+	color: var(--orca-primary-foreground);
+}
+
+.kg-dot {
+	flex: none;
+	display: inline-block;
+	width: 9px;
+	height: 9px;
+	border-radius: 50%;
+}
+
+/* 본문: 목록, 그래프, 상세 패널 */
+.kg-body {
+	display: flex;
+	flex: 1;
+	min-height: 0;
+}
+
 .kang-graph {
 	position: relative;
 	flex: 1;
-	min-height: 0;
+	min-width: 0;
+	background: radial-gradient(circle at 50% 45%, color-mix(in srgb, var(--orca-primary) 7%, transparent), transparent 70%);
+}
+
+.kg-list,
+.kg-detail {
+	flex: none;
+	overflow-y: auto;
+	font-size: 13px;
+}
+
+.kg-list {
+	width: 220px;
+	padding: 8px 6px;
+	border-right: 1px solid var(--orca-border);
+}
+
+.kg-group[hidden],
+.kg-item[hidden] {
+	display: none;
+}
+
+.kg-group-name {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 8px 8px 4px;
+	color: var(--orca-muted-foreground);
+	font-size: 11px;
+	overflow: hidden;
+	white-space: nowrap;
+	text-overflow: ellipsis;
+}
+
+.kg-item {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 6px;
+	width: 100%;
+	padding: 5px 8px 5px 22px;
+	border: 0;
+	border-radius: var(--orca-radius);
+	background: none;
+	color: var(--orca-foreground);
+	font: inherit;
+	text-align: left;
+	cursor: pointer;
+}
+
+.kg-item:hover {
+	background: var(--orca-muted);
+}
+
+.kg-item.is-selected {
+	background: color-mix(in srgb, var(--orca-primary) 18%, transparent);
+	box-shadow: inset 2px 0 0 var(--orca-primary);
+}
+
+.kg-item-name {
+	overflow: hidden;
+	white-space: nowrap;
+	text-overflow: ellipsis;
+}
+
+.kg-item-meta {
+	flex: none;
+	color: var(--orca-muted-foreground);
+	font-size: 11px;
+	font-variant-numeric: tabular-nums;
+}
+
+.kg-detail {
+	width: 300px;
+	padding: 14px 16px 24px;
+	border-left: 1px solid var(--orca-border);
+}
+
+.kg-hint {
+	margin-top: 24px;
+	color: var(--orca-muted-foreground);
+	text-align: center;
+}
+
+.kg-detail-head h2 {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 8px;
+	margin: 0 0 4px;
+	font-size: 16px;
+	word-break: break-all;
+}
+
+.kg-path {
+	display: block;
+	margin-bottom: 10px;
+	color: var(--orca-muted-foreground);
+	font: 11px/1.4 ui-monospace, monospace;
+	word-break: break-all;
+}
+
+.kg-badge {
+	padding: 1px 8px;
+	border-radius: 999px;
+	font-size: 11px;
+	font-weight: 600;
+}
+
+.kg-badge-hub {
+	background: color-mix(in srgb, var(--orca-primary) 22%, transparent);
+	color: var(--orca-foreground);
+}
+
+.kg-badge-orphan {
+	border: 1px dashed var(--orca-border);
+	color: var(--orca-muted-foreground);
+}
+
+.kg-description {
+	margin: 12px 0;
+	padding: 4px 12px;
+	border-left: 3px solid var(--orca-border);
+	color: var(--orca-muted-foreground);
+	line-height: 1.55;
+}
+
+.kg-section h3 {
+	margin: 18px 0 6px;
+	color: var(--orca-muted-foreground);
+	font-size: 11px;
+	letter-spacing: 0.04em;
+}
+
+.kg-empty {
+	margin: 0;
+	color: var(--orca-muted-foreground);
+	font-size: 12px;
+}
+
+.kg-links {
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+
+.kg-links li {
+	margin-bottom: 6px;
+}
+
+.kg-link {
+	display: inline-flex;
+	text-align: left;
+	align-items: center;
+	gap: 6px;
+	padding: 0;
+	border: 0;
+	background: none;
+	color: var(--orca-foreground);
+	font: inherit;
+	font-weight: 600;
+	cursor: pointer;
+}
+
+.kg-link:hover span {
+	text-decoration: underline;
+}
+
+.kg-symbols {
+	padding-left: 15px;
+	color: var(--orca-muted-foreground);
+	font: 11px/1.4 ui-monospace, monospace;
+	word-break: break-all;
+}
+
+.kg-keywords {
+	margin: 0;
+}
+
+.kg-keywords dt {
+	margin-top: 6px;
+	font-weight: 600;
+}
+
+.kg-keywords dd {
+	margin: 2px 0 0;
+	color: var(--orca-muted-foreground);
+	font-size: 12px;
+	line-height: 1.5;
+}
+
+/* 좁은 창에서는 목록을 숨기고 상세 패널을 줄인다. */
+@media (max-width: 760px) {
+	.kg-list {
+		display: none;
+	}
+
+	.kg-detail {
+		width: 240px;
+	}
 }
