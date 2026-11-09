@@ -1,0 +1,38 @@
+name: orca-plugin
+
+# main 에서 orca-plugin/ 이 바뀌면, 그 폴더만 ehdrbs0318/kang-orca-plugin 의 main 으로 옮긴다.
+# Orca 는 저장소의 하위 폴더를 설치하지 못한다. 그래서 다른 장비는 그 사본 저장소에서 설치한다.
+on:
+  push:
+    branches: [main]
+    paths: ['orca-plugin/**']
+  workflow_dispatch:
+
+# 같은 사본에 두 번 동시에 push 하지 않게 한다.
+concurrency: orca-plugin-sync
+
+jobs:
+  sync:
+    # 이 저장소에는 쓰지 않는다. 사본 저장소에는 그 저장소에만 쓸 수 있는 배포 키로 쓴다.
+    permissions:
+      contents: read
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # subtree split 은 orca-plugin/ 을 바꾼 모든 커밋을 읽어야 한다.
+          fetch-depth: 0
+
+      # 같은 기록에서는 항상 같은 커밋이 나온다. 그래서 사본은 fast-forward 로만 바뀐다.
+      # 사본에 직접 커밋이 생기면 push 가 실패한다. 그때는 사본을 고치지 말고 kang 저장소에서 고친다.
+      - name: orca-plugin/ 을 사본 저장소로 옮긴다
+        env:
+          DEPLOY_KEY: ${{ secrets.ORCA_PLUGIN_DEPLOY_KEY }}
+        run: |
+          key="$RUNNER_TEMP/deploy_key"
+          printf '%s\n' "$DEPLOY_KEY" > "$key"
+          chmod 600 "$key"
+          split=$(git subtree split --prefix orca-plugin HEAD)
+          GIT_SSH_COMMAND="ssh -i $key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new" \
+            git push git@github.com:ehdrbs0318/kang-orca-plugin.git "$split:refs/heads/main"
+          rm -f "$key"

@@ -2,6 +2,18 @@
 
 이 플러그인은 kang 문서(`.kang`)와 그래프 인덱스(`.kang/graph.kang.json`)를 Orca 에서 읽기 전용으로 보여 준다. 플러그인 id 는 `kang` 이다.
 
+## 설치
+
+```sh
+orca plugin install ehdrbs0318/kang-orca-plugin
+```
+
+이 플러그인은 worker 를 실행하므로 처음 설치할 때 승인이 필요하다. 명령이 `approval_required` 로 멈추면, 출력에 나온 `--approve ap1-…` 명령을 그대로 다시 실행한다. 새 버전을 받을 때도 같은 명령을 실행한다.
+
+그래프와 keyword 정의를 보려면 문서 저장소에서 `kang build` 를 실행해 `.kang/graph.kang.json` 을 만들어 둔다.
+
+`ehdrbs0318/kang-orca-plugin` 저장소는 [ehdrbs0318/kang](https://github.com/ehdrbs0318/kang) 의 `orca-plugin/` 폴더를 자동으로 옮긴 사본이다. 코드는 kang 저장소에서 고친다. kang 저장소의 `main` 에서 `orca-plugin/` 이 바뀌면 `.github/workflows/orca-plugin.yml` 이 사본을 갱신한다.
+
 ## 구성
 
 - `src/worker.ts`: 플러그인의 worker 다. custom editor 의 요청 두 개에 답한다.
@@ -17,14 +29,14 @@
   - `model.ts`: 인덱스를 화면 모델로 바꾼다. 문서마다 짧은 이름, 폴더, 역할(허브, 고립), 들어오고 나가는 연결, 선언한 keyword 를 모은다.
   - `panel.ts`: 머리줄(통계, 폴더 색 범례, 검색, 전체 보기), 왼쪽 문서 목록, 오른쪽 상세 패널을 만든다.
   - `main.ts`: `kang.locate` 답을 `cose` 레이아웃으로 그린다. 점에 마우스를 올리면 이웃만 밝게 남긴다. 점을 누르면 상세 패널에 고정하고, 두 번 누르면 그 문서를 연다. 화살표에 마우스를 올리면 심볼 목록을 보여 준다.
-  - 화면 구성은 [GEPA](https://github.com/gepa-ai/gepa) Workbench 를 참조했다. 자세한 내용은 `plans/DONES/V0007-graph-view-redesign.md` 에 있다.
+  - 화면 구성은 [GEPA](https://github.com/gepa-ai/gepa) Workbench 를 참조했다. 자세한 내용은 kang 저장소의 [`plans/DONES/V0007-graph-view-redesign.md`](https://github.com/ehdrbs0318/kang/blob/main/plans/DONES/V0007-graph-view-redesign.md) 에 있다.
 - `src/frame.ts`, `src/frame.css`: 두 화면이 함께 쓰는 스타일 넣기와 안내 문구다.
 
 원격 workspace 는 지원하지 않는다. worker 는 로컬 파일만 읽는다.
 
 ## 개발
 
-먼저 저장소 루트에서 `kang build` 를 실행해 그래프 인덱스를 만든다. 다음 명령은 `orca-plugin/` 에서 실행한다.
+먼저 kang 저장소 루트에서 `kang build` 를 실행해 그래프 인덱스를 만든다. 다음 명령은 `orca-plugin/` 에서 실행한다. 이 폴더에서 바로 설치하려면 `orca plugin install .` 를 실행한다.
 
 ```sh
 orca plugin types .          # .orca/types/ 에 타입 파일을 쓴다
