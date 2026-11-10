@@ -9,6 +9,7 @@ import { definitionsOf, parseIndex } from '../graph-index'
 import type { Locate } from '../protocol'
 import { buildModel, type GraphModel, matches, toElements } from './model'
 import { createPanels, folderColor } from './panel'
+import { separate } from './separate'
 
 /** 스타일 파일을 다 읽으면 풀린다. 그래프 영역의 크기가 스타일로 정해지므로, 그래프는 이 promise 뒤에 만든다. */
 const styled = addStyles(new URL('./style.css', import.meta.url).href)
@@ -289,6 +290,14 @@ function draw(located: Locate | null, text: string): void {
 	})
 	// 애니메이션 없이 배치해서 첫 화면에 바로 그린다. 기본값인 애니메이션 배치로는 Orca 화면 캡처에 빈 화면만 남았다.
 	cy.layout({ name: 'cose', animate: false, nodeDimensionsIncludeLabels: true, nodeRepulsion: 1_000_000, componentSpacing: 120, padding: 48 }).run()
+	// cose 는 이웃을 많이 공유하는 허브 점을 겹치게 둔다. 라벨까지 포함한 영역이 겹치지 않게 떼어 놓고 다시 맞춘다.
+	const boxes = cy.nodes().map((n) => ({ id: n.id(), ...n.boundingBox({ includeLabels: true }) }))
+	for (const [id, { dx, dy }] of separate(boxes, 8, 200)) {
+		const node = cy.getElementById(id)
+		const at = node.position()
+		node.position({ x: at.x + dx, y: at.y + dy })
+	}
+	cy.fit(undefined, 48)
 	// 문서가 적으면 fit 이 크게 확대해서 글자가 너무 커진다. 그때는 1.3 배로 두고 가운데에 놓는다.
 	if (cy.zoom() > 1.3) {
 		cy.zoom(1.3)

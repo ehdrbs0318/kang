@@ -40,6 +40,12 @@ export type Collection = {
 	 * @param fn 요소를 받는 함수
 	 */
 	forEach(fn: (element: NodeSingular) => void): void
+	/**
+	 * 요소마다 함수를 불러 결과를 모은다.
+	 * @param fn 요소를 받는 함수
+	 * @returns 결과 배열
+	 */
+	map<T>(fn: (element: NodeSingular) => T): T[]
 }
 
 /** 점 또는 화살표 하나다. */
@@ -48,6 +54,20 @@ export type NodeSingular = Collection & {
 	id(): string
 	/** @returns 그래프 영역 왼쪽 위 기준의 화면 좌표 */
 	renderedPosition(): { x: number; y: number }
+	/** @returns 점 중심의 모델 좌표 */
+	position(): { x: number; y: number }
+	/**
+	 * 점 중심을 옮긴다.
+	 * @param at 새 모델 좌표
+	 * @returns 같은 점
+	 */
+	position(at: { x: number; y: number }): NodeSingular
+	/**
+	 * 점의 영역을 잰다.
+	 * @param options `includeLabels` 가 true 이면 라벨까지 넣는다
+	 * @returns 모델 좌표의 사각형
+	 */
+	boundingBox(options: { includeLabels: boolean }): { x1: number; y1: number; x2: number; y2: number }
 	/**
 	 * 요소의 data 값 하나를 읽는다.
 	 * @param key data 의 key
@@ -108,6 +128,12 @@ export type Core = {
 	zoom(level: number): void
 	/** 그래프를 화면 가운데에 놓는다. */
 	center(): void
+	/**
+	 * 요소가 화면에 다 들어오게 확대 배율과 위치를 바꾼다.
+	 * @param eles 맞출 요소. undefined 이면 모든 요소다
+	 * @param padding 가장자리에 남기는 간격
+	 */
+	fit(eles: Collection | undefined, padding: number): void
 	/**
 	 * viewport 를 부드럽게 옮긴다.
 	 * @param target 가운데에 둘 요소나 화면에 맞출 요소
