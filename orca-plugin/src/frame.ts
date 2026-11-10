@@ -16,10 +16,13 @@ export async function frameHash(text: string): Promise<string> {
 
 /** 상태가 `ok` 가 아닐 때 보여 주는 안내 문구 HTML 이다. 고정 문자열이므로 그대로 innerHTML 에 넣는다. */
 const NOTICES: Record<Exclude<Locate['status'], 'ok'>, string> = {
-	notIndexed: '<code>kang build</code> 를 실행하세요.',
+	notIndexed: '이 파일이 든 kang 프로젝트를 찾지 못했습니다. 로컬 workspace 이면 <code>kang build</code> 를 실행하세요. 원격 workspace 의 파일은 지원하지 않습니다.',
 	ambiguous: '같은 내용의 문서가 여럿 있어서 하나를 고를 수 없습니다.',
 	remoteOnly: '원격 workspace 는 지원하지 않습니다.',
 }
+
+/** 그래프 화면이 worker 없이 열린 원문만으로 그렸을 때 보여 주는 안내 문구 HTML 이다. */
+export const DETACHED_NOTICE = '파일 내용만으로 그렸습니다. 문서를 열 수 없고, 인덱스가 오래되었는지 알 수 없습니다.'
 
 /** 인덱스가 오래된 문서가 있을 때 그래프 화면이 보여 주는 안내 문구 HTML 이다. */
 export const STALE_NOTICE = '인덱스가 오래되었습니다. <code>kang build</code> 를 실행하세요.'

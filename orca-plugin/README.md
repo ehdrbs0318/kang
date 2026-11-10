@@ -21,6 +21,7 @@ orca plugin install ehdrbs0318/kang-orca-plugin
   - `kang.open`: 인덱스에 있는 문서 `<path>.kang` 을 Orca 의 편집기 탭으로 연다.
 - kang 프로젝트 루트는 kang 컴파일러처럼 git 저장소 루트다. 플러그인은 workspace 루트와, 그 바로 아래의 git 저장소 루트에서 `.kang/graph.kang.json` 을 찾는다. 그래서 여러 저장소를 한 상위 폴더에 두고 그 폴더를 workspace 로 열어도 문서 저장소의 그래프를 찾는다. 두 단계 이상 아래의 저장소는 찾지 않는다.
 - `src/normalize.ts`: 해시 입력 텍스트의 정규화다. 규칙은 `crates/kang/src/hash.rs` 와 같다. worker 와 화면이 함께 쓴다.
+- `src/graph-index.ts`: 그래프 인덱스 원문의 검사와 정의 표다. worker 와 그래프 화면이 함께 쓴다.
 - `src/locate.ts`: worker 의 문서 해시 계산과 workspace 찾기다.
 - `src/protocol.ts`: worker 와 custom editor 가 함께 쓰는 요청 타입이다.
 - `src/render/`: `.kang` 파일의 읽기 전용 렌더링 화면이다. Orca 가 `.kang` 파일을 이 custom editor 로 연다.
@@ -35,7 +36,9 @@ orca plugin install ehdrbs0318/kang-orca-plugin
   - 화면 구성은 [GEPA](https://github.com/gepa-ai/gepa) Workbench 를 참조했다. 자세한 내용은 kang 저장소의 [`plans/DONES/V0007-graph-view-redesign.md`](https://github.com/ehdrbs0318/kang/blob/main/plans/DONES/V0007-graph-view-redesign.md) 에 있다.
 - `src/frame.ts`, `src/frame.css`: 두 화면이 함께 쓰는 해시 계산(Web Crypto), 스타일 넣기, 안내 문구다.
 
-원격 workspace 는 지원하지 않는다. worker 는 로컬 파일만 읽는다.
+원격 workspace 는 지원하지 않는다. worker 는 Orca 를 실행한 장비의 파일만 읽는다. 다른 host 의 workspace 에서 파일을 열면 worker 가 그 파일을 찾지 못한다.
+
+그래프 화면은 이때도 열린 파일 내용만으로 그래프를 그린다. 다만 문서를 열 수 없고, 인덱스가 오래되었는지 알 수 없다. `.kang` 렌더링 화면은 본문만 그리고 참조 링크를 달지 않는다.
 
 ## 개발
 

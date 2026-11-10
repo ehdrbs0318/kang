@@ -1,9 +1,11 @@
 // .kang.json 그래프 인덱스의 읽기 전용 그래프 화면이다. Orca 의 custom editor frame 에서 실행한다.
-// 원문을 받으면 그 해시로 worker 에 `kang.locate` 를 묻고, 답의 문서와 import 관계를 cytoscape 로 그린다. JSON 은 worker 가 읽는다.
+// 원문을 받으면 그 해시로 worker 에 `kang.locate` 를 묻고, 답의 문서와 import 관계를 cytoscape 로 그린다.
+// worker 가 파일을 찾지 못하면(원격 workspace 등) 열린 원문을 직접 읽어 그린다. 그때는 문서를 열 수 없다.
 // 화면 구성은 GEPA Workbench 를 따른다. 위에 통계와 범례, 왼쪽에 문서 목록, 가운데에 그래프, 오른쪽에 고른 문서의 상세 패널이 있다.
 // 점에 마우스를 올리면 이웃만 밝게 남기고, 점을 누르면 상세 패널에 고정하고, 두 번 누르면 `kang.open` 으로 문서를 연다. 파일에는 아무것도 쓰지 않는다.
 import cytoscape, { type Core, type NodeSingular, type StylesheetJson } from '../../vendor/cytoscape.esm.min.mjs'
-import { addStyles, frameHash, createTooltip, locateNotice, notice, positionTooltip, STALE_NOTICE } from '../frame'
+import { addStyles, DETACHED_NOTICE, frameHash, createTooltip, locateNotice, notice, positionTooltip, STALE_NOTICE } from '../frame'
+import { definitionsOf, parseIndex } from '../graph-index'
 import type { Locate } from '../protocol'
 import { buildModel, type GraphModel, matches, toElements } from './model'
 import { createPanels, folderColor } from './panel'
@@ -13,8 +15,8 @@ const styled = addStyles(new URL('./style.css', import.meta.url).href)
 
 /** 지금 그린 그래프다. 새 원문이 오면 지우고 다시 만든다. */
 let graph: Core | null = null
-/** 지금 화면의 모델과 Orca workspace id, kang 프로젝트 루트다. 그래프가 없으면 null 이다. */
-let current: { model: GraphModel; workspaceId: string; root: string } | null = null
+/** 지금 화면의 모델과, 문서를 열 Orca workspace id 와 kang 프로젝트 루트다. 그래프가 없으면 null 이고, 원문만으로 그렸으면 `target` 이 null 이다. */
+let current: { model: GraphModel; target: { workspaceId: string; root: string } | null } | null = null
 /** 상세 패널에 고정한 문서 경로다. */
 let selected: string | null = null
 /** 마우스가 올라가 있는 문서 경로다. 고른 문서보다 먼저 강조한다. */
@@ -92,9 +94,10 @@ function inView(at: { x: number; y: number }): boolean {
  * @param path 인덱스의 문서 경로
  */
 function open(path: string): void {
-	// 그래프가 없으면 열 workspace 를 모른다.
-	if (!current) return
-	orca.plugin.request('kang.open', { workspaceId: current.workspaceId, root: current.root, path }).catch((error) => console.debug('kang.open 요청이 실패했습니다', error))
+	const target = current?.target
+	// 그래프가 없거나 원문만으로 그렸으면 열 workspace 를 모른다.
+	if (!target) return
+	orca.plugin.request('kang.open', { workspaceId: target.workspaceId, root: target.root, path }).catch((error) => console.debug('kang.open 요청이 실패했습니다', error))
 }
 
 /**
@@ -236,31 +239,42 @@ async function show(text: string): Promise<void> {
 	await styled
 	// 그 사이에 새 원문이 왔으면 이 결과는 버린다.
 	if (turn !== latest) return
-	draw(located)
+	draw(located, text)
 }
 
 /**
  * 안내 문구, 패널, 그래프를 다시 그린다.
  * @param located `kang.locate` 답. 요청이 실패했으면 null
+ * @param text 열린 그래프 인덱스 원문. 답이 ok 가 아니면 이 원문으로 그린다
  */
-function draw(located: Locate | null): void {
+function draw(located: Locate | null, text: string): void {
 	graph?.destroy()
 	graph = null
 	current = null
 	hovered = null
 	tooltip.hidden = true
 	notices.replaceChildren()
-	const failed = locateNotice(located)
-	// 상태가 ok 가 아니면 그릴 그래프가 없으므로 안내 문구만 둔다.
-	if (failed || located?.status !== 'ok') {
-		layout.hidden = true
-		if (failed) notices.append(failed)
-		return
+	let model: GraphModel
+	// 답이 ok 이면 worker 가 읽은 인덱스로 그리고, 문서를 열 수 있다.
+	if (located?.status === 'ok') {
+		// 해시가 바뀐 문서가 있으면 그래프가 지금 문서와 다를 수 있다고 알린다.
+		if (located.stale.length > 0) notices.append(notice(STALE_NOTICE))
+		model = buildModel(located.docs, located.edges, located.definitions)
+		current = { model, target: { workspaceId: located.workspaceId, root: located.root } }
+	} else {
+		const lists = parseIndex(text)
+		// 답이 ok 가 아닌 까닭을 먼저 알린다. 상태가 ok 가 아니면 항상 문구가 있다.
+		notices.append(locateNotice(located)!)
+		// 원문도 인덱스가 아니면 그릴 그래프가 없으므로 안내 문구만 둔다.
+		if (!lists) {
+			layout.hidden = true
+			return
+		}
+		// worker 가 파일을 찾지 못했어도 원문에 그래프가 다 있으므로 그린다. 문서는 열 수 없다.
+		notices.append(notice(DETACHED_NOTICE))
+		model = buildModel(lists.docs, lists.edges, definitionsOf(lists.keywords))
+		current = { model, target: null }
 	}
-	// 해시가 바뀐 문서가 있으면 그래프가 지금 문서와 다를 수 있다고 알린다.
-	if (located.stale.length > 0) notices.append(notice(STALE_NOTICE))
-	const model = buildModel(located.docs, located.edges, located.definitions)
-	current = { model, workspaceId: located.workspaceId, root: located.root }
 	// 새 원문에 고른 문서가 없으면 고르기를 푼다.
 	if (selected && !model.nodes.some((n) => n.path === selected)) selected = null
 	panels.setModel(model)
