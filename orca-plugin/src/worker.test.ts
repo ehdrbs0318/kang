@@ -29,7 +29,7 @@ function host(path = ROOT) {
 
 test('kang.locate 는 열린 문서의 workspace 와 경로를 답한다', async () => {
 	const worker = await mountWorker(main, { host: host() })
-	const result = await worker.request('kang.locate', { text: readFileSync(`${ROOT}CONTEXT.kang`, 'utf8') })
+	const result = await worker.request('kang.locate', { hash: docHash(readFileSync(`${ROOT}CONTEXT.kang`, 'utf8')) })
 	assert.equal(result.status, 'ok')
 	assert.equal(result.status === 'ok' && result.path, 'CONTEXT')
 	assert.deepEqual(worker.refusals, [])
@@ -137,10 +137,10 @@ test('한 workspace 에서 읽는 파일 크기의 합이 한도를 넘으면 ka
 		const index = { kang: 'graph/1', docs: [doc('A', docHash(text)), ...big.map((p) => doc(p, '0'.repeat(64)))], keywords: [], edges: [] }
 		writeFileSync(join(root, '.kang/graph.kang.json'), JSON.stringify(index))
 		worker = await mountWorker(main, { host: host(root) })
-		assert.deepEqual(await worker.request('kang.locate', { text }), { status: 'notIndexed' })
+		assert.deepEqual(await worker.request('kang.locate', { hash: docHash(text) }), { status: 'notIndexed' })
 		// 문서가 64 MiB 안이면 같은 인덱스로 찾는다.
 		truncateSync(join(root, 'b4.kang'), 0)
-		assert.equal((await worker.request('kang.locate', { text })).status, 'ok')
+		assert.equal((await worker.request('kang.locate', { hash: docHash(text) })).status, 'ok')
 	} finally {
 		// 검사가 실패해도 worker 를 내리고 임시 폴더를 지운다.
 		await worker?.deactivate()
@@ -183,7 +183,7 @@ test('읽은 양이 한도를 넘은 workspace 만 건너뛰고 다른 workspace
 			},
 		})
 		worker = await mountWorker(main, { host: h })
-		const result = await worker.request('kang.locate', { text })
+		const result = await worker.request('kang.locate', { hash: docHash(text) })
 		assert.equal(result.status === 'ok' && result.workspaceId, 'small')
 	} finally {
 		// 검사가 실패해도 worker 를 내리고 임시 폴더를 지운다.

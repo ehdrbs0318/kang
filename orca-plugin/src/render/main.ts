@@ -1,8 +1,8 @@
 // .kang 파일의 읽기 전용 렌더링 화면이다. Orca 의 custom editor frame 에서 실행한다.
-// 원문을 받으면 worker 에 `kang.locate` 를 묻고, parse.ts 의 marked 확장으로 본문을 그린다.
+// 원문을 받으면 그 해시로 worker 에 `kang.locate` 를 묻고, parse.ts 의 marked 확장으로 본문을 그린다.
 // 참조 링크는 마우스를 올리면 정의를 보여 주고, 누르면 `kang.open` 으로 그 문서를 연다. 문서에는 아무것도 쓰지 않는다.
 import type { Locate } from '../protocol'
-import { addStyles, createTooltip, locateNotice, positionTooltip } from '../frame'
+import { addStyles, frameHash, createTooltip, locateNotice, positionTooltip } from '../frame'
 import { setupFind } from './find'
 import { lookupRef, parseKang, renderBody, type KangView } from './parse'
 
@@ -26,7 +26,7 @@ async function show(text: string): Promise<void> {
 	const turn = ++latest
 	let located: Locate | null
 	try {
-		located = await orca.plugin.request('kang.locate', { text })
+		located = await orca.plugin.request('kang.locate', { hash: await frameHash(text) })
 	} catch (error) {
 		// worker 가 없거나 응답하지 않으면 링크 없이 그린다.
 		console.debug('kang.locate 요청이 실패해서 링크 없이 그립니다', error)

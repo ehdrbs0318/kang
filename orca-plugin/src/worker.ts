@@ -73,15 +73,15 @@ export function realFs(): FileReader {
  */
 export default function activate(orca: OrcaWorkerApi): void {
 	/**
-	 * `kang.locate` 에 답한다. 열린 파일의 원문으로 workspace 와 문서를 찾는다.
-	 * @param input.text 열린 파일의 원문
+	 * `kang.locate` 에 답한다. 열린 파일의 해시로 workspace 와 문서를 찾는다.
+	 * @param input.hash 열린 파일 원문의 `docHash` 값
 	 * @returns locate 의 답. 읽은 파일 크기의 합이 MAX_TOTAL 을 넘은 workspace 는 건너뛴다.
 	 *   host 호출이 실패하면 그 오류로 거부하고, Orca 가 요청한 쪽에 실패를 전한다
 	 */
-	orca.panels.handle('kang.locate', async ({ text }) => {
+	orca.panels.handle('kang.locate', async ({ hash }) => {
 		const { workspaces } = await orca.host.call('workspace.list')
 		const focused = await orca.host.call('workspace.readContext')
-		return locate(text, workspaces, focused, realFs())
+		return locate(hash, workspaces, focused, realFs())
 	})
 
 	/**

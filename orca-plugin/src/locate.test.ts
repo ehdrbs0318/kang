@@ -1,7 +1,8 @@
 // locate.ts 의 정규화, 해시, workspace 찾기를 가짜 파일 시스템으로 검사한다.
 import { join } from 'node:path'
 import { assert, test } from 'orca/testing'
-import { docHash, isLocal, locate, normalize, pickWorkspace, ReadLimit, type Workspace } from './locate'
+import { docHash, isLocal, locate, pickWorkspace, ReadLimit, type Workspace } from './locate'
+import { normalize } from './normalize'
 
 /**
  * 경로와 내용의 표로 가짜 파일 시스템을 만든다.
@@ -80,7 +81,7 @@ test('문서가 하나의 workspace 에만 맞으면 그 workspace 와 문서를
 		'/r/a/docs/A.kang': DOC_A,
 		'/r/a/B.kang': DOC_B,
 	})
-	const result = locate(DOC_A, [ws('w1', '/r/a')], null, fs)
+	const result = locate(docHash(DOC_A), [ws('w1', '/r/a')], null, fs)
 	assert.equal(result.status, 'ok')
 	if (result.status !== 'ok') return
 	assert.equal(result.kind, 'doc')
@@ -101,7 +102,7 @@ test('workspace 바로 아래의 git 저장소에 있는 kang 프로젝트를 �
 		'/r/top/doc/docs/A.kang': DOC_A,
 		'/r/top/doc/B.kang': DOC_B,
 	})
-	const result = locate(DOC_A, [ws('w1', '/r/top')], null, fs)
+	const result = locate(docHash(DOC_A), [ws('w1', '/r/top')], null, fs)
 	assert.equal(result.status, 'ok')
 	if (result.status !== 'ok') return
 	assert.equal(result.workspaceId, 'w1')
@@ -114,7 +115,7 @@ test('workspace 바로 아래의 git 저장소에 있는 kang 프로젝트를 �
 
 test('git 저장소가 아닌 하위 디렉토리의 인덱스는 보지 않는다', () => {
 	const fs = fakeFs({ '/r/top/doc/.kang/graph.kang.json': graph({ A: DOC_A }), '/r/top/doc/A.kang': DOC_A })
-	assert.deepEqual(locate(DOC_A, [ws('w1', '/r/top')], null, fs), { status: 'notIndexed' })
+	assert.deepEqual(locate(docHash(DOC_A), [ws('w1', '/r/top')], null, fs), { status: 'notIndexed' })
 })
 
 test('하위 저장소를 따로 연 workspace 와 상위 폴더 workspace 가 함께 맞으면 같은 저장소이므로 첫 번째를 고른다', () => {
@@ -123,14 +124,14 @@ test('하위 저장소를 따로 연 workspace 와 상위 폴더 workspace 가 �
 		'/r/top/doc/.kang/graph.kang.json': graph({ A: DOC_A }),
 		'/r/top/doc/A.kang': DOC_A,
 	})
-	const result = locate(DOC_A, [ws('w1', '/r/top'), ws('w2', '/r/top/doc')], null, fs)
+	const result = locate(docHash(DOC_A), [ws('w1', '/r/top'), ws('w2', '/r/top/doc')], null, fs)
 	assert.equal(result.status === 'ok' && `${result.workspaceId}:${result.root}`, 'w1:doc')
 })
 
 test('원문이 그래프 인덱스 파일과 같으면 kind 는 graph 이고 path 는 null 이다', () => {
 	const index = graph({ A: DOC_A })
 	const fs = fakeFs({ '/r/a/.kang/graph.kang.json': index, '/r/a/A.kang': DOC_A })
-	const result = locate(index, [ws('w1', '/r/a')], null, fs)
+	const result = locate(docHash(index), [ws('w1', '/r/a')], null, fs)
 	assert.equal(result.status, 'ok')
 	if (result.status !== 'ok') return
 	assert.equal(result.kind, 'graph')
@@ -140,7 +141,7 @@ test('원문이 그래프 인덱스 파일과 같으면 kind 는 graph 이고 pa
 
 test('한 workspace 안에서 같은 해시의 문서가 둘이면 ambiguous 다', () => {
 	const fs = fakeFs({ '/r/a/.git/HEAD': 'x', '/r/a/.kang/graph.kang.json': graph({ A: DOC_A, C: DOC_A }) })
-	assert.deepEqual(locate(DOC_A, [ws('w1', '/r/a')], null, fs), { status: 'ambiguous' })
+	assert.deepEqual(locate(docHash(DOC_A), [ws('w1', '/r/a')], null, fs), { status: 'ambiguous' })
 })
 
 test('항목의 타입이 틀린 인덱스는 없는 것으로 보고, 다른 workspace 는 그대로 찾는다', () => {
@@ -151,9 +152,9 @@ test('항목의 타입이 틀린 인덱스는 없는 것으로 보고, 다른 wo
 		'/r/good/.kang/graph.kang.json': graph({ A: DOC_A }),
 	})
 	const bad = [ws('w1', '/r/bad'), ws('w2', '/r/bad2'), ws('w3', '/r/bad3')]
-	const result = locate(DOC_A, [...bad, ws('w4', '/r/good')], null, fs)
+	const result = locate(docHash(DOC_A), [...bad, ws('w4', '/r/good')], null, fs)
 	assert.equal(result.status === 'ok' && result.workspaceId, 'w4')
-	assert.deepEqual(locate(DOC_A, bad, null, fs), { status: 'notIndexed' })
+	assert.deepEqual(locate(docHash(DOC_A), bad, null, fs), { status: 'notIndexed' })
 })
 
 test('workspace 밖을 가리키는 경로가 하나라도 있는 인덱스는 없는 것으로 본다', () => {
@@ -168,21 +169,21 @@ test('workspace 밖을 가리키는 경로가 하나라도 있는 인덱스는 �
 	]
 	for (const index of indexes) {
 		const fs = fakeFs({ '/r/a/.kang/graph.kang.json': JSON.stringify({ kang: 'graph/1', ...index }), '/r/a/A.kang': DOC_A })
-		assert.deepEqual(locate(DOC_A, [ws('w1', '/r/a')], null, fs), { status: 'notIndexed' }, JSON.stringify(index))
+		assert.deepEqual(locate(docHash(DOC_A), [ws('w1', '/r/a')], null, fs), { status: 'notIndexed' }, JSON.stringify(index))
 	}
 })
 
 test('같은 문서 경로가 두 번 나오는 인덱스는 없는 것으로 본다', () => {
 	const doc = { path: 'A', description: '', hash: docHash(DOC_A), scope: [] }
 	const fs = fakeFs({ '/r/a/.kang/graph.kang.json': JSON.stringify({ kang: 'graph/1', docs: [doc, doc], keywords: [], edges: [] }) })
-	assert.deepEqual(locate(DOC_A, [ws('w1', '/r/a')], null, fs), { status: 'notIndexed' })
+	assert.deepEqual(locate(docHash(DOC_A), [ws('w1', '/r/a')], null, fs), { status: 'notIndexed' })
 })
 
 test('같은 (from, to) 쌍의 관계가 두 번 나오는 인덱스는 없는 것으로 본다', () => {
 	const doc = (path: string) => ({ path, description: '', hash: docHash(path === 'A' ? DOC_A : DOC_B), scope: [] })
 	const edge = { from: 'A', to: 'B', symbols: [] }
 	const fs = fakeFs({ '/r/a/.kang/graph.kang.json': JSON.stringify({ kang: 'graph/1', docs: [doc('A'), doc('B')], keywords: [], edges: [edge, edge] }) })
-	assert.deepEqual(locate(DOC_A, [ws('w1', '/r/a')], null, fs), { status: 'notIndexed' })
+	assert.deepEqual(locate(docHash(DOC_A), [ws('w1', '/r/a')], null, fs), { status: 'notIndexed' })
 })
 
 test('문서가 10 000 개를 넘는 인덱스는 없는 것으로 본다', () => {
@@ -192,13 +193,13 @@ test('문서가 10 000 개를 넘는 인덱스는 없는 것으로 본다', () =
 	]
 	for (const [count, status] of [[10000, 'ok'], [10001, 'notIndexed']] as const) {
 		const fs = fakeFs({ '/r/a/.kang/graph.kang.json': JSON.stringify({ kang: 'graph/1', docs: docs(count), keywords: [], edges: [] }), '/r/a/A.kang': DOC_A })
-		assert.equal(locate(DOC_A, [ws('w1', '/r/a')], null, fs).status, status, String(count))
+		assert.equal(locate(docHash(DOC_A), [ws('w1', '/r/a')], null, fs).status, status, String(count))
 	}
 })
 
 test('로컬 후보가 없고 focus 된 workspace 가 원격이면 remoteOnly 다', () => {
 	const remote = { ...ws('w2', '/r/b', 'b', 'dev'), hostId: 'ssh-1' }
-	assert.deepEqual(locate(DOC_A, [ws('w1', '/r/a'), remote], { displayName: 'b', branch: 'dev' }, fakeFs({})), { status: 'remoteOnly' })
+	assert.deepEqual(locate(docHash(DOC_A), [ws('w1', '/r/a'), remote], { displayName: 'b', branch: 'dev' }, fakeFs({})), { status: 'remoteOnly' })
 })
 
 test('여러 workspace 가 맞으면 focus 된 workspace 의 이름과 branch 로 고른다', () => {
@@ -209,7 +210,7 @@ test('여러 workspace 가 맞으면 focus 된 workspace 의 이름과 branch �
 		'/r/b/.git/HEAD': 'x',
 		'/r/b/.kang/graph.kang.json': index,
 	})
-	const result = locate(DOC_A, [ws('w1', '/r/a', 'a', 'main'), ws('w2', '/r/b', 'b', 'dev')], { displayName: 'b', branch: 'dev' }, fs)
+	const result = locate(docHash(DOC_A), [ws('w1', '/r/a', 'a', 'main'), ws('w2', '/r/b', 'b', 'dev')], { displayName: 'b', branch: 'dev' }, fs)
 	assert.equal(result.status === 'ok' && result.workspaceId, 'w2')
 })
 
@@ -223,7 +224,7 @@ test('같은 git 저장소의 worktree 둘이 맞으면 첫 번째를 고르고 
 		'/r/wt/.kang/graph.kang.json': index,
 		'/r/wt/A.kang': DOC_A,
 	})
-	const result = locate(DOC_A, [ws('w1', '/r/a'), ws('w2', '/r/wt')], { displayName: 'other', branch: 'x' }, fs)
+	const result = locate(docHash(DOC_A), [ws('w1', '/r/a'), ws('w2', '/r/wt')], { displayName: 'other', branch: 'x' }, fs)
 	assert.equal(result.status, 'ok')
 	if (result.status !== 'ok') return
 	assert.equal(result.workspaceId, 'w1')
@@ -238,18 +239,18 @@ test('다른 저장소 둘이 맞고 focus 로 고를 수 없으면 ambiguous �
 		'/r/b/.git/HEAD': 'x',
 		'/r/b/.kang/graph.kang.json': index,
 	})
-	assert.deepEqual(locate(DOC_A, [ws('w1', '/r/a'), ws('w2', '/r/b')], null, fs), { status: 'ambiguous' })
+	assert.deepEqual(locate(docHash(DOC_A), [ws('w1', '/r/a'), ws('w2', '/r/b')], null, fs), { status: 'ambiguous' })
 })
 
 test('git 저장소가 아닌 workspace 둘이 맞으면 ambiguous 다', () => {
 	const index = graph({ A: DOC_A })
 	const fs = fakeFs({ '/r/a/.kang/graph.kang.json': index, '/r/b/.kang/graph.kang.json': index })
-	assert.deepEqual(locate(DOC_A, [ws('w1', '/r/a'), ws('w2', '/r/b')], null, fs), { status: 'ambiguous' })
+	assert.deepEqual(locate(docHash(DOC_A), [ws('w1', '/r/a'), ws('w2', '/r/b')], null, fs), { status: 'ambiguous' })
 })
 
 test('원격 workspace 만 있으면 remoteOnly 다', () => {
 	const remote = { ...ws('w1', '/r/a'), hostId: 'ssh-1' }
-	assert.deepEqual(locate(DOC_A, [remote], null, fakeFs({})), { status: 'remoteOnly' })
+	assert.deepEqual(locate(docHash(DOC_A), [remote], null, fakeFs({})), { status: 'remoteOnly' })
 })
 
 test('hostId 가 null 이나 local 이면 로컬이고, 그 밖은 원격이다', () => {
@@ -260,14 +261,14 @@ test('hostId 가 null 이나 local 이면 로컬이고, 그 밖은 원격이다'
 
 test('hostId 가 local 인 workspace 의 문서를 찾는다', () => {
 	const fs = fakeFs({ '/r/a/.kang/graph.kang.json': graph({ A: DOC_A }), '/r/a/A.kang': DOC_A })
-	const found = locate(DOC_A, [{ ...ws('w1', '/r/a'), hostId: 'local' }], null, fs)
+	const found = locate(docHash(DOC_A), [{ ...ws('w1', '/r/a'), hostId: 'local' }], null, fs)
 	assert.equal(found.status, 'ok')
 	assert.equal(found.status === 'ok' && found.path, 'A')
 })
 
 test('로컬 workspace 가 맞지 않으면 원격 workspace 가 있어도 notIndexed 다', () => {
 	const remote = { ...ws('w2', '/r/b'), hostId: 'ssh-1' }
-	assert.deepEqual(locate(DOC_A, [ws('w1', '/r/a'), remote], null, fakeFs({})), { status: 'notIndexed' })
+	assert.deepEqual(locate(docHash(DOC_A), [ws('w1', '/r/a'), remote], null, fakeFs({})), { status: 'notIndexed' })
 })
 
 test('인덱스가 없거나 JSON 이 깨졌거나 표지가 다른 workspace 는 건너뛴다', () => {
@@ -277,9 +278,9 @@ test('인덱스가 없거나 JSON 이 깨졌거나 표지가 다른 workspace �
 		'/r/good/.kang/graph.kang.json': graph({ A: DOC_A }),
 	})
 	const list = [ws('w0', '/r/none'), ws('w1', '/r/broken'), ws('w2', '/r/other'), ws('w3', '/r/good')]
-	const result = locate(DOC_A, list, null, fs)
+	const result = locate(docHash(DOC_A), list, null, fs)
 	assert.equal(result.status === 'ok' && result.workspaceId, 'w3')
-	assert.deepEqual(locate(DOC_A, list.slice(0, 3), null, fs), { status: 'notIndexed' })
+	assert.deepEqual(locate(docHash(DOC_A), list.slice(0, 3), null, fs), { status: 'notIndexed' })
 })
 
 test('지금 해시가 인덱스와 다르거나 파일이 없는 문서는 stale 이다', () => {
@@ -288,7 +289,7 @@ test('지금 해시가 인덱스와 다르거나 파일이 없는 문서는 stal
 		'/r/a/A.kang': DOC_A,
 		'/r/a/B.kang': '# B 문서 바뀜\n',
 	})
-	const result = locate(DOC_A, [ws('w1', '/r/a')], null, fs)
+	const result = locate(docHash(DOC_A), [ws('w1', '/r/a')], null, fs)
 	assert.deepEqual(result.status === 'ok' && result.stale, ['B', 'C'])
 })
 
@@ -301,7 +302,7 @@ test('stale 문서가 선언한 keyword 는 정의에서 뺀다', () => {
 		'/r/a/A.kang': DOC_A,
 		'/r/a/B.kang': '# B 문서 바뀜\n',
 	})
-	const result = locate(DOC_A, [ws('w1', '/r/a')], null, fs)
+	const result = locate(docHash(DOC_A), [ws('w1', '/r/a')], null, fs)
 	assert.deepEqual(result.status === 'ok' && result.definitions, { 'A.가': '가 정의' })
 })
 
@@ -338,14 +339,14 @@ function twoWorktrees(limited: string[] = []) {
 
 test('같은 저장소의 worktree 둘이 맞아도 고른 workspace 의 문서만 읽는다', () => {
 	const { fs, docReads } = twoWorktrees()
-	const result = locate(DOC_A, [ws('w1', '/r/a'), ws('w2', '/r/b')], null, fs)
+	const result = locate(docHash(DOC_A), [ws('w1', '/r/a'), ws('w2', '/r/b')], null, fs)
 	assert.equal(result.status === 'ok' && result.workspaceId, 'w1')
 	assert.deepEqual(docReads, ['/r/a:A.kang', '/r/a:B.kang'])
 })
 
 test('읽은 양이 한도를 넘은 후보는 버리고 나머지에서 다시 골라 답한다', () => {
 	const { fs } = twoWorktrees(['/r/a'])
-	const result = locate(DOC_A, [ws('w1', '/r/a'), ws('w2', '/r/b')], null, fs)
+	const result = locate(docHash(DOC_A), [ws('w1', '/r/a'), ws('w2', '/r/b')], null, fs)
 	assert.equal(result.status === 'ok' && result.workspaceId, 'w2')
 })
 
@@ -353,7 +354,7 @@ test('버린 후보가 focus 된 workspace 이면 다른 저장소를 고르지 
 	const { fs } = twoWorktrees(['/r/a'])
 	const focused = { displayName: 'w1', branch: 'main' }
 	const list = [ws('w1', '/r/a'), ws('w2', '/r/b', 'w2', 'dev')]
-	assert.deepEqual(locate(DOC_A, list, focused, fs), { status: 'notIndexed' })
+	assert.deepEqual(locate(docHash(DOC_A), list, focused, fs), { status: 'notIndexed' })
 })
 
 test('pickWorkspace 는 후보가 하나면 그 후보를 고른다', () => {
@@ -380,7 +381,7 @@ test('.git 파일의 gitdir 줄에 긴 공백이 있어도 100ms 안에 같은 �
 		'/r/wt/A.kang': DOC_A,
 	})
 	const started = performance.now()
-	const result = locate(DOC_A, [ws('w1', '/r/a'), ws('w2', '/r/wt')], null, fs)
+	const result = locate(docHash(DOC_A), [ws('w1', '/r/a'), ws('w2', '/r/wt')], null, fs)
 	const elapsed = performance.now() - started
 	assert.ok(elapsed < 100, `${elapsed}ms`)
 	assert.equal(result.status === 'ok' && result.workspaceId, 'w1')

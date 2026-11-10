@@ -1,5 +1,18 @@
 // 렌더링 화면과 그래프 화면이 함께 쓰는 frame 도우미다. 스타일 파일을 넣고 안내 문구를 만든다.
+import { hashInput } from './normalize'
 import type { Locate } from './protocol'
+
+/**
+ * 문서 해시를 Web Crypto 로 계산한다. worker 의 `docHash` 와 같은 값이다.
+ * frame 은 `node:crypto` 를 쓸 수 없으므로 따로 둔다. 입력 텍스트는 둘 다 `hashInput` 이 만든다.
+ * @param text 문서 원문
+ * @returns 소문자 hex 64 자
+ * @throws Error Web Crypto 를 쓸 수 없는 frame 이면 거부한다
+ */
+export async function frameHash(text: string): Promise<string> {
+	const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(hashInput(text)))
+	return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join('')
+}
 
 /** 상태가 `ok` 가 아닐 때 보여 주는 안내 문구 HTML 이다. 고정 문자열이므로 그대로 innerHTML 에 넣는다. */
 const NOTICES: Record<Exclude<Locate['status'], 'ok'>, string> = {

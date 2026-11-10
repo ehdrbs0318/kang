@@ -1,9 +1,9 @@
 // .kang.json 그래프 인덱스의 읽기 전용 그래프 화면이다. Orca 의 custom editor frame 에서 실행한다.
-// 원문을 받으면 worker 에 `kang.locate` 를 묻고, 답의 문서와 import 관계를 cytoscape 로 그린다. JSON 은 worker 가 읽는다.
+// 원문을 받으면 그 해시로 worker 에 `kang.locate` 를 묻고, 답의 문서와 import 관계를 cytoscape 로 그린다. JSON 은 worker 가 읽는다.
 // 화면 구성은 GEPA Workbench 를 따른다. 위에 통계와 범례, 왼쪽에 문서 목록, 가운데에 그래프, 오른쪽에 고른 문서의 상세 패널이 있다.
 // 점에 마우스를 올리면 이웃만 밝게 남기고, 점을 누르면 상세 패널에 고정하고, 두 번 누르면 `kang.open` 으로 문서를 연다. 파일에는 아무것도 쓰지 않는다.
 import cytoscape, { type Core, type NodeSingular, type StylesheetJson } from '../../vendor/cytoscape.esm.min.mjs'
-import { addStyles, createTooltip, locateNotice, notice, positionTooltip, STALE_NOTICE } from '../frame'
+import { addStyles, frameHash, createTooltip, locateNotice, notice, positionTooltip, STALE_NOTICE } from '../frame'
 import type { Locate } from '../protocol'
 import { buildModel, type GraphModel, matches, toElements } from './model'
 import { createPanels, folderColor } from './panel'
@@ -227,7 +227,7 @@ async function show(text: string): Promise<void> {
 	const turn = ++latest
 	let located: Locate | null = null
 	try {
-		located = await orca.plugin.request('kang.locate', { text })
+		located = await orca.plugin.request('kang.locate', { hash: await frameHash(text) })
 	} catch (error) {
 		// worker 가 없거나 응답하지 않으면 안내 문구만 보여 준다.
 		console.debug('kang.locate 요청이 실패해서 안내 문구만 보여 줍니다', error)

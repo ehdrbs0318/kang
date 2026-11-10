@@ -17,10 +17,11 @@ orca plugin install ehdrbs0318/kang-orca-plugin
 ## 구성
 
 - `src/worker.ts`: 플러그인의 worker 다. custom editor 의 요청 두 개에 답한다.
-  - `kang.locate`: 열린 파일의 원문으로 kang 프로젝트와 문서를 찾는다. 그 프로젝트의 그래프, 정의, stale 문서 목록을 돌려준다.
+  - `kang.locate`: 열린 파일의 해시로 kang 프로젝트와 문서를 찾는다. 화면은 원문 대신 해시를 보낸다. Orca 는 frame 이 보내는 메시지를 66,560 바이트까지만 받기 때문이다. 그 프로젝트의 그래프, 정의, stale 문서 목록을 돌려준다.
   - `kang.open`: 인덱스에 있는 문서 `<path>.kang` 을 Orca 의 편집기 탭으로 연다.
 - kang 프로젝트 루트는 kang 컴파일러처럼 git 저장소 루트다. 플러그인은 workspace 루트와, 그 바로 아래의 git 저장소 루트에서 `.kang/graph.kang.json` 을 찾는다. 그래서 여러 저장소를 한 상위 폴더에 두고 그 폴더를 workspace 로 열어도 문서 저장소의 그래프를 찾는다. 두 단계 이상 아래의 저장소는 찾지 않는다.
-- `src/locate.ts`: 문서 해시 계산과 workspace 찾기다. 해시 규칙은 `crates/kang/src/hash.rs` 와 같다.
+- `src/normalize.ts`: 해시 입력 텍스트의 정규화다. 규칙은 `crates/kang/src/hash.rs` 와 같다. worker 와 화면이 함께 쓴다.
+- `src/locate.ts`: worker 의 문서 해시 계산과 workspace 찾기다.
 - `src/protocol.ts`: worker 와 custom editor 가 함께 쓰는 요청 타입이다.
 - `src/render/`: `.kang` 파일의 읽기 전용 렌더링 화면이다. Orca 가 `.kang` 파일을 이 custom editor 로 연다.
   - `parse.ts`: kang 문법을 marked 확장으로 그리고, 본문 참조를 `kang build` 가 쓴 scope 에서 찾는다.
@@ -32,7 +33,7 @@ orca plugin install ehdrbs0318/kang-orca-plugin
   - `panel.ts`: 머리줄(통계, 폴더 색 범례, 검색, 전체 보기), 왼쪽 문서 목록, 오른쪽 상세 패널을 만든다.
   - `main.ts`: `kang.locate` 답을 `cose` 레이아웃으로 그린다. 점에 마우스를 올리면 이웃만 밝게 남긴다. 점을 누르면 상세 패널에 고정하고, 두 번 누르면 그 문서를 연다. 화살표에 마우스를 올리면 심볼 목록을 보여 준다.
   - 화면 구성은 [GEPA](https://github.com/gepa-ai/gepa) Workbench 를 참조했다. 자세한 내용은 kang 저장소의 [`plans/DONES/V0007-graph-view-redesign.md`](https://github.com/ehdrbs0318/kang/blob/main/plans/DONES/V0007-graph-view-redesign.md) 에 있다.
-- `src/frame.ts`, `src/frame.css`: 두 화면이 함께 쓰는 스타일 넣기와 안내 문구다.
+- `src/frame.ts`, `src/frame.css`: 두 화면이 함께 쓰는 해시 계산(Web Crypto), 스타일 넣기, 안내 문구다.
 
 원격 workspace 는 지원하지 않는다. worker 는 로컬 파일만 읽는다.
 

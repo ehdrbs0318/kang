@@ -12,7 +12,7 @@ export type GraphKeyword = { path: string; name: string; definition: string }
 /** 그래프 인덱스의 import 관계 한 줄이다. `symbols` 는 kang 의 정식 주소다. */
 export type GraphEdge = { from: string; to: string; symbols: string[] }
 
-/** `kang.locate` 의 답이다. 받은 원문이 어느 workspace 의 어느 문서인지 알려 준다. */
+/** `kang.locate` 의 답이다. 받은 해시의 원문이 어느 workspace 의 어느 문서인지 알려 준다. */
 export type Locate =
 	| {
 			status: 'ok'
@@ -31,8 +31,11 @@ export type Locate =
 
 declare module 'orca' {
 	interface PluginRequests {
-		/** 열린 파일의 원문으로 그 파일의 workspace 와 문서를 찾는다. */
-		'kang.locate': { input: { text: string }; output: Locate }
+		/**
+		 * 열린 파일의 해시로 그 파일의 workspace 와 문서를 찾는다. `hash` 는 `GraphDoc.hash` 와 같은 규칙의 SHA-256 hex 값이다.
+		 * 원문을 보내지 않는 까닭은 Orca 의 frame 메시지 한도(66,560 바이트)다. 큰 그래프 인덱스는 이 한도를 넘는다.
+		 */
+		'kang.locate': { input: { hash: string }; output: Locate }
 		/** kang 프로젝트 `root` 의 인덱스에 있는 문서 `<root>/<path>.kang` 을 Orca 의 편집기 탭으로 연다. `root` 는 `kang.locate` 답의 값이다. */
 		'kang.open': { input: { workspaceId: string; root: string; path: string }; output: { opened: boolean } }
 	}

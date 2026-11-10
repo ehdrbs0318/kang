@@ -1,9 +1,10 @@
-// 열린 파일의 원문으로 그 파일이 어느 workspace 의 어느 kang 문서인지 찾는다.
+// 열린 파일의 해시로 그 파일이 어느 workspace 의 어느 kang 문서인지 찾는다.
 // 파일 읽기는 `fs` 인자로 받으므로 이 모듈은 순수하고, 테스트에서 가짜 파일 시스템을 쓴다.
 import { createHash } from 'node:crypto'
 import { isAbsolute, join, resolve } from 'node:path'
 import type { GraphDoc, GraphEdge, GraphKeyword, Locate } from './protocol'
-import { trim, trimEnd, trimStart } from './ws'
+import { hashInput } from './normalize'
+import { trim } from './ws'
 
 /** `workspace.list` 가 돌려주는 workspace 한 개다. */
 export type Workspace = {
@@ -84,31 +85,13 @@ const INDEX_PATH = '.kang/graph.kang.json'
 const MAX_DOCS = 10_000
 
 /**
- * 해시 입력 텍스트를 `crates/kang/src/hash.rs` 의 `normalize` 와 같은 규칙으로 정규화한다.
- * 줄 끝 공백을 지우고, 연속 빈 줄을 하나로 합치고, 앞뒤 공백을 지운다.
- * CRLF 의 CR 은 줄 끝 공백이므로 지워진다.
- * @param text 정규화할 원문
- * @returns 정규화한 텍스트
- */
-export function normalize(text: string): string {
-	const lines: string[] = []
-	// 줄마다 줄 끝 공백을 지우고, 앞 줄도 빈 줄인 빈 줄은 건너뛴다.
-	for (const line of text.split('\n')) {
-		const trimmed = trimEnd(line)
-		if (trimmed === '' && lines.length > 0 && lines[lines.length - 1] === '') continue
-		lines.push(trimmed)
-	}
-	return trimStart(trimEnd(lines.join('\n')))
-}
-
-/**
  * 문서 해시를 계산한다. 맨 앞 BOM(U+FEFF) 하나를 떼고 정규화한 텍스트의 SHA-256 hex 값이다.
- * `crates/kang/src/hash.rs` 의 `doc_hash` 와 같다. 컴파일러가 BOM 을 떼고 읽으므로 같이 뗀다.
+ * `crates/kang/src/hash.rs` 의 `doc_hash` 와 같다. 입력 텍스트는 `hashInput` 이 만든다.
  * @param text 문서 원문
  * @returns 소문자 hex 64 자
  */
 export function docHash(text: string): string {
-	return createHash('sha256').update(normalize(text.replace(/^\uFEFF/, '')), 'utf8').digest('hex')
+	return createHash('sha256').update(hashInput(text), 'utf8').digest('hex')
 }
 
 /**
@@ -241,10 +224,10 @@ export function pickWorkspace(candidates: Candidate[], focused: Focused | null):
 }
 
 /**
- * 열린 파일의 원문으로 workspace 와 문서를 찾고, 그 workspace 의 그래프와 정의를 돌려준다.
+ * 열린 파일의 해시로 workspace 와 문서를 찾고, 그 workspace 의 그래프와 정의를 돌려준다.
  * 인덱스만 모든 workspace 에서 읽고, stale 검사는 고른 workspace 하나에서만 한다.
  * 그 검사에서 읽은 양이 한도를 넘으면 그 workspace 의 후보를 버리고 나머지에서 다시 고른다.
- * @param text 열린 파일의 원문
+ * @param hash 열린 파일의 `docHash` 값. 그래프 인덱스 파일이면 그 원문의 `docHash` 값이다
  * @param workspaces `workspace.list` 의 workspace 목록
  * @param focused focus 된 workspace. 없으면 null
  * @param fs 파일 읽기
@@ -254,12 +237,11 @@ export function pickWorkspace(candidates: Candidate[], focused: Focused | null):
  *   하나를 고를 수 없거나 고른 workspace 안에 같은 해시의 문서가 둘 이상이면 `ambiguous`
  * @throws Error 파일 읽기 오류 가운데 ReadLimit 이 아닌 것은 그대로 던진다
  */
-export function locate(text: string, workspaces: Workspace[], focused: Focused | null, fs: FileReader): Locate {
+export function locate(hash: string, workspaces: Workspace[], focused: Focused | null, fs: FileReader): Locate {
 	const local = workspaces.filter(isLocal)
 	// 로컬 workspace 가 하나도 없고 원격만 있으면 지원하지 않는 경우다.
 	if (local.length === 0 && workspaces.length > 0) return { status: 'remoteOnly' }
 
-	const hash = docHash(text)
 	const found = new Map<string, GraphIndex>()
 	let candidates: Candidate[] = []
 	// workspace 마다 그 안의 kang 프로젝트를 모은다. 하위 저장소를 찾다 한도를 넘으면 그 workspace 만 건너뛴다.
@@ -272,13 +254,13 @@ export function locate(text: string, workspaces: Workspace[], focused: Focused |
 			if (!(error instanceof ReadLimit)) throw error
 		}
 	}
-	// 프로젝트마다 인덱스를 읽고, 그래프 원문이나 문서 해시가 맞는 후보를 모은다. 문서 파일은 아직 읽지 않는다.
+	// 프로젝트마다 인덱스를 읽고, 그래프 원문의 해시나 문서 해시가 맞는 후보를 모은다. 문서 파일은 아직 읽지 않는다.
 	for (const project of all) {
 		try {
 			const index = readIndex(project.dir, fs)
 			// 인덱스가 없는 프로젝트는 건너뛴다.
 			if (!index) continue
-			const paths = index.text === text ? [null] : index.docs.filter((d) => d.hash === hash).map((d) => d.path)
+			const paths = docHash(index.text) === hash ? [null] : index.docs.filter((d) => d.hash === hash).map((d) => d.path)
 			// 맞는 문서가 없는 프로젝트는 후보가 아니다.
 			if (paths.length === 0) continue
 			const dir = gitCommonDir(project.dir, fs)
