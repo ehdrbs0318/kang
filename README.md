@@ -90,6 +90,9 @@ git 저장소 루트를 프로젝트 루트로 쓰기 때문이다.
 `AGENTS.md` 나 `CLAUDE.md` 가 이미 있으면 kang 은 파일을 덮어쓰지 않고 kang 섹션만 끝에
 더한다. kang 섹션이 이미 있으면 아무것도 하지 않는다.
 
+스킬 파일은 kang 이 관리한다. 새 바이너리를 받은 뒤 `kang init` 을 다시 실행하면 스킬 파일을
+새 내용으로 바꾼다. 내용이 같으면 건너뛴다.
+
 ## TypeScript 프로젝트에서 쓰기
 
 `examples/ts-consumer/` 는 Rust 툴체인 없이 kang 을 쓰는 가장 작은 예제다.

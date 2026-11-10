@@ -3167,6 +3167,39 @@ fn generated_skill_md_is_not_empty() {
     cleanup(&root);
 }
 
+/// 스킬 파일은 kang 이 소유한다. 낡은 스킬이 남으면 새 바이너리를 받아도 에이전트는
+/// 옛 사용법을 따른다. 그래서 `init` 은 내용이 다르면 통째로 바꾸고, 같으면 건너뛴다.
+#[test]
+fn init_replaces_stale_skill_md() {
+    let root = temp_root("init-stale-skill");
+    make_git_repo(&root);
+    write(
+        &root,
+        ".claude/skills/kang/SKILL.md",
+        "---\nname: kang\n---\n\n옛 사용법\n",
+    );
+
+    let (_, stderr, code) = run(&root, &["init"]);
+    assert_eq!(code, 0, "{stderr}");
+    let skill = read(&root, ".claude/skills/kang/SKILL.md");
+    assert!(!skill.contains("옛 사용법"), "낡은 스킬이 남았다: {skill}");
+    assert!(skill.contains("kang build"), "{skill}");
+    assert!(
+        stderr.contains("갱신했습니다: .claude/skills/kang/SKILL.md"),
+        "{stderr}"
+    );
+
+    // 다시 실행하면 바꿀 것이 없으므로 건너뛴다.
+    let (_, stderr, code) = run(&root, &["init"]);
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(read(&root, ".claude/skills/kang/SKILL.md"), skill);
+    assert!(
+        stderr.contains("이미 최신이라 건너뜁니다: .claude/skills/kang/SKILL.md"),
+        "{stderr}"
+    );
+    cleanup(&root);
+}
+
 /// **사용자의 `.kang` 초안에 템플릿을 덧붙이면 안 된다.**
 ///
 /// 스펙 6.1 은 "섹션만 덧붙인다" 를 세 마크다운 진입점에만 배정하고 첫 `.kang` 은

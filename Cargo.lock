@@ -58,7 +58,7 @@ dependencies = [
 
 [[package]]
 name = "kang"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "kang-macros",
  "sha2",

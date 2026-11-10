@@ -5,8 +5,9 @@
 //! 모르고 `cat` 하고, `cat` 으로 읽은 `.kang` 은 import 간접 참조 때문에 마크다운보다
 //! 읽기 나쁘다. 이 모듈이 만드는 스킬 파일이 그 원칙을 성립시키는 유일한 장치다.
 //!
-//! ponytail: 네 산출물을 [`ensure_section`] 하나로 처리한다. 복사·섹션 덧붙임·한 줄
-//! 덧붙임·템플릿 생성은 전부 "marker 가 없을 때만 덧붙인다" 의 변형이다.
+//! ponytail: 스킬을 뺀 세 산출물을 [`ensure_section`] 하나로 처리한다. 섹션 덧붙임·한 줄
+//! 덧붙임·템플릿 생성은 전부 "marker 가 없을 때만 덧붙인다" 의 변형이다. 스킬 파일은
+//! kang 이 소유하므로 [`sync_skill`] 이 바이너리의 내용과 맞춘다.
 //!
 //! **이 모듈도 [`crate::bless`] 의 원자적 쓰기를 쓴다.** 처음에는 append 로 충분하다고
 //! 보았다 — 최악이 "끝에 덜 쓰인 섹션" 이고 그 상태에는 marker 가 없으니 재실행이
@@ -72,8 +73,9 @@ topic 밖에는 내용을 둘 수 없습니다. 문서 제목도 서문도 두�
 
 /// 현재 프로젝트에 에이전트 진입점을 만든다.
 ///
-/// **기존 파일은 덮어쓰지 않는다.** 세 마크다운 진입점에는 kang 섹션이 없을 때만 그것을
-/// 덧붙이고, 첫 `.kang` 문서는 프로젝트에 문서가 없고 그 경로가 비어 있을 때만 만든다 —
+/// **스킬 파일만은 바이너리의 내용으로 바꿔 쓴다.** 그 파일은 kang 이 소유하고, 내용이
+/// 다르면 낡은 사용법이다. 나머지 **기존 파일은 덮어쓰지 않는다.** `AGENTS.md`,
+/// `CLAUDE.md` 에는 kang 섹션이 없을 때만 그것을 덧붙이고, 첫 `.kang` 문서는 프로젝트에 문서가 없고 그 경로가 비어 있을 때만 만든다 —
 /// 스펙 6.1 이 앞의 셋에만 "섹션만 덧붙인다" 를 배정하고 `.kang` 은 "템플릿" 으로 가른다.
 ///
 /// **산출물마다의 처리 결과를 이 함수가 직접 표준 오류로 찍는다.** 부르는 쪽이 모아 찍게
@@ -86,17 +88,32 @@ topic 밖에는 내용을 둘 수 없습니다. 문서 제목도 서문도 두�
 ///   현재 디렉토리를 넘긴다 (스펙 6.1)
 ///
 /// # 반환값
-/// 이번 실행이 **만든** 파일들의 절대 경로. 전부 건너뛰었으면 빈 목록
+/// 이번 실행이 **만들거나 바꾼** 파일들의 절대 경로. 전부 건너뛰었으면 빈 목록
 ///
 /// # 오류
 /// 산출물 하나라도 쓰지 못하면 그 사정. 그 앞의 산출물은 이미 만들어졌고 이미 보고됐으며,
 /// 다시 실행하면 만들어진 것을 건너뛴다
 pub fn init(root: &Path) -> Result<Vec<PathBuf>, String> {
     // marker 는 전부 그 내용 안의 한 줄이다. 어긋나면 두 번 실행할 때 두 번 붙는다.
+    let mut created: Vec<PathBuf> = Vec::new();
+
+    // 스킬 파일은 kang 이 소유하므로 섹션을 덧붙이지 않고 바이너리의 내용과 맞춘다.
+    // 낡은 스킬이 남으면 새 바이너리를 받아도 에이전트는 옛 사용법을 따른다.
+    let skill = root.join(SKILL_PATH);
+    // 만들었거나 바꿨으면 이번 실행이 쓴 파일로 돌려준다. 같으면 건너뛰었다고 말한다.
+    match sync_skill(&skill)? {
+        SkillSync::Created => {
+            eprintln!("만들었습니다: {SKILL_PATH}");
+            created.push(skill);
+        }
+        SkillSync::Updated => {
+            eprintln!("갱신했습니다: {SKILL_PATH}");
+            created.push(skill);
+        }
+        SkillSync::Unchanged => eprintln!("이미 최신이라 건너뜁니다: {SKILL_PATH}"),
+    }
+
     let mut outputs: Vec<(&str, &str, &str)> = vec![
-        // 스킬 파일의 frontmatter `name` 을 marker 로 삼는다. Claude 가 스킬을 찾는 키이므로
-        // 사람이 본문을 고쳐도 남아 있고, 첫 줄인 `---` 은 어느 마크다운에나 있어 못 쓴다.
-        (SKILL_PATH, "name: kang", SKILL),
         ("AGENTS.md", "## kang", AGENTS_SECTION),
         ("CLAUDE.md", CLAUDE_MARKER, CLAUDE_LINE),
     ];
@@ -123,7 +140,6 @@ pub fn init(root: &Path) -> Result<Vec<PathBuf>, String> {
         outputs.push((example, "description:", EXAMPLE_DOC));
     }
 
-    let mut created: Vec<PathBuf> = Vec::new();
     // 산출물을 차례로 처리한다. 하나가 실패하면 그 앞은 이미 만들어진 채로 남는다.
     for (relative, marker, content) in outputs {
         let path = root.join(relative);
@@ -147,7 +163,7 @@ pub fn init(root: &Path) -> Result<Vec<PathBuf>, String> {
 }
 
 /// 파일이 없으면 만들고, 있으면 marker 로 시작하는 섹션이 없을 때만 덧붙인다.
-/// 네 산출물이 전부 이 한 함수로 처리된다 — 복사·섹션 덧붙임·한 줄 덧붙임·
+/// 스킬을 뺀 세 산출물이 이 한 함수로 처리된다 — 섹션 덧붙임·한 줄 덧붙임·
 /// 템플릿 생성은 전부 같은 규칙의 변형이다.
 ///
 /// **멱등 판정은 줄 단위 접두 일치다.** 문자열 포함으로 보면 marker 를 산문 안에 인용한
@@ -217,4 +233,45 @@ fn ensure_section(path: &Path, marker: &str, content: &str) -> Result<bool, Stri
     )?;
 
     Ok(true)
+}
+
+/// [`sync_skill`] 이 스킬 파일에 한 일이다.
+enum SkillSync {
+    /// 파일이 없어서 만들었다.
+    Created,
+    /// 내용이 달라서 바이너리의 내용으로 바꿨다.
+    Updated,
+    /// 내용이 같아서 아무것도 하지 않았다.
+    Unchanged,
+}
+
+/// 스킬 파일을 바이너리에 임베드한 [`SKILL`] 과 같게 만든다.
+///
+/// 쓰기는 [`ensure_section`] 과 같이 원자적이다. 도중에 죽어도 파일은 옛 내용이거나
+/// 새 내용이다.
+///
+/// # 매개변수
+/// - `path`: 스킬 파일의 절대 경로. 중간 디렉토리는 만든다
+///
+/// # 반환값
+/// 만들었는지, 바꿨는지, 그대로 두었는지
+///
+/// # 오류
+/// 파일을 읽지 못하거나 디렉토리를 만들지 못하거나 쓰지 못하면 그 사정
+fn sync_skill(path: &Path) -> Result<SkillSync, String> {
+    let result = match std::fs::read_to_string(path) {
+        // 내용이 같으면 쓸 것이 없다.
+        Ok(existing) if existing == SKILL => return Ok(SkillSync::Unchanged),
+        Ok(_) => SkillSync::Updated,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => SkillSync::Created,
+        // 권한이 없거나 UTF-8 이 아니면 덮어쓰지 않고 멈춘다. 무엇이 있는지 모르는 파일이다.
+        Err(error) => return Err(format!("{} 를 읽지 못했습니다 — {error}", path.display())),
+    };
+    // 스킬 파일은 세 단계 깊이다. 상위 디렉토리를 만들지 못하면 환경 오류다.
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("{} 를 만들지 못했습니다 — {error}", parent.display()))?;
+    }
+    crate::bless::write_atomically(path, SKILL, "kang-init.tmp")?;
+    Ok(result)
 }

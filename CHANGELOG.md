@@ -6,11 +6,22 @@
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-10
+
 ### Added
 
 - `kang build` 가 성공하면 저장소 루트에 `.kang/graph.kang.json` 을 쓴다. 문서 목록, keyword 정의,
   import 관계가 들어 있다. 컴파일 error 가 있으면 쓰지 않는다. kang 이 만들지 않은 파일은
   덮어쓰지 않고 종료 코드 2 로 끝난다.
+
+### Changed
+
+- `kang init` 이 낡은 `.claude/skills/kang/SKILL.md` 를 바이너리의 내용으로 바꾼다. 내용이
+  같으면 건너뛴다. 전에는 파일이 있으면 건너뛰어서, 새 바이너리를 받아도 스킬이 옛 판으로
+  남았다. `AGENTS.md`, `CLAUDE.md` 는 전과 같이 덮어쓰지 않는다.
+- 스킬이 문서를 항상 `.kang` 으로 쓰게 한다. 기존 마크다운 문서를 옮기는 규칙, 파일 문법,
+  keyword 로 선언할 용어의 기준, import 순서, 진단의 fix 를 적용하는 순서를 더했다.
+- `kang init` 의 `AGENTS.md`, `CLAUDE.md` 진입점 문구와 `--help` 문구를 쉬운 말로 고쳤다.
 
 ## [0.1.1] - 2026-08-09
 
