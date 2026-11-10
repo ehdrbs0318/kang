@@ -15,8 +15,8 @@ jobs:
     strategy:
       matrix:
         include:
-          - { target: aarch64-apple-darwin, os: macos-14 }
-          - { target: x86_64-apple-darwin, os: macos-14 }
+          - { target: aarch64-apple-darwin, os: macos-15 }
+          - { target: x86_64-apple-darwin, os: macos-15 }
           - { target: x86_64-unknown-linux-gnu, os: ubuntu-24.04 }
           # ponytail: arm 러너로 네이티브 빌드한다. 이 러너를 쓸 수 없는 플랜이면
           # ubuntu-24.04 에 gcc-aarch64-linux-gnu 를 깔고 크로스 링크로 바꾼다.
